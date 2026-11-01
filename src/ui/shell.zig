@@ -22,10 +22,61 @@ pub fn view(s: *app.State, c: *ui.Context) void {
     defer root.end();
     rail(s, c);
     const main = ui.div(c).column().grow().hFull().px(20).pt(16).gap(4);
-    defer main.end();
     header(s, c);
     body(s, c);
     footer(s, c);
+    main.end(); // before the detail pane, or the pane becomes a child of it
+
+    if (s.selected != null) detailPane(s, c);
+}
+
+/// The right-hand pane: what this container is, and what it has said lately.
+fn detailPane(s: *app.State, c: *ui.Context) void {
+    const pane = ui.div(c).column().w(430).hFull().p(14).gap(8).bg(c.theme.surface).border(c.theme.border);
+    defer pane.end();
+
+    const head = ui.div(c).row().wFull().itemsCenter().gap(8);
+    ui.text(c, s.selected_name, .{ .size = 15, .weight = .semibold, .truncate = .ellipsis });
+    ui.spacer(c);
+    const close = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11).bg(c.theme.surface_hover);
+    ui.text(c, "Close", .{ .size = 11, .color = c.theme.muted });
+    if (close.clicked()) s.clearSelection();
+    close.end();
+    head.end();
+
+    // The facts that answer "what is this thing", from the list entry we have.
+    for (s.containers) |ct| {
+        if (s.selected == null or !std.mem.eql(u8, s.selected.?, ct.Id)) continue;
+        facts(c, "Image", ct.Image);
+        facts(c, "State", ct.State);
+        facts(c, "Status", ct.Status);
+        if (ct.project()) |project| facts(c, "Project", project);
+        if (ct.service()) |service| facts(c, "Service", service);
+        if (widgets.portsText(c, &ct, 4).len > 0) facts(c, "Ports", widgets.portsText(c, &ct, 4));
+        break;
+    }
+
+    ui.text(c, "Logs · last 200 lines", .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+    ui.scroll(c, .{ .width = .fill, .height = .fill, .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 }, .radius = 8, .background = c.theme.background });
+    defer ui.end(c);
+    if (s.log_text.len == 0) {
+        ui.text(c, "No output yet. A container that has said nothing says nothing.", .{ .size = 11.5, .color = c.theme.muted });
+    } else {
+        ui.text(c, s.log_text, .{
+            .size = 11.5,
+            .mono = true,
+            .wrap = true,
+            .leading = 1.4,
+            .color = c.theme.text,
+        });
+    }
+}
+
+fn facts(c: *ui.Context, label: []const u8, value: []const u8) void {
+    const row = ui.div(c).row().wFull().gap(8).itemsCenter();
+    defer row.end();
+    ui.text(c, label, .{ .size = 11, .color = c.theme.muted });
+    ui.text(c, value, .{ .size = 11.5, .truncate = .middle });
 }
 
 fn rail(s: *app.State, c: *ui.Context) void {

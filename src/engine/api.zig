@@ -7,6 +7,12 @@
 const std = @import("std");
 const http = @import("http_uds.zig");
 
+const stats_mod = @import("stats.zig");
+
+pub const Stats = stats_mod.Stats;
+pub const Logs = stats_mod.Logs;
+pub const demux = stats_mod.demux;
+
 pub const Error = http.Error || std.mem.Allocator.Error || std.json.ParseError(std.json.Scanner) || error{
     EngineError,
 };
@@ -137,6 +143,16 @@ pub const Client = struct {
         return self.get(Stats, p);
     }
 
+    /// The last `tail` lines. Logs go through the arena like everything else,
+    /// so the view can hold them for the frame without copying.
+    pub fn logs(self: *Client, id: []const u8, tail: usize) ![]const u8 {
+        const p = try std.fmt.allocPrint(self.gpa, "/containers/{s}/logs?stdout=1&stderr=1&timestamps=0&tail={d}", .{ id, tail });
+        defer self.gpa.free(p);
+        const body = try self.call("GET", p, "", 4 * 1024 * 1024);
+        defer self.gpa.free(body);
+        return demux(self.alloc, body, 4 * 1024 * 1024) catch "";
+    }
+
     pub fn inspect(self: *Client, id: []const u8) !ContainerDetail {
         const p = try std.fmt.allocPrint(self.gpa, "/containers/{s}/json", .{id});
         defer self.gpa.free(p);
@@ -256,111 +272,6 @@ pub const Container = struct {
     }
 };
 
-
-/// One `/containers/{id}/stats` sample. `precpu_stats` is what makes CPU%
-/// meaningful: with `one-shot=true` it arrives empty and the formula
-/// degenerates into "average since the container started", which never matches
-/// `docker stats`.
-pub const Stats = struct {
-    read: []const u8 = "",
-    cpu_stats: Cpu = .{},
-    precpu_stats: Cpu = .{},
-    memory_stats: Mem = .{},
-    pids_stats: ?struct { current: u32 = 0 } = null,
-    networks: ?std.json.Value = null,
-
-    pub const Cpu = struct {
-        cpu_usage: Usage = .{},
-        system_cpu_usage: u64 = 0,
-        online_cpus: u32 = 0,
-
-        pub const Usage = struct { total_usage: u64 = 0, percpu_usage: ?[]u64 = null };
-    };
-
-    pub const Mem = struct {
-        usage: u64 = 0,
-        limit: u64 = 0,
-        stats: ?std.json.Value = null,
-    };
-
-    /// Percent of one core, the same figure `docker stats` prints: the delta in
-    /// container CPU over the delta in system CPU, times the core count.
-    pub fn cpuPercent(self: Stats) f64 {
-        const total = self.cpu_stats.cpu_usage.total_usage;
-        const pre = self.precpu_stats.cpu_usage.total_usage;
-        const system = self.cpu_stats.system_cpu_usage;
-        const pre_system = self.precpu_stats.system_cpu_usage;
-        // No previous sample means no delta. Without this guard a `one-shot`
-        // response silently reports the lifetime average, which looks like a
-        // plausible number and is not the one `docker stats` prints.
-        if (pre == 0 or pre_system == 0) return 0;
-        if (total <= pre or system <= pre_system) return 0;
-        var cores = self.cpu_stats.online_cpus;
-        if (cores == 0) {
-            if (self.cpu_stats.cpu_usage.percpu_usage) |list| cores = @intCast(list.len);
-        }
-        if (cores == 0) cores = 1;
-        const cpu_delta = @as(f64, @floatFromInt(total - pre));
-        const system_delta = @as(f64, @floatFromInt(system - pre_system));
-        return cpu_delta / system_delta * @as(f64, @floatFromInt(cores)) * 100.0;
-    }
-
-    /// Working set: usage minus the kernel's reclaimable file cache. cgroup v2
-    /// reports `inactive_file`, v1 `total_inactive_file`; the older `cache` key
-    /// only exists before Docker 20.10.
-    pub fn memUsed(self: Stats) u64 {
-        const usage = self.memory_stats.usage;
-        const stats = self.memory_stats.stats orelse return usage;
-        if (stats != .object) return usage;
-        const keys = [_][]const u8{ "inactive_file", "total_inactive_file", "cache" };
-        for (keys) |k| {
-            const v = stats.object.get(k) orelse continue;
-            const cache: u64 = switch (v) {
-                .integer => |i| @intCast(@max(@as(i64, 0), i)),
-                .float => |f| @intFromFloat(@max(@as(f64, 0), f)),
-                else => continue,
-            };
-            if (cache >= usage) return 0;
-            return usage - cache;
-        }
-        return usage;
-    }
-
-    pub fn memLimit(self: Stats) u64 {
-        return self.memory_stats.limit;
-    }
-};
-
-test "cpu percent uses the previous sample, not the lifetime average" {
-    const json =
-        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},
-        \\ "precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000}}
-    ;
-    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    // (2e6 / 2e7) * 4 * 100 = 40%
-    try std.testing.expectApproxEqAbs(@as(f64, 40.0), parsed.value.cpuPercent(), 0.001);
-}
-
-test "a one-shot sample has no cpu to speak of" {
-    const json =
-        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4}}
-    ;
-    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    try std.testing.expectEqual(@as(f64, 0), parsed.value.cpuPercent());
-}
-
-test "memory is the working set, not the page cache" {
-    const json =
-        \\{"memory_stats":{"usage":104857600,"limit":1073741824,
-        \\ "stats":{"inactive_file":52428800,"anon":41943040}}}
-    ;
-    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    try std.testing.expectEqual(@as(u64, 52428800), parsed.value.memUsed());
-    try std.testing.expectEqual(@as(u64, 1073741824), parsed.value.memLimit());
-}
 
 pub const Mount = struct {
     Type: []const u8 = "",

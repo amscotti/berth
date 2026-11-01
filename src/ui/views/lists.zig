@@ -20,7 +20,10 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         return;
     }
 
-    const cols = [_]widgets.Col{
+    // With the detail pane open the list has ~430pt less room, so it keeps
+    // only the columns that answer "which container, and how busy".
+    const compact = s.selected != null;
+    const full_cols = [_]widgets.Col{
         .{ .name = "NAME", .width = 150 },
         .{ .name = "IMAGE", .width = 140 },
         .{ .name = "STATE", .width = 76 },
@@ -30,32 +33,44 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         .{ .name = "PORTS", .width = 100 },
         .{ .name = "ACTIONS", .width = 160 },
     };
-    widgets.tableHeader(c, &cols);
+    const narrow_cols = [_]widgets.Col{
+        .{ .name = "NAME", .width = 120 },
+        .{ .name = "STATE", .width = 70 },
+        .{ .name = "CPU", .width = 56, .align_end = true },
+        .{ .name = "MEM", .width = 70, .align_end = true },
+        .{ .name = "ACTIONS", .width = 150 },
+    };
+    widgets.tableHeader(c, if (compact) narrow_cols[0..] else full_cols[0..]);
 
     var rows = ui.list(c, .{ .count = s.containers.len, .row_height = ROW });
     while (rows.next()) |i| {
         const ct = s.containers[i];
-        const row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(7).bg(c.theme.surface);
+        const is_selected = s.selected != null and std.mem.eql(u8, s.selected.?, ct.Id);
+        const row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(7)
+            .bg(if (is_selected) c.theme.accent.alpha(0.10) else c.theme.surface);
         defer row.end();
+        if (row.clicked()) s.select(&ct);
 
         // One line per cell, and no deferred box that siblings fall into:
         // `defer name_cell.end()` would make everything after it a child of
         // the name column, which is why this row rendered vertically.
-        widgets.cell(c, ct.name(), 150, false);
-        widgets.cellMuted(c, ct.Image, 140, false);
-        widgets.pillCell(c, ct.State, 76);
+        widgets.cell(c, ct.name(), if (compact) 120 else 150, false);
+        if (!compact) widgets.cellMuted(c, ct.Image, 140, false);
+        widgets.pillCell(c, ct.State, if (compact) 70 else 76);
         const st = app.statFor(s, ct.Id);
         // A stopped container has no stats at all: say so with a dash rather
         // than a zero, which would read as "idle" instead of "unknown".
         if (ct.isRunning()) {
-            widgets.cell(c, format.percent(c, st.cpu), 62, true);
-            widgets.cell(c, format.bytes(c, st.mem), 78, true);
+            widgets.cell(c, format.percent(c, st.cpu), if (compact) 56 else 62, true);
+            widgets.cell(c, format.bytes(c, st.mem), if (compact) 70 else 78, true);
         } else {
-            widgets.cellMuted(c, "—", 62, true);
-            widgets.cellMuted(c, "—", 78, true);
+            widgets.cellMuted(c, "—", if (compact) 56 else 62, true);
+            widgets.cellMuted(c, "—", if (compact) 70 else 78, true);
         }
-        widgets.cellMuted(c, ct.project() orelse "—", 90, false);
-        widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 100, false);
+        if (!compact) {
+            widgets.cellMuted(c, ct.project() orelse "—", 90, false);
+            widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 100, false);
+        }
         actions(s, c, &ct);
     }
     rows.end();

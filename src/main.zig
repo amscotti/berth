@@ -52,6 +52,11 @@ pub fn main(init: std.process.Init) !void {
     if (getenv("BERTH_TAB")) |p| {
         state.tab = app_mod.tabFromName(std.mem.span(p)) orelse state.tab;
     }
+    // `BERTH_SELECT=<name>` opens that container's detail pane once the list
+    // arrives, so the pane can be snapshotted without a mouse.
+    if (getenv("BERTH_SELECT")) |p| {
+        state.pending_select = std.mem.span(p);
+    }
 
     // Find an engine and read it before the first frame, so the window opens
     // with data rather than a skeleton that fills in on its own.

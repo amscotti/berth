@@ -124,6 +124,14 @@ pub const State = struct {
     /// the theme is a window-creation option, not something to mutate.
     recreate: ?*const fn (*State) void = null,
 
+    /// The container whose detail pane is open, by id.
+    selected: ?[]const u8 = null,
+    selected_name: []const u8 = "",
+    log_text: []const u8 = "",
+    /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
+    /// detail pane can be snapshotted headlessly.
+    pending_select: []const u8 = "",
+
     step: Step = .idle,
     error_text: []const u8 = "",
     last_update: i64 = 0,
@@ -153,6 +161,26 @@ pub const State = struct {
     fn applyAppearance(ctx: ?*anyopaque) callconv(.c) void {
         const s: *State = @ptrCast(@alignCast(ctx.?));
         if (s.recreate) |reopen| reopen(s);
+    }
+
+    /// Opens a container's detail pane and reads its last 200 log lines.
+    pub fn select(s: *State, ct: *const api.Container) void {
+        s.selected = ct.Id;
+        s.selected_name = ct.name();
+        s.loadLogs(ct.Id);
+    }
+
+    pub fn clearSelection(s: *State) void {
+        s.selected = null;
+        s.selected_name = "";
+        s.log_text = "";
+        s.redraw();
+    }
+
+    fn loadLogs(s: *State, id: []const u8) void {
+        var client = s.client orelse return;
+        s.log_text = client.logs(id, 200) catch "could not read this container's logs";
+        s.redraw();
     }
 
     /// The view the window calls every frame.
@@ -351,6 +379,16 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
                 if (i < s.stats.len) s.stats[i] = .{ .id = ct.Id };
             }
             s.stat_i = 0;
+            if (s.pending_select.len > 0) {
+                for (s.containers) |ct| {
+                    if (std.mem.eql(u8, ct.name(), s.pending_select)) {
+                        s.selected = ct.Id;
+                        s.selected_name = ct.name();
+                        s.loadLogs(ct.Id);
+                        break;
+                    }
+                }
+            }
             s.redraw();
             s.step = .images;
         },
