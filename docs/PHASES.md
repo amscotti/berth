@@ -53,6 +53,23 @@ Settings rendering from the same snapshot.
 foundations. The foundation — engine discovery, protocol, typed API, shell,
 formatter, view dispatch — is real and exercised.
 
+**Verified against a live container** (`debian:bookworm-slim`, started for the
+test and removed afterwards): the Containers view lists it with name, image,
+state pill, project, ports and reachable action buttons; Images lists six images
+with tags, short IDs, sizes, ages and dangling/ready state.
+
+**What broke in P1, and the lesson**
+
+| Issue | Cause | Fix |
+|---|---|---|
+| A container row rendered *vertically*, with the name and image missing | `const name_cell = ui.div(...); defer name_cell.end();` — the defer fires at the end of the loop body, so every following sibling became a **child of the name column** | one cell per line, no deferred box that siblings fall into |
+| Cells sat centred instead of left-aligned | `itemsCenter()` on a **column** centres horizontally; vertical centring is `justifyCenter()` | `column().justifyCenter().itemsStart()` for cells, `itemsEnd()` for numbers |
+| Two edits appeared to apply but changed nothing | a scripted string replace that did not match, reported as success | use the `patch` tool, which fails loudly, and re-read the region after editing |
+
+That last one is the most expensive lesson of the phase: a silent no-op replace
+sent me chasing a layout bug that had already been fixed on paper. Verify the
+diff, not the intent.
+
 ## Cross-platform notes for the Mac
 
 - Every OS difference is behind `builtin.os.tag` or a constant; nothing Linux-only

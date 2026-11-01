@@ -8,7 +8,7 @@ const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const shell = @import("../shell.zig");
 
-const ROW = 40.0;
+const ROW = 44.0;
 
 pub fn containers(s: *app.State, c: *ui.Context) void {
     const count = c.print("{d} running · {d} total", .{ app.runningCount(s), s.containers.len });
@@ -21,11 +21,12 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     }
 
     const cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 200 },
-        .{ .name = "IMAGE", .width = 180 },
-        .{ .name = "STATE", .width = 96 },
-        .{ .name = "PORTS", .width = 150 },
-        .{ .name = "ACTIONS", .width = 190 },
+        .{ .name = "NAME", .width = 170 },
+        .{ .name = "IMAGE", .width = 170 },
+        .{ .name = "STATE", .width = 90 },
+        .{ .name = "PROJECT", .width = 120 },
+        .{ .name = "PORTS", .width = 130 },
+        .{ .name = "ACTIONS", .width = 180 },
     };
     widgets.tableHeader(c, &cols);
 
@@ -34,24 +35,22 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         const ct = s.containers[i];
         const row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(7).bg(c.theme.surface);
         defer row.end();
-        if (row.clicked()) s.tab = .containers;
 
-        const name_cell = ui.div(c).column().w(200).gap(0);
-        defer name_cell.end();
-        ui.text(c, ct.name(), .{ .size = 13, .weight = .medium, .truncate = .ellipsis });
-        if (ct.project()) |p| ui.text(c, p, .{ .size = 11, .color = c.theme.muted, .truncate = .ellipsis });
-
-        widgets.cellMuted(c, ct.Image, 180, false);
+        // One line per cell, and no deferred box that siblings fall into:
+        // `defer name_cell.end()` would make everything after it a child of
+        // the name column, which is why this row rendered vertically.
+        widgets.cell(c, ct.name(), 200, false);
+        widgets.cellMuted(c, ct.Image, 170, false);
         widgets.pill(c, ct.State);
-        widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 150, false);
-
+        widgets.cellMuted(c, ct.project() orelse "—", 120, false);
+        widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 130, false);
         actions(s, c, &ct);
     }
     rows.end();
 }
 
 fn actions(s: *app.State, c: *ui.Context, ct: *const @import("../../engine/api.zig").Container) void {
-    const row = ui.div(c).row().w(190).itemsCenter().gap(6);
+    const row = ui.div(c).row().w(180).h(24).itemsCenter().gap(4);
     defer row.end();
     if (ct.isRunning()) {
         if (smallButton(c, "Stop", false)) s.confirm(ct.Id, ct.name(), "Stop", "POST", "/containers/{s}/stop");
@@ -64,9 +63,9 @@ fn actions(s: *app.State, c: *ui.Context, ct: *const @import("../../engine/api.z
 
 fn smallButton(c: *ui.Context, label: []const u8, danger: bool) bool {
     const color = if (danger) c.theme.danger else c.theme.text;
-    const box = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11).bg(c.theme.surface_hover);
+    const box = ui.div(c).row().h(20).px(7).itemsCenter().rounded(10).bg(c.theme.surface_hover);
     defer box.end();
-    ui.text(c, label, .{ .size = 11, .color = color });
+    ui.text(c, label, .{ .size = 10.5, .color = color });
     return box.clicked();
 }
 
