@@ -14,6 +14,7 @@ const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
 const History = @import("ui/history.zig").History;
 const host = @import("host/host.zig");
+const tabs = @import("tabs.zig");
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -34,72 +35,9 @@ fn systemPrefersDark() bool {
 }
 const shell = @import("ui/shell.zig");
 
-/// What the container list shows. Filters are per view and stay where the
-/// user left them, but they are visible as chips — a filtered list must never
-/// look like a short one.
-pub const Filter = enum {
-    all,
-    running,
-    stopped,
-
-    pub fn label(self: Filter) []const u8 {
-        return switch (self) {
-            .all => "All",
-            .running => "Running",
-            .stopped => "Stopped",
-        };
-    }
-
-    pub fn keeps(self: Filter, ct: *const api.Container) bool {
-        return switch (self) {
-            .all => true,
-            .running => ct.isRunning(),
-            .stopped => !ct.isRunning(),
-        };
-    }
-};
-
-pub const Tab = enum {
-    overview,
-    containers,
-    images,
-    volumes,
-    networks,
-    stacks,
-    disk,
-    runtimes,
-    settings,
-
-    pub fn label(self: Tab) []const u8 {
-        return switch (self) {
-            .overview => "Overview",
-            .containers => "Containers",
-            .images => "Images",
-            .volumes => "Volumes",
-            .networks => "Networks",
-            .stacks => "Stacks",
-            .disk => "Disk",
-            .runtimes => "Runtimes",
-            .settings => "Settings",
-        };
-    }
-
-    /// The fixed icon vocabulary from the design contract: these are the only
-    /// names the framework draws on both platforms.
-    pub fn icon(self: Tab) []const u8 {
-        return switch (self) {
-            .overview => "cpu",
-            .containers => "cube",
-            .images => "doc",
-            .volumes => "folder",
-            .networks => "network",
-            .stacks => "code",
-            .disk => "internaldrive",
-            .runtimes => "desktopcomputer",
-            .settings => "pencil",
-        };
-    }
-};
+pub const Tab = tabs.Tab;
+pub const Filter = tabs.Filter;
+pub const tabFromName = tabs.tabFromName;
 
 const Step = enum { idle, ping, version, info, containers, images, volumes, networks, stats, df, done };
 
@@ -581,22 +519,6 @@ pub fn statFor(s: *State, id: []const u8) Stat {
         if (std.mem.eql(u8, st.id, id)) return st;
     }
     return .{};
-}
-
-/// A tab by its name, for `BERTH_TAB`. A plain table: reflection over an
-/// enum's field names changed shape in 0.17 and buys nothing here.
-pub fn tabFromName(name: []const u8) ?Tab {
-    const pairs = [_]struct { n: []const u8, t: Tab }{
-        .{ .n = "overview", .t = .overview }, .{ .n = "containers", .t = .containers },
-        .{ .n = "images", .t = .images },     .{ .n = "volumes", .t = .volumes },
-        .{ .n = "networks", .t = .networks }, .{ .n = "stacks", .t = .stacks },
-        .{ .n = "disk", .t = .disk },         .{ .n = "runtimes", .t = .runtimes },
-        .{ .n = "settings", .t = .settings },
-    };
-    for (pairs) |pair| {
-        if (std.ascii.eqlIgnoreCase(name, pair.n)) return pair.t;
-    }
-    return null;
 }
 
 /// The timer that keeps the graphs fed: one refresh, then it re-arms itself
