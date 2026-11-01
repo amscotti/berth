@@ -179,9 +179,18 @@ on the Mac. It is small on purpose. Expect to fix a type or a sysctl name.
 no error**. Both were tried and both "succeeded". The fix is a plain
 `posix.read` loop until EOF. Silent empties are worse than failures.
 
-**Still missing in P3:** per-process attribution (the engine's own RSS, so
-"engine overhead" is a third segment), and macOS VM attribution
-(`proc_pid_rusage`'s `phys_footprint`). Both are Mac-side work.
+**The third segment is in.** The bar now reads *containers · engine ·
+elsewhere*, and the engine's share comes from a `/proc` walk summing the
+resident memory of `dockerd`, `containerd`, `docker-proxy` and `podman` —
+deliberately excluding containerd shims, which are per-container overhead and
+would double-count. Measured here with one 64 MiB container: **containers
+64.8 MiB · engine 110.9 MiB · elsewhere 4.3 GiB**. The two small segments are
+nearly invisible at the left of the bar, which is the truth rather than a
+design flaw — the legend carries the numbers.
+
+**Still missing in P3:** macOS engine and VM attribution
+(`proc_pid_rusage`'s `phys_footprint`, and Docker Desktop's VM process). Both
+are Mac-side work.
 
 ## Deferred: a UI/UX review before this is called finished
 

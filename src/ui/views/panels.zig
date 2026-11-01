@@ -93,21 +93,32 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
     });
     head.end();
 
-    // Two segments only: what the containers hold, and everything else. On a
-    // Mac "everything else" includes the engine's VM, which is exactly why the
-    // figure is labelled rather than implied.
+    // Three segments now: what the containers hold, what the engine itself
+    // holds, and the rest of the machine. On a Mac the engine's share is its
+    // VM; here it is the daemon's own processes.
     const in_containers = @min(containers_mem, used);
-    const frac = if (total == 0) 0 else @as(f32, @floatFromInt(in_containers)) / @as(f32, @floatFromInt(total));
+    const engine = @min(s.host_sample.engine_rss, used - in_containers);
+    const elsewhere = used - in_containers - engine;
     const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track);
-    if (frac > 0) {
-        const piece = ui.div(c).w(@max(@as(f32, 2), 880.0 * frac)).h(8).rounded(4).bg(c.theme.accent);
+    const parts = [_]struct { bytes: u64, color: ui.Color }{
+        .{ .bytes = in_containers, .color = c.theme.accent },
+        .{ .bytes = engine, .color = .hex(0xff9f0a) },
+    };
+    // Widths come from the machine's total, so the bar is the whole machine
+    // and the empty track is the memory nobody is using.
+    const span: f32 = 880.0;
+    for (parts) |part| {
+        if (part.bytes == 0) continue;
+        const frac = @as(f32, @floatFromInt(part.bytes)) / @as(f32, @floatFromInt(@max(total, 1)));
+        const piece = ui.div(c).w(@max(@as(f32, 2), span * frac)).h(8).rounded(4).bg(part.color);
         defer piece.end();
     }
     bar.end();
 
-    ui.text(c, c.print("containers {s} · elsewhere {s}", .{
+    ui.text(c, c.print("containers {s} · engine {s} · elsewhere {s}", .{
         format.bytes(c, in_containers),
-        format.bytes(c, used - in_containers),
+        format.bytes(c, engine),
+        format.bytes(c, elsewhere),
     }), .{ .size = 11, .color = c.theme.muted });
 }
 
