@@ -34,6 +34,31 @@ fn systemPrefersDark() bool {
 }
 const shell = @import("ui/shell.zig");
 
+/// What the container list shows. Filters are per view and stay where the
+/// user left them, but they are visible as chips — a filtered list must never
+/// look like a short one.
+pub const Filter = enum {
+    all,
+    running,
+    stopped,
+
+    pub fn label(self: Filter) []const u8 {
+        return switch (self) {
+            .all => "All",
+            .running => "Running",
+            .stopped => "Stopped",
+        };
+    }
+
+    pub fn keeps(self: Filter, ct: *const api.Container) bool {
+        return switch (self) {
+            .all => true,
+            .running => ct.isRunning(),
+            .stopped => !ct.isRunning(),
+        };
+    }
+};
+
 pub const Tab = enum {
     overview,
     containers,
@@ -106,6 +131,7 @@ pub const State = struct {
     window: ?*nanoui.Window = null,
 
     tab: Tab = .overview,
+    filter: Filter = .all,
     runtimes: []discovery.Runtime = &.{},
     active: usize = 0,
 

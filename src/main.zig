@@ -59,6 +59,11 @@ pub fn main(init: std.process.Init) !void {
     }
     // `BERTH_ACT=stop:<name>` runs an action once the list arrives, through the
     // same code path a click uses.
+    if (getenv("BERTH_FILTER")) |p| {
+        const name = std.mem.span(p);
+        if (std.ascii.eqlIgnoreCase(name, "running")) state.filter = .running;
+        if (std.ascii.eqlIgnoreCase(name, "stopped")) state.filter = .stopped;
+    }
     if (getenv("BERTH_ACT")) |p| {
         state.pending_act = std.mem.span(p);
         state.auto_refresh = false; // one action, then stop refreshing

@@ -182,3 +182,29 @@ no error**. Both were tried and both "succeeded". The fix is a plain
 **Still missing in P3:** per-process attribution (the engine's own RSS, so
 "engine overhead" is a third segment), and macOS VM attribution
 (`proc_pid_rusage`'s `phys_footprint`). Both are Mac-side work.
+
+## Deferred: a UI/UX review before this is called finished
+
+Not urgent, but it is a gate on "done", not a nice-to-have. When the features
+settle, run a design review against the rendered snapshots rather than the code:
+
+**What to check**
+1. Every view against the design contract (§10 of the plan): tokens only, the
+   four states, the fixed icon set, one primary action per region.
+2. Spacing and alignment at the pixel level — the header/row width contract has
+   already drifted twice, and it drifts silently.
+3. Colour: light and dark, and greyscale (status must survive losing colour).
+4. Density: does a 40-row list read as calm or as a spreadsheet?
+5. Type scale: no more than three sizes per view; are the numbers the loudest
+   thing on the page, as they should be in a monitor?
+6. The empty, error and stale states — the ones nobody designs and everybody hits.
+
+**How** — a fresh pair of eyes, not the author's: re-read `docs/ui/*.png` in
+both themes, and compare against the four graphs and the shell for consistency.
+Skills worth loading for it: `popular-web-designs` (real design systems as
+reference), `claude-design` (layout and typography critique), `dogfood` (an
+exploratory pass hunting for states that break). None of them is a native-app
+reviewer, so the value is in the heuristics, not the tooling.
+
+**Deliverable**: a list of concrete defects with a screenshot reference each,
+fixed or consciously declined — not a rewrite.

@@ -11,12 +11,49 @@ const shell = @import("../shell.zig");
 const ROW = 44.0;
 
 pub fn containers(s: *app.State, c: *ui.Context) void {
-    const count = c.print("{d} running · {d} total", .{ app.runningCount(s), s.containers.len });
-    widgets.pageHeader(c, "Containers", count);
+    // The rows this filter keeps, chosen once so the count and the list agree.
+    var shown: [512]*const @import("../../engine/api.zig").Container = undefined;
+    var n: usize = 0;
+    for (s.containers) |*ct| {
+        if (!s.filter.keeps(ct)) continue;
+        if (n == shown.len) break;
+        shown[n] = ct;
+        n += 1;
+    }
+
+    const subtitle = if (s.filter == .all)
+        c.print("{d} running · {d} total", .{ app.runningCount(s), s.containers.len })
+    else
+        c.print("{d} of {d} shown", .{ n, s.containers.len });
+    widgets.pageHeader(c, "Containers", subtitle);
+
+    // Filter chips, in the same place and shape on every view that grows one.
+    const chips = ui.div(c).row().gap(6).pb(8);
+    for ([_]app.Filter{ .all, .running, .stopped }) |option| {
+        const on = s.filter == option;
+        const chip = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12)
+            .bg(if (on) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+        defer chip.end();
+        ui.text(c, option.label(), .{
+            .size = 11.5,
+            .weight = if (on) .medium else .regular,
+            .color = if (on) c.theme.accent else c.theme.text,
+        });
+        if (chip.clicked()) {
+            s.filter = option;
+            s.redraw();
+        }
+    }
+    chips.end();
+
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
 
-    if (s.containers.len == 0) {
-        widgets.emptyState(c, "cube", "No containers yet", "docker run --rm -it alpine sh");
+    if (n == 0) {
+        if (s.containers.len == 0) {
+            widgets.emptyState(c, "cube", "No containers yet", "docker run --rm -it alpine sh");
+        } else {
+            widgets.emptyState(c, "cube", "None match this filter", "All shows every container");
+        }
         return;
     }
 
@@ -42,9 +79,9 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     };
     widgets.tableHeader(c, if (compact) narrow_cols[0..] else full_cols[0..]);
 
-    var rows = ui.list(c, .{ .count = s.containers.len, .row_height = ROW });
+    var rows = ui.list(c, .{ .count = n, .row_height = ROW });
     while (rows.next()) |i| {
-        const ct = s.containers[i];
+        const ct = shown[i].*;
         const is_selected = s.selected != null and std.mem.eql(u8, s.selected.?, ct.Id);
         const row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(7)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else c.theme.surface);
