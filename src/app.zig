@@ -136,6 +136,11 @@ pub const State = struct {
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
+    /// `verb:name` to run once the list arrives (`BERTH_ACT`), so the action
+    /// path can be exercised without a mouse: "stop:web", "restart:db".
+    pending_act: []const u8 = "",
+    /// The act being run, kept while `pending_act` is cleared.
+    pending_act_saved: []const u8 = "",
 
     /// What the overview graphs: a few minutes of what the engine has been
     /// doing, sampled once per refresh.
@@ -158,6 +163,33 @@ pub const State = struct {
             .light => ui.Theme.light,
             .dark => ui.Theme.dark_theme,
         };
+    }
+
+    /// Resolves the container named in `pending_act` and runs the verb against
+    /// it through the same path the buttons use.
+    fn runPendingAct(s: *State) void {
+        const spec = s.pending_act_saved;
+        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return;
+        const verb = spec[0..colon];
+        const name = spec[colon + 1 ..];
+        for (s.containers) |ct| {
+            if (!std.mem.eql(u8, ct.name(), name)) continue;
+            var buf: [256]u8 = undefined;
+            if (std.mem.eql(u8, verb, "stop")) {
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/stop", .{ct.Id}) catch return;
+                s.act("POST", path, "Stopped");
+            } else if (std.mem.eql(u8, verb, "start")) {
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return;
+                s.act("POST", path, "Started");
+            } else if (std.mem.eql(u8, verb, "restart")) {
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return;
+                s.act("POST", path, "Restarted");
+            } else if (std.mem.eql(u8, verb, "delete")) {
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}?force=1", .{ct.Id}) catch return;
+                s.act("DELETE", path, "Deleted");
+            }
+            return;
+        }
     }
 
     /// Saves the choice, then opens the window again with it — after this
@@ -488,6 +520,14 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
             s.last_update = format.now();
             s.step = .done;
             s.sample();
+            // Only now is it safe to act: `act` starts a new refresh, and
+            // doing that from inside a step let this chain overwrite it.
+            if (s.pending_act.len > 0) {
+                const spec = s.pending_act;
+                s.pending_act = "";
+                s.pending_act_saved = spec;
+                s.runPendingAct();
+            }
             s.redraw();
             if (s.auto_refresh) nanoui.App.after(5000, s, autoTick);
         },

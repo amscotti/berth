@@ -91,6 +91,32 @@ diff, not the intent.
 - The theme is a **window-creation** option, so a change reopens the window with the new theme after the current frame (never during it, which would close the window being painted). State survives; only scroll position is lost.
 - macOS passes no theme in System mode, so the framework follows the desktop **live**; Linux has no appearance notification here, so `GTK_THEME` is read once at window creation. This asymmetry is deliberate and documented in `themeFor`.
 
+## P2 — actions — VERIFIED
+
+Start, stop and delete were taken on faith until now. They are proven against a
+live container, through the app's own code path (the same function the buttons
+call), with the engine's own state checked before and after:
+
+| Verb | before | after |
+|---|---|---|
+| `stop` | `running` | `exited` |
+| `start` | `exited` | `running` |
+| `delete` | present | gone |
+
+The UI agrees: a stopped container reads `exited`, its CPU and memory show `—`
+rather than `0`, and its row offers **Start** instead of **Stop**. A toast names
+what happened.
+
+The confirmation dialog the buttons raise is now actually rendered — it existed
+as a function that nothing called, which would have made Delete silent.
+
+**A re-entrancy bug this surfaced.** Running the action from inside the
+containers step meant `act()` started a refresh, and then the step being
+interrupted retired it — the list came back empty and the row vanished. Actions
+now run at the *end* of the refresh chain, where a new refresh cannot be
+clobbered. The lesson generalises: **a callback that starts work must not run
+inside another callback that is still writing state.**
+
 ## Overview graphs — following nanomon
 
 nanomon (same framework, same author) draws its charts as **cell graphs**: a

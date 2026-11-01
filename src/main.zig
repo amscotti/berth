@@ -57,6 +57,12 @@ pub fn main(init: std.process.Init) !void {
     if (getenv("BERTH_SELECT")) |p| {
         state.pending_select = std.mem.span(p);
     }
+    // `BERTH_ACT=stop:<name>` runs an action once the list arrives, through the
+    // same code path a click uses.
+    if (getenv("BERTH_ACT")) |p| {
+        state.pending_act = std.mem.span(p);
+        state.auto_refresh = false; // one action, then stop refreshing
+    }
 
     // Find an engine and read it before the first frame, so the window opens
     // with data rather than a skeleton that fills in on its own.

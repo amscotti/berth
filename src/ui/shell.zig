@@ -23,6 +23,7 @@ pub fn view(s: *app.State, c: *ui.Context) void {
     rail(s, c);
     const main = ui.div(c).column().grow().hFull().px(20).pt(16).gap(4);
     header(s, c);
+    if (s.pending) |p| confirmDialog(s, c, p.verb, p.name);
     body(s, c);
     footer(s, c);
     main.end(); // before the detail pane, or the pane becomes a child of it
