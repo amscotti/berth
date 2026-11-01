@@ -13,6 +13,7 @@ const api = @import("engine/api.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
 const History = @import("ui/history.zig").History;
+const host = @import("host/host.zig");
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -145,6 +146,9 @@ pub const State = struct {
     /// What the overview graphs: a few minutes of what the engine has been
     /// doing, sampled once per refresh.
     history: History = .{},
+    /// The machine itself, sampled alongside the engine.
+    host: host.Sampler = .{},
+    host_sample: host.Sample = .{},
     /// Keep sampling on a timer, so the graphs move without a click.
     auto_refresh: bool = true,
 
@@ -222,7 +226,15 @@ pub const State = struct {
         }
         var disk: f32 = 0;
         if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.imageBytes()));
-        s.history.push(.{ .cpu = cpu, .mem = mem, .running = running, .disk = disk });
+        s.host_sample = s.host.sample(s.io, s.gpa);
+        s.history.push(.{
+            .cpu = cpu,
+            .mem = mem,
+            .running = running,
+            .disk = disk,
+            .host_cpu = s.host_sample.cpu_percent,
+            .host_mem = @floatFromInt(s.host_sample.mem_used),
+        });
     }
 
     /// Opens a container's detail pane and reads its last 200 log lines.

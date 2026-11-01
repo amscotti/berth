@@ -5,4 +5,6 @@ test {
     _ = @import("engine/stats.zig");
     _ = @import("engine/discovery.zig");
     _ = @import("ui/format.zig");
+    _ = @import("host/host.zig");
+    _ = @import("ui/history.zig");
 }

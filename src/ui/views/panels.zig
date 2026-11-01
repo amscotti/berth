@@ -31,14 +31,16 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     const cpu_share = cpu_sum / (cores * 100.0) * 100.0;
 
     const top = ui.div(c).row().wFull().gap(12).pb(12);
-    graphCard(s, c, "CPU", format.percent(c, cpu_share), .cpu, c.theme.accent, 100);
-    graphCard(s, c, "MEMORY", format.bytes(c, mem_sum), .mem, c.theme.success, @floatFromInt(@max(info.MemTotal, 1)));
+    graphCard(s, c, "CONTAINERS · CPU", format.percent(c, cpu_share), .cpu, c.theme.accent, 100);
+    graphCard(s, c, "CONTAINERS · MEMORY", format.bytes(c, mem_sum), .mem, c.theme.success, @floatFromInt(@max(info.MemTotal, 1)));
     top.end();
 
     const bottom = ui.div(c).row().wFull().gap(12).pb(12);
     graphCard(s, c, "CONTAINERS RUNNING", c.print("{d}", .{app.runningCount(s)}), .running, .hex(0xff9f0a), @max(s.history.peak(.running) * 2, 4));
     graphCard(s, c, "DISK", format.bytes(c, @as(u64, @intCast(@max(0, if (s.df) |df| df.imageBytes() else 0)))), .disk, c.theme.muted, @max(s.history.peak(.disk) * 1.6, 1));
     bottom.end();
+
+    hostCard(s, c, mem_sum);
 
     // The three-layer memory model starts here: on macOS the engine lives in a
     // VM, so container figures are "of the VM", never "of the machine". We show
@@ -66,6 +68,47 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     engine_card.end(); // before the disk breakdown, or the bar becomes its child
 
     if (s.df) |df| diskBar(c, df, "Disk (engine)");
+}
+
+/// The machine, and how much of it the containers account for. This is the
+/// question a container monitor owes an answer to and rarely gives: containers
+/// use this much, the rest of the machine uses that much.
+fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
+    const total = s.host_sample.mem_total;
+    const used = s.host_sample.mem_used;
+    if (total == 0) return; // nothing readable here; say nothing rather than zero
+
+    const card = ui.div(c).column().wFull().gap(8).p(14).rounded(10).bg(c.theme.surface).border(c.theme.border);
+    defer card.end();
+
+    const head = ui.div(c).row().wFull().itemsCenter().gap(12);
+    ui.text(c, "HOST", .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+    ui.text(c, format.bytes(c, used), .{ .size = 18, .weight = .semibold, .tabular = true });
+    ui.text(c, c.print("of {s} in use", .{format.bytes(c, total)}), .{ .size = 11.5, .color = c.theme.muted });
+    ui.spacer(c);
+    ui.text(c, c.print("CPU {s}", .{format.percent(c, s.host_sample.cpu_percent)}), .{
+        .size = 11.5,
+        .color = c.theme.muted,
+        .tabular = true,
+    });
+    head.end();
+
+    // Two segments only: what the containers hold, and everything else. On a
+    // Mac "everything else" includes the engine's VM, which is exactly why the
+    // figure is labelled rather than implied.
+    const in_containers = @min(containers_mem, used);
+    const frac = if (total == 0) 0 else @as(f32, @floatFromInt(in_containers)) / @as(f32, @floatFromInt(total));
+    const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track);
+    if (frac > 0) {
+        const piece = ui.div(c).w(@max(@as(f32, 2), 880.0 * frac)).h(8).rounded(4).bg(c.theme.accent);
+        defer piece.end();
+    }
+    bar.end();
+
+    ui.text(c, c.print("containers {s} · elsewhere {s}", .{
+        format.bytes(c, in_containers),
+        format.bytes(c, used - in_containers),
+    }), .{ .size = 11, .color = c.theme.muted });
 }
 
 /// A figure and its history: the number answers "now", the graph answers

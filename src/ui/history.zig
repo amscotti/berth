@@ -8,13 +8,15 @@ const std = @import("std");
 
 pub const Cap = 120;
 
-pub const Which = enum { cpu, mem, running, disk };
+pub const Which = enum { cpu, mem, running, disk, host_cpu, host_mem };
 
 pub const Sample = struct {
     cpu: f32 = 0,
     mem: f32 = 0,
     running: f32 = 0,
     disk: f32 = 0,
+    host_cpu: f32 = 0,
+    host_mem: f32 = 0,
 };
 
 pub const History = struct {
@@ -22,6 +24,8 @@ pub const History = struct {
     mem: [Cap]f32 = @splat(0),
     running: [Cap]f32 = @splat(0),
     disk: [Cap]f32 = @splat(0),
+    host_cpu: [Cap]f32 = @splat(0),
+    host_mem: [Cap]f32 = @splat(0),
     count: usize = 0,
 
     pub fn push(h: *History, s: Sample) void {
@@ -31,12 +35,16 @@ pub const History = struct {
             std.mem.copyForwards(f32, h.mem[0 .. Cap - 1], h.mem[1..Cap]);
             std.mem.copyForwards(f32, h.running[0 .. Cap - 1], h.running[1..Cap]);
             std.mem.copyForwards(f32, h.disk[0 .. Cap - 1], h.disk[1..Cap]);
+            std.mem.copyForwards(f32, h.host_cpu[0 .. Cap - 1], h.host_cpu[1..Cap]);
+            std.mem.copyForwards(f32, h.host_mem[0 .. Cap - 1], h.host_mem[1..Cap]);
             h.count = Cap - 1;
         }
         h.cpu[h.count] = s.cpu;
         h.mem[h.count] = s.mem;
         h.running[h.count] = s.running;
         h.disk[h.count] = s.disk;
+        h.host_cpu[h.count] = s.host_cpu;
+        h.host_mem[h.count] = s.host_mem;
         h.count += 1;
     }
 
@@ -46,6 +54,8 @@ pub const History = struct {
             .mem => h.mem[0..h.count],
             .running => h.running[0..h.count],
             .disk => h.disk[0..h.count],
+            .host_cpu => h.host_cpu[0..h.count],
+            .host_mem => h.host_mem[0..h.count],
         };
     }
 
@@ -71,8 +81,9 @@ test "history fills, then drops the oldest" {
     var i: usize = 2;
     while (i <= Cap + 5) : (i += 1) h.push(.{ .cpu = @floatFromInt(i) });
     try std.testing.expectEqual(@as(usize, Cap), h.count);
-    // The window keeps the newest Cap samples: 11..=130.
+    // 1, then 2..=Cap+5 is Cap+5 samples; the window keeps the newest Cap of
+    // them, which start at (Cap + 6) - Cap = 6 and end at Cap + 5.
     try std.testing.expectEqual(@as(f32, @floatFromInt(Cap + 5)), h.latest(.cpu));
-    try std.testing.expectEqual(@as(f32, 11), h.values(.cpu)[0]);
+    try std.testing.expectEqual(@as(f32, 6), h.values(.cpu)[0]);
     try std.testing.expectEqual(@as(f32, @floatFromInt(Cap + 5)), h.peak(.cpu));
 }

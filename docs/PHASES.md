@@ -159,3 +159,26 @@ re-resolved into the new arena by id.
 ## Next
 P1 completion (stats, detail, search) → P2 (actions, verified against real
 containers) → P3 (VM context, multi-runtime switching) → P4 (logs, packaging).
+
+## P3 — the host, and where the memory goes — PARTIAL
+
+**Linux: done and verified.** `/proc/meminfo` and `/proc/stat`, parsed by pure
+functions with tests, sampled once per refresh with the previous CPU ticks kept
+so a counter becomes a percentage. The Overview now answers the question a
+container monitor owes: **5.0 GiB of 9.6 GiB in use, CPU 38.9%, containers 0 B
+· elsewhere 5.0 GiB** — the bar splits what the containers hold from the rest.
+
+**macOS: written, deliberately unbuilt.** `src/host/macos.zig` uses only
+`sysctlbyname` with integer results (`hw.memsize`, `vm.page_active_count`,
+`vm.page_wire_count`, `vm.compressor_page_count`, `kern.cp_time`) and no Mach
+structs, because this machine has no macOS SDK and the first build will happen
+on the Mac. It is small on purpose. Expect to fix a type or a sysctl name.
+
+**The trap worth remembering:** procfs files report `st_size` as **0**, so
+`readFileAlloc` — and the buffered `Io` reader — return an **empty string with
+no error**. Both were tried and both "succeeded". The fix is a plain
+`posix.read` loop until EOF. Silent empties are worse than failures.
+
+**Still missing in P3:** per-process attribution (the engine's own RSS, so
+"engine overhead" is a third segment), and macOS VM attribution
+(`proc_pid_rusage`'s `phys_footprint`). Both are Mac-side work.
