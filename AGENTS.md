@@ -1,41 +1,93 @@
-# berth — working notes for agents and people
+# Working in berth
 
-A native monitor for container runtimes (Docker, Podman, Colima, Lima) in Zig
-0.17 with nanoui. macOS and Linux. Read `docs/PHASES.md` for where the work
-stands.
+Notes for whoever — or whatever — picks this up next. The short version: this
+is a Zig 0.17 app built on nanoui, it monitors container runtimes, and most of
+the rules below exist because ignoring them cost a day.
 
-## Hard rules
-
-- **600 lines per file.** `zig build lines` enforces it.
-- **No C shims.** `extern` declarations and libc calls only; no `@cImport`.
-- **Zig 0.17 APIs.** `std.Io` for I/O, `std.process.spawn`, `Context.print` for
-  frame-allocated strings, `std.Io.net.UnixAddress` for sockets.
-- **Nothing polls.** Data arrives from the engine; the window redraws when a
-  snapshot changes.
-- **UI on the main thread.** `App.after(0, …)` for the refresh chain,
-  `App.onMain` for anything posted from elsewhere.
-- **No phase names in code.** Comments cite behaviour, not plan phases.
-
-## Shape
-
-```
-src/main.zig        app, window, BERTH_TAB
-src/app.zig         State, refresh machine, actions
-src/engine/         http_uds (protocol), api (types), discovery (sockets)
-src/ui/shell.zig    rail, status bar, page dispatch
-src/ui/widgets.zig  row anatomy, cells, pills, empty states
-src/ui/format.zig   the only number/time formatter
-src/ui/views/       lists (4 views), panels (4 views), stacks
-```
-
-## Checking work
+## Commands
 
 ```sh
-zig build test                      # protocol, JSON, formatting
-zig build lines                     # the 600-line rule
-sudo ./zig-out/bin/berth --nanoui-snapshot=/tmp/s.png --nanoui-wait=2
-BERTH_TAB=images sudo -E ./zig-out/bin/berth --nanoui-snapshot=/tmp/i.png --nanoui-wait=2
+zig build                 # debug binary at zig-out/bin/berth
+zig build run             # build and open the window
+zig build test            # no engine, no display needed
+zig build lines           # the 600-line rule; part of every phase's gate
+zig build dist            # ReleaseFast + tarball in zig-out/dist
 ```
 
-`sudo` is only needed because the socket belongs to the `docker` group on this
-machine; the app needs no privileges of its own.
+**Every phase ends with all four gates green**: build, test, lines, and a
+snapshot of the view you touched.
+
+## Seeing the UI without a display
+
+```sh
+BERTH_TAB=overview   zig-out/bin/berth --nanoui-snapshot=/tmp/a.png --nanoui-wait=12
+BERTH_TAB=containers BERTH_FILTER=running ...
+BERTH_TAB=containers BERTH_SELECT=<name> ...
+BERTH_TAB=containers BERTH_ACT=stop:<name> ...
+```
+
+`--nanoui-wait` is not optional in practice: it runs the event loop for that
+many seconds first. A snapshot without it catches a skeleton. Then **look at the
+PNG** — do not assume a layout change worked because it compiled.
+
+Docker on this box is `sudo -n docker …`; the user is not in the `docker` group.
+
+## How the app is shaped
+
+- **One refresh chain.** `State.refresh()` → version/info → containers → stats →
+  images → volumes → networks → df → `.done`. Each step is a callback; nothing
+  polls. The 5 s timer re-arms itself from the *end* of the chain.
+- **Actions run at the end of the chain**, after `s.step = .done; s.sample();`.
+  Running one inside a step lets the tick retire the refresh that started it —
+  that bug showed as "0 running · 0 total" with the row gone.
+- **The frame arena owns every string.** User-visible text goes through
+  `c.print`; a stack `bufPrint` buffer dies before paint and renders as `aaa`.
+- **Arenas rotate.** The refresh arena from last cycle stays alive one more
+  cycle, because the frame can hold slices into it. Freeing it at the end of the
+  refresh segfaults in `memcpy` about a second later.
+- **Selection is re-resolved by id** every refresh, never held as a pointer.
+
+## nanoui rules that are not obvious
+
+- Inside `ui.list`, rows must be `ui.row(c, .{…})` … `ui.end(c)`. A bare
+  `ui.div` row floats above its slot.
+- **Never** `defer x.end()` inside a `for` or `inline for` over repeated items —
+  the boxes nest. Use a runtime `for` and close explicitly. This has caused
+  three separate layout bugs, including one where a metrics row swallowed the
+  card below it.
+- On a **column**, `itemsCenter()` centres horizontally and `justifyCenter()`
+  centres vertically. It is the reverse of the CSS reflex.
+- `Div.grow()` takes **no** argument. It is a flag, not a weight. Proportional
+  segments need explicit widths.
+- A widget's intrinsic width shifts every later column. Status pills go through
+  `widgets.pillCell` with a fixed slot.
+- `std.Io.Dir.openDirAbsolute(io, path, opts)` is namespaced, not a method on
+  `cwd()`.
+
+## Zig 0.17 traps hit here
+
+- `std.process.Child.init` is gone: `std.process.spawn(io, .{ .argv = … })`, then
+  `child.wait(io)`. `std.process.run(gpa, io, …)` is blocking.
+- `std.Io.net.UnixAddress` with `init`/`connect(io)`/`listen(io)`.
+- **procfs reports `st_size` 0.** `readFileAlloc` and the buffered `Io` reader
+  both return an **empty string, no error**. Read `/proc` with a `posix.read`
+  loop until EOF. This cost hours and produced two "successful" empty reads.
+
+## Data rules
+
+- `/stats?stream=false` waits **two collection cycles** (~2 s per container)
+  unless `one-shot=true`, and `one-shot` empties `precpu_stats`, which makes CPU%
+  fall back to a lifetime average. Never use it.
+- Unknown is not zero: a stopped container shows `—`, never `0`.
+- Memory is a working set: `usage − inactive_file` (`total_inactive_file`, then
+  `cache`, as fallbacks).
+- Graphs use fixed, honest scales. Auto-scaling made 900 KiB of 9.6 GiB look
+  full.
+- The host bar is three segments — containers, engine, elsewhere. Containerd
+  shims are excluded from "engine" or per-container memory counts twice.
+
+## Rules of the codebase
+
+600 lines per file, no C shims, no phase names in code or comments, and
+comments explain *why* rather than restating the line. `docs/PHASES.md` records
+what broke and why, phase by phase — read the phase you are about to touch.

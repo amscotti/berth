@@ -217,3 +217,32 @@ reviewer, so the value is in the heuristics, not the tooling.
 
 **Deliverable**: a list of concrete defects with a screenshot reference each,
 fixed or consciously declined — not a rewrite.
+
+## P4 — packaging and handoff — STARTED
+
+**Done**
+
+- `zig build dist` — a ReleaseFast, stripped binary and a tarball named for the
+  platform it was built on. Measured: **1.43 MB stripped**, **490 KB** gzipped,
+  ~2 minutes cold on this box. The tarball was unpacked and the binary run from
+  the unpacked directory, because a tarball that contains a broken binary is
+  worse than no tarball: it rendered Images live from the engine.
+- `README.md` — what works, what does not (honestly, including the macOS file
+  that has never been compiled), how to build, and the headless flags used for
+  every screenshot.
+- `AGENTS.md` — the commands, the shape of the refresh chain, the nanoui rules
+  that are not obvious, the Zig 0.17 traps, and the data rules. Written so that
+  the next agent does not rediscover them the expensive way.
+
+**Deliberately not done, because it is Mac-side work**
+
+- An `.app` bundle: `Contents/MacOS/berth`, `Info.plist` with
+  `LSMinimumSystemVersion` and `NSHighResolutionCapable`, an `.icns`.
+- A DMG, and the `.DS_Store`/window layout that makes one feel finished.
+- Code signing and notarization — both need an Apple Developer account, and
+  neither can be tested from here.
+- A Linux `.desktop` file and an icon theme entry.
+
+**Gate for P4 is therefore: green on Linux, documented as pending on macOS.**
+That is the same shape as the rest of the project, and pretending otherwise
+would be the one thing that makes the handoff worse.
