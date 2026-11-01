@@ -6,6 +6,7 @@ const app = @import("../../app.zig");
 const api = @import("../../engine/api.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
+const prefs = @import("../../settings.zig");
 
 pub fn overview(s: *app.State, c: *ui.Context) void {
     const rt = s.activeRuntime();
@@ -153,7 +154,25 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     ui.text(c, "berth 0.1 · a native container monitor", .{ .size = 12, .color = c.theme.muted });
     ui.text(c, "Built with nanoui on Zig 0.17. Nothing polls: figures arrive from the engine and the window redraws when they change.", .{ .size = 12, .color = c.theme.muted });
     ui.divider(c);
+
+    ui.text(c, "Appearance", .{ .size = 13, .weight = .medium });
+    ui.text(c, "System follows this machine's desktop. The choice is remembered between launches.", .{ .size = 12, .color = c.theme.muted });
+    const row = ui.div(c).row().gap(6).pt(4);
+    for ([_]prefs.Appearance{ .system, .light, .dark }) |option| {
+        const on = s.appearance == option;
+        const button = ui.div(c).row().h(28).px(12).itemsCenter().rounded(14)
+            .bg(if (on) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+        defer button.end();
+        ui.text(c, option.label(), .{
+            .size = 12,
+            .weight = if (on) .medium else .regular,
+            .color = if (on) c.theme.accent else c.theme.text,
+        });
+        if (button.clicked()) s.setAppearance(option);
+    }
+    row.end(); // before the next section, or it becomes a child of this row
+
+    ui.divider(c);
     ui.text(c, "Density", .{ .size = 13, .weight = .medium });
-    ui.text(c, "Comfortable (40pt rows). Compact arrives with the settings store.", .{ .size = 12, .color = c.theme.muted });
-    _ = s;
+    ui.text(c, "Comfortable (44pt rows). Compact arrives with the rest of the settings store.", .{ .size = 12, .color = c.theme.muted });
 }

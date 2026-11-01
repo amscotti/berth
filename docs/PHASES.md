@@ -77,6 +77,20 @@ That last one is the most expensive lesson of the phase: a silent no-op replace
 sent me chasing a layout bug that had already been fixed on paper. Verify the
 diff, not the intent.
 
+## Appearance — light, dark, and the override
+
+**Done and verified three ways**, each with a rendered snapshot:
+
+| Case | Result |
+|---|---|
+| No settings file, `GTK_THEME=Adwaita:dark` | opens **dark** (sampled `#2c2c2e`) — system detection works |
+| No settings file, no dark GTK theme | opens **light** — the fallback when nothing can be detected |
+| `settings.json` with `"appearance":"dark"` | opens **dark**, overriding the desktop |
+
+- `Settings → Appearance` offers **System / Light / Dark**, with the current one highlighted; the choice is written to `<data dir>/berth/settings.json` and read at startup.
+- The theme is a **window-creation** option, so a change reopens the window with the new theme after the current frame (never during it, which would close the window being painted). State survives; only scroll position is lost.
+- macOS passes no theme in System mode, so the framework follows the desktop **live**; Linux has no appearance notification here, so `GTK_THEME` is read once at window creation. This asymmetry is deliberate and documented in `themeFor`.
+
 ## Cross-platform notes for the Mac
 
 - Every OS difference is behind `builtin.os.tag` or a constant; nothing Linux-only

@@ -12,6 +12,24 @@ const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
+const settings = @import("settings.zig");
+const builtin = @import("builtin");
+
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
+
+/// Whether the desktop says dark. macOS is handled by the framework (passing
+/// no theme follows the system, live); on Linux the GTK theme name is the
+/// signal GTK itself uses, and there is no event for it here.
+fn systemPrefersDark() bool {
+    if (builtin.os.tag == .macos) return false;
+    const raw = getenv("GTK_THEME") orelse return false;
+    const name = std.mem.span(raw);
+    var i: usize = 0;
+    while (i + 4 <= name.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(name[i .. i + 4], "dark")) return true;
+    }
+    return false;
+}
 const shell = @import("ui/shell.zig");
 
 pub const Tab = enum {
@@ -100,11 +118,42 @@ pub const State = struct {
     networks: []api.Network = &.{},
     df: ?api.Df = null,
 
+    /// Light, dark, or whatever the desktop says.
+    appearance: settings.Appearance = .system,
+    /// Set by main: rebuilds the window when the appearance changes, because
+    /// the theme is a window-creation option, not something to mutate.
+    recreate: ?*const fn (*State) void = null,
+
     step: Step = .idle,
     error_text: []const u8 = "",
     last_update: i64 = 0,
     toast: ?Toast = null,
     pending: ?Pending = null,
+
+    /// The theme to open a window with. `null` means "follow the system",
+    /// which the framework does live on macOS; Linux has no such notification
+    /// here, so the desktop's own setting is read once instead.
+    pub fn themeFor(s: *State) ?ui.Theme {
+        return switch (s.appearance) {
+            .system => if (builtin.os.tag == .macos) null else if (systemPrefersDark()) ui.Theme.dark_theme else ui.Theme.light,
+            .light => ui.Theme.light,
+            .dark => ui.Theme.dark_theme,
+        };
+    }
+
+    /// Saves the choice, then opens the window again with it — after this
+    /// frame, not during it: closing the window being painted is asking for
+    /// trouble.
+    pub fn setAppearance(s: *State, appearance: settings.Appearance) void {
+        s.appearance = appearance;
+        settings.save(s.gpa, s.io, .{ .appearance = appearance }) catch {};
+        nanoui.App.after(0, s, applyAppearance);
+    }
+
+    fn applyAppearance(ctx: ?*anyopaque) callconv(.c) void {
+        const s: *State = @ptrCast(@alignCast(ctx.?));
+        if (s.recreate) |reopen| reopen(s);
+    }
 
     /// The view the window calls every frame.
     pub fn view(s: *State, c: *ui.Context) void {

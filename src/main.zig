@@ -3,8 +3,26 @@
 const std = @import("std");
 const nanoui = @import("nanoui");
 const app_mod = @import("app.zig");
+const settings = @import("settings.zig");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
+
+/// Opens the window again with the current theme. A new window is created
+/// before the old one closes, so the app never sees its last window go.
+fn reopen(state: *app_mod.State) void {
+    const next = state.app.newWindow(.{
+        .title = "berth",
+        .width = 1180,
+        .height = 760,
+        .min_width = 960,
+        .min_height = 600,
+        .theme = state.themeFor(),
+        .content = .{ .view = .init(state, app_mod.State.view) },
+    }) catch return;
+    if (state.window) |old| old.close();
+    state.window = next;
+    next.redraw();
+}
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -14,15 +32,20 @@ pub fn main(init: std.process.Init) !void {
     const state = try app_mod.State.create(gpa, init.io, app);
     defer state.destroy();
 
-    const window = try app.newWindow(.{
+    // Preferences first: the appearance decides the theme the window opens
+    // with, and the theme is fixed at creation.
+    state.appearance = settings.load(gpa, init.io).appearance;
+    state.recreate = &reopen;
+
+    state.window = try app.newWindow(.{
         .title = "berth",
         .width = 1180,
         .height = 760,
         .min_width = 960,
         .min_height = 600,
+        .theme = state.themeFor(),
         .content = .{ .view = .init(state, app_mod.State.view) },
     });
-    state.window = window;
 
     // `BERTH_TAB=images` opens that view: the headless snapshot per view that
     // the design contract asks for needs a way to reach each one.
