@@ -1,0 +1,183 @@
+//! Finding the engines a machine actually has.
+//!
+//! Nothing here hardcodes a single socket as "the" engine. Docker Desktop,
+//! dockerd, Colima, Lima, Podman machine and rootless Podman all leave a
+//! socket somewhere different, and several can be alive at once — so every
+//! candidate is probed and the reachable ones are what the app offers.
+const std = @import("std");
+const api = @import("api.zig");
+const http = @import("http_uds.zig");
+
+extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
+extern "c" fn getuid() c_uint;
+
+/// An environment value, or null. libc's `getenv`, because Zig 0.17 moved
+/// environment access behind `std.process.Init`.
+fn env(name: [*:0]const u8) ?[]const u8 {
+    const p = getenv(name) orelse return null;
+    return std.mem.span(p);
+}
+
+pub const Kind = enum {
+    docker_desktop,
+    dockerd,
+    colima,
+    lima,
+    podman_machine,
+    podman,
+
+    pub fn label(self: Kind) []const u8 {
+        return switch (self) {
+            .docker_desktop => "Docker Desktop",
+            .dockerd => "dockerd",
+            .colima => "Colima",
+            .lima => "Lima",
+            .podman_machine => "Podman machine",
+            .podman => "Podman",
+        };
+    }
+};
+
+pub const Runtime = struct {
+    name: []const u8,
+    kind: Kind,
+    socket: []const u8,
+    reachable: bool = false,
+    /// Why it is not reachable, when it is not.
+    error_text: []const u8 = "",
+    version: api.Version = .{},
+    info: api.Info = .{},
+};
+
+pub const Found = struct {
+    runtimes: []Runtime,
+
+    pub fn deinit(self: Found, gpa: std.mem.Allocator) void {
+        for (self.runtimes) |r| {
+            gpa.free(r.name);
+            gpa.free(r.socket);
+            gpa.free(r.error_text);
+        }
+        gpa.free(self.runtimes);
+    }
+};
+
+/// Every candidate socket, deduplicated, in the order a user would expect:
+/// Docker Desktop first, then Colima, then Podman, then plain dockerd.
+pub fn candidates(gpa: std.mem.Allocator) ![][]const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (list.items) |s| gpa.free(s);
+        list.deinit(gpa);
+    }
+    const home = env("HOME") orelse "";
+    const xdg = env("XDG_RUNTIME_DIR");
+    const uid = getuid();
+
+    if (env("DOCKER_HOST")) |host| {
+        if (std.mem.startsWith(u8, host, "unix://")) try add(gpa, &list, host["unix://".len..]);
+    }
+
+    const fixed = [_][]const u8{
+        "/var/run/docker.sock",
+        "/run/podman/podman.sock",
+        "/var/run/podman/podman.sock",
+    };
+    for (fixed) |p| try add(gpa, &list, p);
+
+    if (home.len > 0) {
+        try addJoin(gpa, &list, home, "/.docker/run/docker.sock");
+        try addJoin(gpa, &list, home, "/.docker/desktop/docker.sock");
+        try addJoin(gpa, &list, home, "/.colima/default/docker.sock");
+        try addJoin(gpa, &list, home, "/.colima/docker.sock");
+        try addJoin(gpa, &list, home, "/.lima/default/sock/docker.sock");
+    }
+    if (xdg) |d| {
+        try addJoin(gpa, &list, d, "/podman/podman.sock");
+    } else {
+        var buf: [64]u8 = undefined;
+        const p = std.fmt.bufPrint(&buf, "/run/user/{d}/podman/podman.sock", .{uid}) catch "/run/user/0/podman/podman.sock";
+        try add(gpa, &list, p);
+    }
+    return list.toOwnedSlice(gpa);
+}
+
+fn add(gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), path: []const u8) !void {
+    if (path.len == 0) return;
+    for (list.items) |existing| {
+        if (std.mem.eql(u8, existing, path)) return;
+    }
+    try list.append(gpa, try gpa.dupe(u8, path));
+}
+
+fn addJoin(gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), base: []const u8, rest: []const u8) !void {
+    const joined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, rest });
+    defer gpa.free(joined);
+    try add(gpa, list, joined);
+}
+
+/// Guesses the runtime from its socket path. Only used for the label; the
+/// protocol is the same either way.
+pub fn kindOf(path: []const u8) Kind {
+    if (std.mem.indexOf(u8, path, ".colima") != null) return .colima;
+    if (std.mem.indexOf(u8, path, ".lima") != null) return .lima;
+    if (std.mem.indexOf(u8, path, "podman/machine") != null) return .podman_machine;
+    if (std.mem.indexOf(u8, path, "podman") != null) return .podman;
+    if (std.mem.indexOf(u8, path, ".docker/run") != null or
+        std.mem.indexOf(u8, path, ".docker/desktop") != null) return .docker_desktop;
+    return .dockerd;
+}
+
+/// Probes every candidate and returns the ones that answer, with their version
+/// and info already read. Unreachable candidates are returned too, so the
+/// Runtimes view can explain what was tried.
+pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
+    const paths = try candidates(gpa);
+    defer {
+        for (paths) |p| gpa.free(p);
+        gpa.free(paths);
+    }
+
+    var out: std.ArrayList(Runtime) = .empty;
+    errdefer out.deinit(gpa);
+
+    for (paths) |path| {
+        var rt: Runtime = .{
+            .name = try gpa.dupe(u8, kindOf(path).label()),
+            .kind = kindOf(path),
+            .socket = try gpa.dupe(u8, path),
+        };
+        var client = api.Client.init(io, gpa, path);
+        rt.reachable = probe(&client);
+        if (rt.reachable) {
+            rt.version = client.version() catch api.Version{};
+            rt.info = client.info() catch api.Info{};
+            if (rt.info.Name.len > 0) {
+                gpa.free(rt.name);
+                rt.name = try std.fmt.allocPrint(gpa, "{s} · {s}", .{ rt.kind.label(), rt.info.Name });
+            }
+        } else {
+            rt.error_text = try gpa.dupe(u8, "no answer on this socket");
+        }
+        try out.append(gpa, rt);
+    }
+    return .{ .runtimes = try out.toOwnedSlice(gpa) };
+}
+
+/// `GET /_ping` — the one call every Docker-compatible engine answers.
+pub fn probe(client: *api.Client) bool {
+    var conn = http.Conn.open(client.io, client.socket) catch return false;
+    defer conn.close();
+    const res = conn.request(client.gpa, "GET", "/_ping", "", 4096) catch return false;
+    defer res.deinit(client.gpa);
+    return res.status == 200;
+}
+
+test "a socket path names its runtime" {
+    try std.testing.expectEqual(Kind.colima, kindOf("/Users/x/.colima/default/docker.sock"));
+    try std.testing.expectEqual(Kind.lima, kindOf("/Users/x/.lima/default/sock/docker.sock"));
+    try std.testing.expectEqual(Kind.podman_machine, kindOf("/Users/x/.local/share/containers/podman/machine/applehv/podman.sock"));
+    try std.testing.expectEqual(Kind.podman, kindOf("/run/user/1000/podman/podman.sock"));
+    try std.testing.expectEqual(Kind.docker_desktop, kindOf("/Users/x/.docker/run/docker.sock"));
+    try std.testing.expectEqual(Kind.dockerd, kindOf("/var/run/docker.sock"));
+}
