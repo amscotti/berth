@@ -38,10 +38,16 @@ and image counts, disk breakdown), Images (repository, short ID, size, age,
 ready/dangling), plus Containers, Volumes, Networks, Stacks, Disk, Runtimes and
 Settings rendering from the same snapshot.
 
+**Container stats: done and verified.** CPU comes from `stream=false *without*
+`one-shot`, which waits two collection cycles precisely so that `precpu_stats`
+is populated; memory is the working set (`usage − inactive_file`, with
+`total_inactive_file` and `cache` as fallbacks). Against a container spinning a
+busy loop, berth read **102%** while `docker stats` read **103%** — different
+sampling instants, same number. A stopped container shows `—`, never `0%`,
+because unknown and idle are not the same thing.
+
 **Known gaps, in priority order**
-1. **Container stats** (CPU/memory/network) — needs two samples on one streaming
-   connection; `one-shot` would report lifetime-average CPU (see the plan §7).
-2. **Container detail** — logs, inspect, mounts, ports.
+1. **Container detail** — logs, inspect, mounts, ports.
 3. **Search and filtering** — the toolbar exists but has no field yet.
 4. **Events** — the `/events` stream is not read yet; the Events view does not exist.
 5. **Host and VM attribution** — no `/proc` or `libproc` sampler yet, so the
@@ -65,6 +71,7 @@ with tags, short IDs, sizes, ages and dangling/ready state.
 | A container row rendered *vertically*, with the name and image missing | `const name_cell = ui.div(...); defer name_cell.end();` — the defer fires at the end of the loop body, so every following sibling became a **child of the name column** | one cell per line, no deferred box that siblings fall into |
 | Cells sat centred instead of left-aligned | `itemsCenter()` on a **column** centres horizontally; vertical centring is `justifyCenter()` | `column().justifyCenter().itemsStart()` for cells, `itemsEnd()` for numbers |
 | Two edits appeared to apply but changed nothing | a scripted string replace that did not match, reported as success | use the `patch` tool, which fails loudly, and re-read the region after editing |
+| Columns drifted left of their headers, growing with each column | the status pill is as wide as its word, so an intrinsic-width child shifts every sibling after it | `pillCell` gives it a fixed slot; a header/row contract only holds if every cell honours its declared width |
 
 That last one is the most expensive lesson of the phase: a silent no-op replace
 sent me chasing a layout bug that had already been fixed on paper. Verify the

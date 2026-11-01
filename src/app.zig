@@ -56,7 +56,15 @@ pub const Tab = enum {
     }
 };
 
-const Step = enum { idle, ping, version, info, containers, images, volumes, networks, df, done };
+const Step = enum { idle, ping, version, info, containers, images, volumes, networks, stats, df, done };
+
+/// One container's live figures, from a single stats sample.
+pub const Stat = struct {
+    id: []const u8 = "",
+    cpu: f64 = 0,
+    mem: u64 = 0,
+    limit: u64 = 0,
+};
 
 pub const Toast = struct {
     text: []const u8,
@@ -85,6 +93,8 @@ pub const State = struct {
     arena: std.heap.ArenaAllocator,
 
     containers: []api.Container = &.{},
+    stats: []Stat = &.{},
+    stat_i: usize = 0,
     images: []api.Image = &.{},
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
@@ -129,6 +139,8 @@ pub const State = struct {
         s.arena.deinit();
         s.arena = .init(s.gpa);
         s.containers = &.{};
+        s.stats = &.{};
+        s.stat_i = 0;
         s.images = &.{};
         s.volumes = &.{};
         s.networks = &.{};
@@ -282,6 +294,14 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
                 s.redraw();
                 return;
             };
+            // One slot per container, filled a turn at a time: each sample
+            // waits two collection cycles, so doing them all at once would
+            // freeze the window for seconds.
+            s.stats = s.arena.allocator().alloc(Stat, s.containers.len) catch &.{};
+            for (s.containers, 0..) |ct, i| {
+                if (i < s.stats.len) s.stats[i] = .{ .id = ct.Id };
+            }
+            s.stat_i = 0;
             s.redraw();
             s.step = .images;
         },
@@ -299,7 +319,30 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
         .networks => {
             s.networks = client.networks() catch &.{};
             s.redraw();
-            s.step = .df;
+            s.step = .stats;
+        },
+        .stats => {
+            if (s.stat_i >= s.containers.len) {
+                s.stat_i = 0;
+                s.step = .df;
+            } else {
+                const ct = s.containers[s.stat_i];
+                if (ct.isRunning() and s.stat_i < s.stats.len) {
+                    if (client.stats(ct.Id)) |st| {
+                        s.stats[s.stat_i] = .{
+                            .id = ct.Id,
+                            .cpu = st.cpuPercent(),
+                            .mem = st.memUsed(),
+                            .limit = st.memLimit(),
+                        };
+                    } else |_| {}
+                }
+                s.stat_i += 1;
+                s.redraw();
+                // Stay on this step, but let the window paint between samples.
+                nanoui.App.after(0, s, tick);
+                return;
+            }
         },
         .df => {
             s.df = client.df() catch null;
@@ -310,6 +353,15 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
         .done, .idle => return,
     }
     if (s.step != .done) nanoui.App.after(0, s, tick) else s.redraw();
+}
+
+/// A container's figures, or zeros when none were collected (a stopped
+/// container has no stats at all).
+pub fn statFor(s: *State, id: []const u8) Stat {
+    for (s.stats) |st| {
+        if (std.mem.eql(u8, st.id, id)) return st;
+    }
+    return .{};
 }
 
 /// A tab by its name, for `BERTH_TAB`. A plain table: reflection over an

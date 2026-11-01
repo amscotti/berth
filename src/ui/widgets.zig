@@ -68,6 +68,14 @@ pub fn cellMuted(c: *ui.Context, text: []const u8, width: f32, align_end: bool) 
     }
 }
 
+/// A pill inside a fixed-width box. A bare pill is as wide as its word, which
+/// shifts every column after it out of line with the header.
+pub fn pillCell(c: *ui.Context, state: []const u8, width: f32) void {
+    const slot = ui.div(c).row().w(width).h(20).itemsCenter();
+    defer slot.end();
+    pill(c, state);
+}
+
 /// Status is never colour alone: the word carries the meaning, the colour
 /// reinforces it.
 pub fn pill(c: *ui.Context, state: []const u8) void {

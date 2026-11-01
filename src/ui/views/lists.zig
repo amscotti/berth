@@ -21,12 +21,14 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     }
 
     const cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 170 },
-        .{ .name = "IMAGE", .width = 170 },
-        .{ .name = "STATE", .width = 90 },
-        .{ .name = "PROJECT", .width = 120 },
-        .{ .name = "PORTS", .width = 130 },
-        .{ .name = "ACTIONS", .width = 180 },
+        .{ .name = "NAME", .width = 150 },
+        .{ .name = "IMAGE", .width = 140 },
+        .{ .name = "STATE", .width = 76 },
+        .{ .name = "CPU", .width = 62, .align_end = true },
+        .{ .name = "MEM", .width = 78, .align_end = true },
+        .{ .name = "PROJECT", .width = 90 },
+        .{ .name = "PORTS", .width = 100 },
+        .{ .name = "ACTIONS", .width = 160 },
     };
     widgets.tableHeader(c, &cols);
 
@@ -39,18 +41,28 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         // One line per cell, and no deferred box that siblings fall into:
         // `defer name_cell.end()` would make everything after it a child of
         // the name column, which is why this row rendered vertically.
-        widgets.cell(c, ct.name(), 200, false);
-        widgets.cellMuted(c, ct.Image, 170, false);
-        widgets.pill(c, ct.State);
-        widgets.cellMuted(c, ct.project() orelse "—", 120, false);
-        widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 130, false);
+        widgets.cell(c, ct.name(), 150, false);
+        widgets.cellMuted(c, ct.Image, 140, false);
+        widgets.pillCell(c, ct.State, 76);
+        const st = app.statFor(s, ct.Id);
+        // A stopped container has no stats at all: say so with a dash rather
+        // than a zero, which would read as "idle" instead of "unknown".
+        if (ct.isRunning()) {
+            widgets.cell(c, format.percent(c, st.cpu), 62, true);
+            widgets.cell(c, format.bytes(c, st.mem), 78, true);
+        } else {
+            widgets.cellMuted(c, "—", 62, true);
+            widgets.cellMuted(c, "—", 78, true);
+        }
+        widgets.cellMuted(c, ct.project() orelse "—", 90, false);
+        widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 100, false);
         actions(s, c, &ct);
     }
     rows.end();
 }
 
 fn actions(s: *app.State, c: *ui.Context, ct: *const @import("../../engine/api.zig").Container) void {
-    const row = ui.div(c).row().w(180).h(24).itemsCenter().gap(4);
+    const row = ui.div(c).row().w(160).h(24).itemsCenter().gap(4);
     defer row.end();
     if (ct.isRunning()) {
         if (smallButton(c, "Stop", false)) s.confirm(ct.Id, ct.name(), "Stop", "POST", "/containers/{s}/stop");
