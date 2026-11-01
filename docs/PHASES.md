@@ -91,6 +91,34 @@ diff, not the intent.
 - The theme is a **window-creation** option, so a change reopens the window with the new theme after the current frame (never during it, which would close the window being painted). State survives; only scroll position is lost.
 - macOS passes no theme in System mode, so the framework follows the desktop **live**; Linux has no appearance notification here, so `GTK_THEME` is read once at window creation. This asymmetry is deliberate and documented in `themeFor`.
 
+## Overview graphs — following nanomon
+
+nanomon (same framework, same author) draws its charts as **cell graphs**: a
+grid of 4–5pt dots where each column is a slice of time and each dot is one
+step of height, placed with `c.leaf(.{ .absolute = true, … })` rather than one
+nested box per bar. That is the technique adopted here, with berth's own theme
+tokens instead of nanomon's palette, so the graphs follow light and dark.
+
+- **History**: `ui/history.zig`, 120 samples of container CPU, memory, running
+  count and engine disk. A shift on overflow — 480 bytes moved every few
+  seconds costs nothing next to ring-index arithmetic on every read.
+- **Sampling**: one point per completed refresh, and a 5-second `App.after`
+  timer re-arms itself from the end of each refresh. Nothing polls in the
+  frame loop; the timer only asks for new data.
+- **Scales are honest, not auto**: CPU is a share of the engine's cores,
+  memory is against `MemTotal` (so 900 KiB of 9.6 GiB reads as a thin line, not
+  a full bar), counts scale to twice the peak, disk to 1.6×. Auto-scaling a
+  flat series makes it look saturated, which is a lie of the most convincing
+  kind.
+
+**The bug this surfaced** was older than the feature: `resetData()` freed the
+request arena on every refresh while the frame still held slices into it
+(container names, logs, the selection). It had been latent — the graphs simply
+made refreshes frequent enough to hit it, and it arrived as a segfault in
+`memcpy` inside a text write. Fixed with **arena rotation**: the previous arena
+is kept for one cycle and freed at the next refresh, and the selection is
+re-resolved into the new arena by id.
+
 ## Cross-platform notes for the Mac
 
 - Every OS difference is behind `builtin.os.tag` or a constant; nothing Linux-only

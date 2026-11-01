@@ -7,6 +7,8 @@ const api = @import("../../engine/api.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const prefs = @import("../../settings.zig");
+const graph = @import("../graph.zig");
+const history = @import("../history.zig");
 
 pub fn overview(s: *app.State, c: *ui.Context) void {
     const rt = s.activeRuntime();
@@ -14,21 +16,35 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
 
-    const cards = ui.div(c).row().wFull().gap(12).pb(12);
-
     const info = if (rt) |r| r.info else api.Info{};
-    widgets.metric(c, "CONTAINERS", c.print("{d}/{d}", .{ info.ContainersRunning, info.Containers }), 150);
-    widgets.metric(c, "IMAGES", c.print("{d}", .{info.Images}), 120);
-    widgets.metric(c, "ENGINE CPUs", c.print("{d}", .{info.NCPU}), 130);
-    widgets.metric(c, "ENGINE MEMORY", format.bytes(c, info.MemTotal), 150);
-    cards.end();
+
+    // What the containers are using, as it moves: the figures nanomon's
+    // overview is built from, with berth's own colours.
+    var cpu_sum: f32 = 0;
+    var mem_sum: u64 = 0;
+    for (s.containers, 0..) |ct, i| {
+        if (!ct.isRunning() or i >= s.stats.len) continue;
+        cpu_sum += @floatCast(s.stats[i].cpu);
+        mem_sum += s.stats[i].mem;
+    }
+    const cores: f32 = @floatFromInt(@max(info.NCPU, 1));
+    const cpu_share = cpu_sum / (cores * 100.0) * 100.0;
+
+    const top = ui.div(c).row().wFull().gap(12).pb(12);
+    graphCard(s, c, "CPU", format.percent(c, cpu_share), .cpu, c.theme.accent, 100);
+    graphCard(s, c, "MEMORY", format.bytes(c, mem_sum), .mem, c.theme.success, @floatFromInt(@max(info.MemTotal, 1)));
+    top.end();
+
+    const bottom = ui.div(c).row().wFull().gap(12).pb(12);
+    graphCard(s, c, "CONTAINERS RUNNING", c.print("{d}", .{app.runningCount(s)}), .running, .hex(0xff9f0a), @max(s.history.peak(.running) * 2, 4));
+    graphCard(s, c, "DISK", format.bytes(c, @as(u64, @intCast(@max(0, if (s.df) |df| df.imageBytes() else 0)))), .disk, c.theme.muted, @max(s.history.peak(.disk) * 1.6, 1));
+    bottom.end();
 
     // The three-layer memory model starts here: on macOS the engine lives in a
     // VM, so container figures are "of the VM", never "of the machine". We show
     // the engine's own totals and label them honestly rather than inventing a
     // host number we cannot yet attribute.
     const engine_card = ui.div(c).column().wFull().gap(6).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
-    defer engine_card.end();
     ui.text(c, "Engine", .{ .size = 15, .weight = .semibold });
     if (rt) |r| {
         ui.text(c, c.print("{s} {s} · API {s} · storage {s}", .{
@@ -47,8 +63,25 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     } else {
         ui.text(c, "No engine selected. Open Runtimes to see what was found.", .{ .size = 12, .color = c.theme.muted });
     }
+    engine_card.end(); // before the disk breakdown, or the bar becomes its child
 
     if (s.df) |df| diskBar(c, df, "Disk (engine)");
+}
+
+/// A figure and its history: the number answers "now", the graph answers
+/// "and lately?".
+fn graphCard(s: *app.State, c: *ui.Context, label: []const u8, value: []const u8, which: history.Which, color: ui.Color, scale: ?f32) void {
+    const card = ui.div(c).column().grow().gap(8).p(14).rounded(10).bg(c.theme.surface).border(c.theme.border);
+    defer card.end();
+
+    const head = ui.div(c).row().wFull().itemsCenter().gap(8);
+    ui.text(c, label, .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+    ui.spacer(c);
+    ui.text(c, value, .{ .size = 18, .weight = .semibold, .tabular = true });
+    head.end();
+
+    const series = [_]graph.Series{.{ .values = s.history.values(which), .color = color }};
+    graph.cellGraph(c, &series, .{ .height = 76, .scale = scale });
 }
 
 fn diskBar(c: *ui.Context, df: api.Df, heading: []const u8) void {
@@ -71,12 +104,12 @@ fn diskBar(c: *ui.Context, df: api.Df, heading: []const u8) void {
         .{ .fraction = @as(f32, @floatFromInt(cache)) / f, .color = c.theme.muted },
     };
     const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track);
-    defer bar.end();
     for (segs) |seg| {
         if (seg.fraction <= 0) continue;
         const piece = ui.div(c).grow().h(8).rounded(4).bg(seg.color);
         defer piece.end();
     }
+    bar.end(); // before the legend, or the legend is drawn inside the bar
 
     ui.text(c, c.print("images {s} · containers {s} · volumes {s} · build cache {s}", .{
         format.bytes(c, @as(u64, @intCast(@max(0, imgs)))),

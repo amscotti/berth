@@ -12,6 +12,7 @@ const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
+const History = @import("ui/history.zig").History;
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -109,6 +110,10 @@ pub const State = struct {
 
     client: ?api.Client = null,
     arena: std.heap.ArenaAllocator,
+    /// The arena from the previous refresh. Kept alive for one cycle because
+    /// the frame that is already on screen still points into it; freeing it
+    /// immediately is a use-after-free that shows up as a segfault in memcpy.
+    retired: ?std.heap.ArenaAllocator = null,
 
     containers: []api.Container = &.{},
     stats: []Stat = &.{},
@@ -131,6 +136,12 @@ pub const State = struct {
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
+
+    /// What the overview graphs: a few minutes of what the engine has been
+    /// doing, sampled once per refresh.
+    history: History = .{},
+    /// Keep sampling on a timer, so the graphs move without a click.
+    auto_refresh: bool = true,
 
     step: Step = .idle,
     error_text: []const u8 = "",
@@ -161,6 +172,25 @@ pub const State = struct {
     fn applyAppearance(ctx: ?*anyopaque) callconv(.c) void {
         const s: *State = @ptrCast(@alignCast(ctx.?));
         if (s.recreate) |reopen| reopen(s);
+    }
+
+    /// One point for the graphs: what the containers are using, how many are
+    /// up, and how much disk the engine holds.
+    fn sample(s: *State) void {
+        var cpu: f32 = 0;
+        var mem: f32 = 0;
+        var running: f32 = 0;
+        for (s.containers, 0..) |ct, i| {
+            if (!ct.isRunning()) continue;
+            running += 1;
+            if (i < s.stats.len) {
+                cpu += @floatCast(s.stats[i].cpu);
+                mem += @floatFromInt(s.stats[i].mem);
+            }
+        }
+        var disk: f32 = 0;
+        if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.imageBytes()));
+        s.history.push(.{ .cpu = cpu, .mem = mem, .running = running, .disk = disk });
     }
 
     /// Opens a container's detail pane and reads its last 200 log lines.
@@ -196,6 +226,7 @@ pub const State = struct {
 
     pub fn destroy(s: *State) void {
         s.dropRuntimes();
+        if (s.retired) |*r| r.deinit();
         s.arena.deinit();
         s.gpa.destroy(s);
     }
@@ -213,7 +244,8 @@ pub const State = struct {
 
     /// A fresh snapshot: the old arena goes, the parsed data with it.
     fn resetData(s: *State) void {
-        s.arena.deinit();
+        if (s.retired) |*old| old.deinit();
+        s.retired = s.arena; // one more cycle before this is freed
         s.arena = .init(s.gpa);
         s.containers = &.{};
         s.stats = &.{};
@@ -379,6 +411,26 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
                 if (i < s.stats.len) s.stats[i] = .{ .id = ct.Id };
             }
             s.stat_i = 0;
+            // The id and name we were holding point into the arena that is now
+            // retired: find the container again in the fresh snapshot.
+            if (s.selected) |old_id| {
+                var kept = false;
+                for (s.containers) |ct| {
+                    if (std.mem.eql(u8, ct.Id, old_id)) {
+                        s.selected = ct.Id;
+                        s.selected_name = ct.name();
+                        kept = true;
+                        break;
+                    }
+                }
+                if (!kept) {
+                    s.selected = null;
+                    s.selected_name = "";
+                    s.log_text = "";
+                } else {
+                    s.loadLogs(s.selected.?);
+                }
+            }
             if (s.pending_select.len > 0) {
                 for (s.containers) |ct| {
                     if (std.mem.eql(u8, ct.name(), s.pending_select)) {
@@ -435,7 +487,9 @@ fn tick(ctx: ?*anyopaque) callconv(.c) void {
             s.df = client.df() catch null;
             s.last_update = format.now();
             s.step = .done;
+            s.sample();
             s.redraw();
+            if (s.auto_refresh) nanoui.App.after(5000, s, autoTick);
         },
         .done, .idle => return,
     }
@@ -465,6 +519,14 @@ pub fn tabFromName(name: []const u8) ?Tab {
         if (std.ascii.eqlIgnoreCase(name, pair.n)) return pair.t;
     }
     return null;
+}
+
+/// The timer that keeps the graphs fed: one refresh, then it re-arms itself
+/// from the end of that refresh.
+fn autoTick(ctx: ?*anyopaque) callconv(.c) void {
+    const s: *State = @ptrCast(@alignCast(ctx.?));
+    if (s.step != .done) return; // a refresh is already in flight
+    s.refresh();
 }
 
 /// How many containers are running, for the header count.
