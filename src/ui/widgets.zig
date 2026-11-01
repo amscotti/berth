@@ -24,12 +24,15 @@ pub const Col = struct {
     name: []const u8,
     width: f32,
     align_end: bool = false,
+    /// A column that exists in the layout but is not drawn this frame.
+    skip: bool = false,
 };
 
 pub fn tableHeader(c: *ui.Context, cols: []const Col) void {
     const row = ui.div(c).row().wFull().itemsCenter().px(12).pb(6).gap(8);
     defer row.end();
     for (cols) |col| {
+        if (col.skip) continue;
         const cell_box = ui.div(c).column().w(col.width).h(18).justifyCenter().itemsStart();
         defer cell_box.end();
         if (col.align_end) {
@@ -125,12 +128,31 @@ pub fn errorBanner(c: *ui.Context, text: []const u8) void {
 /// Published ports as `8080→80, 8443→443`, then `+n` when there are more.
 /// Built in the frame's arena because the row is painted after the view returns.
 pub fn portsText(c: *ui.Context, ct: *const @import("../engine/api.zig").Container, max: usize) []const u8 {
+    // Docker lists the same binding once per address family, so "8080→80"
+    // appears twice for a container published on both IPv4 and IPv6. Show it
+    // once: the duplicate is an artifact of the API, not a second port.
+    var total: usize = 0;
+    {
+        var last: ?u32 = null;
+        for (ct.Ports) |p| {
+            if (p.PublicPort == null) continue;
+            const key = (@as(u32, p.PublicPort.?) << 16) | p.PrivatePort;
+            if (last != null and last.? == key) continue;
+            last = key;
+            total += 1;
+        }
+    }
+
     var shown: usize = 0;
     var out: []const u8 = "";
+    var last: ?u32 = null;
     for (ct.Ports) |p| {
         if (p.PublicPort == null) continue;
+        const key = (@as(u32, p.PublicPort.?) << 16) | p.PrivatePort;
+        if (last != null and last.? == key) continue;
+        last = key;
         if (shown == max) {
-            out = c.print("{s} +{d}", .{ out, ct.Ports.len - shown });
+            out = c.print("{s} +{d}", .{ out, total - shown });
             break;
         }
         const piece = c.print("{d}→{d}", .{ p.PublicPort.?, p.PrivatePort });

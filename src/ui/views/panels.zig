@@ -180,7 +180,6 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
         return;
     };
     const row = ui.div(c).row().wFull().gap(12).pb(12);
-    defer row.end();
     const imgs = df.imageBytes();
     const conts = if (df.ContainerUsage) |u| u.TotalSize else 0;
     const vols = if (df.VolumeUsage) |u| u.TotalSize else 0;
@@ -190,6 +189,30 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
     widgets.metric(c, "VOLUMES", format.bytes(c, @as(u64, @intCast(@max(0, vols)))), 160);
     widgets.metric(c, "BUILD CACHE", format.bytes(c, @as(u64, @intCast(@max(0, cache)))), 160);
     widgets.metric(c, "RECLAIMABLE", format.bytesSigned(c, df.reclaimable()), 160);
+    row.end(); // explicit: with `defer` the note below became a sixth item in
+               // this row and was squeezed to 96pt at the window edge.
+
+    // The four stores as one strip, so the view answers "how is it split"
+    // and not only "how much". Widths are shares of the total, and an empty
+    // store is skipped rather than drawn as a zero-width sliver.
+    const total: u64 = @as(u64, @intCast(@max(0, imgs))) + @as(u64, @intCast(@max(0, conts))) +
+        @as(u64, @intCast(@max(0, vols))) + @as(u64, @intCast(@max(0, cache)));
+    if (total > 0) {
+        const strip = ui.div(c).row().wFull().h(10).rounded(5).bg(c.theme.track);
+        const parts = [_]struct { bytes: u64, color: ui.Color }{
+            .{ .bytes = @intCast(@max(0, imgs)), .color = c.theme.accent },
+            .{ .bytes = @intCast(@max(0, conts)), .color = c.theme.success },
+            .{ .bytes = @intCast(@max(0, vols)), .color = .hex(0xff9f0a) },
+            .{ .bytes = @intCast(@max(0, cache)), .color = c.theme.muted },
+        };
+        for (parts) |part| {
+            if (part.bytes == 0) continue;
+            const frac = @as(f32, @floatFromInt(part.bytes)) / @as(f32, @floatFromInt(total));
+            const piece = ui.div(c).w(@max(@as(f32, 3), 880.0 * frac)).h(10).rounded(5).bg(part.color);
+            defer piece.end();
+        }
+        strip.end();
+    }
 
     const note = ui.div(c).column().wFull().gap(4).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
     defer note.end();

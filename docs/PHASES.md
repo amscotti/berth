@@ -246,3 +246,15 @@ fixed or consciously declined — not a rewrite.
 **Gate for P4 is therefore: green on Linux, documented as pending on macOS.**
 That is the same shape as the rest of the project, and pretending otherwise
 would be the one thing that makes the handoff worse.
+
+## The UI/UX review — done
+
+Nine defects, all fixed; the full report is `docs/UI-REVIEW.md`. Slop audit 2/10.
+The two that mattered: **the Disk view's card was clipped off the window** (the
+`defer row.end()` trap, third occurrence), and **dark mode had never actually
+been looked at** — the earlier "dark" captures were light because the snapshot
+path takes the app's window theme, so `BERTH_THEME` now exists as an explicit
+override. The rest were the API's dialect leaking into the interface
+(`<none>:<none>`, `null`), a drifting status column, ports colliding with the
+action buttons, a column of em dashes, duplicate port bindings, and an unlit
+graph grid louder than its data in dark mode.

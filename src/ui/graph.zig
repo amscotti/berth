@@ -100,7 +100,10 @@ pub fn cellGraph(c: *ui.Context, series: []const Series, opts: Options) void {
 
         const x = x0 + @as(f32, @floatFromInt(i)) * pitch;
         for (0..rows) |r| {
-            var color = c.theme.track.alpha(0.45);
+            // The unlit grid has to be quiet: on a dark background a 45% track
+            // is brighter than the data and the chart reads as noise.
+            const dark_bg = (c.theme.background.r + c.theme.background.g + c.theme.background.b) < 1.5;
+            var color = c.theme.track.alpha(if (dark_bg) 0.16 else 0.45);
             for (0..@min(series.len, 4)) |si| {
                 if (r < levels[si]) {
                     color = series[si].color;

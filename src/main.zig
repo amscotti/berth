@@ -35,6 +35,13 @@ pub fn main(init: std.process.Init) !void {
     // Preferences first: the appearance decides the theme the window opens
     // with, and the theme is fixed at creation.
     state.appearance = settings.load(gpa, init.io).appearance;
+    // An explicit override, for screenshots and for anyone whose desktop does
+    // not report a theme. It wins over the saved preference for this run only.
+    if (getenv("BERTH_THEME")) |p| {
+        const name = std.mem.span(p);
+        if (std.ascii.eqlIgnoreCase(name, "dark")) state.appearance = .dark;
+        if (std.ascii.eqlIgnoreCase(name, "light")) state.appearance = .light;
+    }
     state.recreate = &reopen;
 
     state.window = try app.newWindow(.{

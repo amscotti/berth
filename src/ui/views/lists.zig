@@ -60,14 +60,21 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     // With the detail pane open the list has ~430pt less room, so it keeps
     // only the columns that answer "which container, and how busy".
     const compact = s.selected != null;
+    // Only when something is actually grouped: a column of dashes costs width
+    // that the ports column needs, and says nothing.
+    var any_project = false;
+    for (s.containers) |ct| {
+        if (ct.project() != null) any_project = true;
+    }
+    const ports_w: f32 = if (any_project) 120 else 180;
     const full_cols = [_]widgets.Col{
         .{ .name = "NAME", .width = 150 },
         .{ .name = "IMAGE", .width = 140 },
         .{ .name = "STATE", .width = 76 },
         .{ .name = "CPU", .width = 62, .align_end = true },
         .{ .name = "MEM", .width = 78, .align_end = true },
-        .{ .name = "PROJECT", .width = 90 },
-        .{ .name = "PORTS", .width = 100 },
+        .{ .name = "PROJECT", .width = 90, .skip = !any_project },
+        .{ .name = "PORTS", .width = ports_w },
         .{ .name = "ACTIONS", .width = 160 },
     };
     const narrow_cols = [_]widgets.Col{
@@ -105,8 +112,9 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
             widgets.cellMuted(c, "—", if (compact) 70 else 78, true);
         }
         if (!compact) {
-            widgets.cellMuted(c, ct.project() orelse "—", 90, false);
-            widgets.cellMuted(c, widgets.portsText(c, &ct, 2), 100, false);
+            if (any_project) widgets.cellMuted(c, ct.project() orelse "—", 90, false);
+            // One port when the line would otherwise run into the buttons.
+            widgets.cellMuted(c, widgets.portsText(c, &ct, if (any_project) 2 else 3), ports_w, false);
         }
         actions(s, c, &ct);
     }
@@ -155,13 +163,20 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         const im = s.images[i];
         const row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(7).bg(c.theme.surface);
         defer row.end();
-        widgets.cell(c, im.tag(), 300, false);
+        // `<none>:<none>` is what the API calls an untagged image; saying
+        // "untagged" once is kinder and no less accurate.
+        if (im.dangling()) {
+            widgets.cellMuted(c, "untagged", 300, false);
+        } else {
+            widgets.cell(c, im.tag(), 300, false);
+        }
         const id = im.Id;
         const short = if (id.len > 19) id[7..19] else id;
         widgets.cellMuted(c, short, 110, false);
         widgets.cell(c, format.bytes(c, im.Size), 100, true);
         widgets.cellMuted(c, format.ago(c, im.Created, format.now()), 100, true);
-        widgets.pill(c, if (im.dangling()) "dangling" else "ready");
+        // A fixed slot: an intrinsic-width pill shifts everything after it.
+        widgets.pillCell(c, if (im.dangling()) "dangling" else "ready", 120);
     }
     rows.end();
 }
@@ -228,7 +243,8 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
         const dim = n.builtin();
         if (dim) {
             widgets.cellMuted(c, n.Name, 240, false);
-            widgets.cellMuted(c, n.Driver, 100, false);
+            // The API reports an absent driver as the string "null".
+            widgets.cellMuted(c, if (std.mem.eql(u8, n.Driver, "null")) "—" else n.Driver, 100, false);
             widgets.cellMuted(c, n.Scope, 90, false);
         } else {
             widgets.cell(c, n.Name, 240, false);
