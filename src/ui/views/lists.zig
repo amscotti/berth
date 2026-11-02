@@ -221,7 +221,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         // the name column, which is why this row rendered vertically.
         widgets.cell(c, ct.name(), if (compact) 120 else 150, false);
         if (!compact) widgets.cellMuted(c, ct.Image, 140, false);
-        widgets.pillCell(c, ct.State, if (compact) 70 else 76);
+        widgets.pillCell(c, ct.health() orelse ct.State, if (compact) 70 else 76);
         const st = app.statFor(s, ct.Id);
         // A stopped container has no stats at all: say so with a dash rather
         // than a zero, which would read as "idle" instead of "unknown". A

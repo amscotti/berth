@@ -127,9 +127,10 @@ pub fn chip(c: *ui.Context, icon: []const u8, color: ui.Color, size: f32) void {
 
 pub fn statusColor(c: *ui.Context, state: []const u8) ui.Color {
     const th = c.theme;
-    if (std.mem.eql(u8, state, "running")) return th.success;
+    if (std.mem.eql(u8, state, "running") or std.mem.eql(u8, state, "healthy")) return th.success;
     if (std.mem.eql(u8, state, "exited") or std.mem.eql(u8, state, "stopped")) return th.muted;
-    if (std.mem.eql(u8, state, "paused") or std.mem.eql(u8, state, "restarting")) return .hex(0xff9f0a);
+    if (std.mem.eql(u8, state, "paused") or std.mem.eql(u8, state, "restarting") or
+        std.mem.eql(u8, state, "starting")) return .hex(0xff9f0a);
     if (std.mem.eql(u8, state, "dead") or std.mem.eql(u8, state, "unhealthy")) return th.danger;
     if (std.mem.eql(u8, state, "created")) return th.accent;
     return th.muted;

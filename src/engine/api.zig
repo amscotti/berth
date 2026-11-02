@@ -298,6 +298,17 @@ pub const Container = struct {
         return self.isRunning() or self.isPaused() or std.mem.eql(u8, self.State, "restarting");
     }
 
+    /// The healthcheck verdict, when the container has one. It rides at the end
+    /// of the human `Status` string; `State` never carries it. Only these three
+    /// literal suffixes count — the parentheses in "Exited (0) 2 seconds ago"
+    /// and "Restarting (1) …" are exit codes, not health.
+    pub fn health(self: Container) ?[]const u8 {
+        if (std.mem.endsWith(u8, self.Status, "(healthy)")) return "healthy";
+        if (std.mem.endsWith(u8, self.Status, "(unhealthy)")) return "unhealthy";
+        if (std.mem.endsWith(u8, self.Status, "(health: starting)")) return "starting";
+        return null;
+    }
+
     /// The host-side TCP ports a container publishes, deduplicated by public
     /// port (Docker lists one binding per address family). Returns the total,
     /// which can exceed `out.len`: the buffer fills, the count stays honest,

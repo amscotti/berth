@@ -167,3 +167,17 @@ test "a created container is not up" {
     try std.testing.expect(!created.isRunning());
     try std.testing.expect(!created.isPaused());
 }
+
+test "health is read from the status suffix and nowhere else" {
+    const healthy: api.Container = .{ .State = "running", .Status = "Up 2 hours (healthy)" };
+    try std.testing.expectEqualStrings("healthy", healthy.health().?);
+    const starting: api.Container = .{ .State = "running", .Status = "Up 4 seconds (health: starting)" };
+    try std.testing.expectEqualStrings("starting", starting.health().?);
+    const unhealthy: api.Container = .{ .State = "running", .Status = "Up 5 minutes (unhealthy)" };
+    try std.testing.expectEqualStrings("unhealthy", unhealthy.health().?);
+
+    // Parentheses that are exit codes, not health, and no parentheses at all.
+    try std.testing.expect((api.Container{ .State = "exited", .Status = "Exited (0) 5 seconds ago" }).health() == null);
+    try std.testing.expect((api.Container{ .State = "restarting", .Status = "Restarting (1) 2 seconds ago" }).health() == null);
+    try std.testing.expect((api.Container{ .State = "running", .Status = "Up 2 hours" }).health() == null);
+}

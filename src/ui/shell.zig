@@ -65,6 +65,7 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         facts(c, "Image", ct.Image);
         facts(c, "State", ct.State);
         facts(c, "Status", ct.Status);
+        if (ct.health()) |h| facts(c, "Health", h);
         if (ct.project()) |project| facts(c, "Project", project);
         if (ct.service()) |service| facts(c, "Service", service);
         if (widgets.portsText(c, &ct, 4).len > 0) {

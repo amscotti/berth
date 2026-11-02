@@ -38,6 +38,9 @@ pub fn keepContainer(q: []const u8, ct: *const api.Container) bool {
     if (contains(ct.name(), q)) return true;
     if (contains(ct.Image, q)) return true;
     if (contains(ct.State, q)) return true;
+    if (ct.health()) |h| {
+        if (contains(h, q)) return true;
+    }
     if (ct.project()) |p| return contains(p, q);
     return false;
 }
@@ -72,12 +75,13 @@ test "search is a case-insensitive substring over visible fields" {
 }
 
 test "each table's predicate matches what its rows show" {
-    const ct: api.Container = .{ .Names = &.{"/Web"}, .Image = "nginx", .State = "running" };
+    const ct: api.Container = .{ .Names = &.{"/Web"}, .Image = "nginx", .State = "running", .Status = "Up 2 hours (healthy)" };
     try std.testing.expect(keepContainer("web", &ct));
     try std.testing.expect(keepContainer("NGINX", &ct));
     try std.testing.expect(!keepContainer("redis", &ct));
     // Each field is matched whole: a query spanning two fields matches nothing.
     try std.testing.expect(!keepContainer("web nginx", &ct));
+    try std.testing.expect(keepContainer("healthy", &ct));
 
     const im: api.Image = .{ .Id = "sha256:0123456789abcdef", .RepoTags = &.{"alpine:3.22"} };
     try std.testing.expect(keepImage("3.22", im));
