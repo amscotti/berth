@@ -136,7 +136,9 @@ Rules this codebase holds itself to: **600 lines per file**, **no C shims**,
 — the engine is read on a worker, never on the thread that paints.
 
 The worker/snapshot model, ownership rules, test strategy and open risks are
-written up in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+written up in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the ranked
+feature roadmap drawn from Docker Desktop and Podman Desktop lives in
+[docs/FEATURE-RESEARCH.md](docs/FEATURE-RESEARCH.md).
 
 ## Releases
 
