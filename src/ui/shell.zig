@@ -5,6 +5,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../app.zig");
 const api = @import("../engine/api.zig");
+const lifetime = @import("../engine/lifetime.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
 const theme = @import("theme.zig");
@@ -126,6 +127,24 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         if (ct.health()) |h| facts(c, "Health", h);
         if (ct.project()) |project| facts(c, "Project", project);
         if (ct.service()) |service| facts(c, "Service", service);
+        if (lifetime.upSeconds(ct.Status)) |secs| {
+            facts(c, "Up", format.duration(c, secs));
+        }
+        const st = app.statFor(s, ct.Id);
+        if (ct.isUp()) {
+            facts(c, "Network", c.print("↓ {s} · ↑ {s}", .{
+                format.bytes(c, st.net_rx),
+                format.bytes(c, st.net_tx),
+            }));
+            facts(c, "Disk", c.print("read {s} · wrote {s}", .{
+                format.bytes(c, st.blk_read),
+                format.bytes(c, st.blk_write),
+            }));
+            if (st.pids) |n| facts(c, "PIDs", c.print("{d}", .{n}));
+        }
+        if (s.detail_lifetime) |life| {
+            if (life.restarts > 0) facts(c, "Restarts", c.print("{d}", .{life.restarts}));
+        }
         if (widgets.portsText(c, &ct, 4).len > 0) {
             const ports_row = ui.div(c).row().wFull().itemsCenter().gap(8);
             ui.text(c, "Ports", .{ .size = 11, .color = c.theme.muted });

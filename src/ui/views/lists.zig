@@ -8,6 +8,7 @@ const api = @import("../../engine/api.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const search = @import("search.zig");
+const metrics = @import("metrics.zig");
 const shell = @import("../shell.zig");
 
 const ROW = 44.0;
@@ -35,6 +36,7 @@ const ContainerSort = struct {
             4 => numOrder(app.statFor(ctx.s, a.Id).cpu, app.statFor(ctx.s, b.Id).cpu),
             5 => numOrder(@floatFromInt(app.statFor(ctx.s, a.Id).mem), @floatFromInt(app.statFor(ctx.s, b.Id).mem)),
             6 => std.ascii.orderIgnoreCase(a.project() orelse "", b.project() orelse ""),
+            7, 8, 9, 10 => numOrder(metrics.statKey(ctx.s, ctx.key, a), metrics.statKey(ctx.s, ctx.key, b)),
             else => .eq,
         };
         return ordered(order, ctx.desc);
@@ -179,23 +181,12 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     for (s.containers) |ct| {
         if (ct.project() != null) any_project = true;
     }
-    const ports_w: f32 = if (any_project) 120 else 180;
     std.mem.sort(*const api.Container, shown[0..n], ContainerSort{
         .s = s,
         .key = s.sort_containers.key,
         .desc = s.sort_containers.desc,
     }, ContainerSort.lessThan);
 
-    const full_cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 150, .key = 1 },
-        .{ .name = "IMAGE", .width = 140, .key = 2 },
-        .{ .name = "STATE", .width = 76, .key = 3 },
-        .{ .name = "CPU", .width = 62, .align_end = true, .key = 4 },
-        .{ .name = "MEM", .width = 78, .align_end = true, .key = 5 },
-        .{ .name = "PROJECT", .width = 90, .skip = !any_project, .key = 6 },
-        .{ .name = "PORTS", .width = ports_w },
-        .{ .name = "ACTIONS", .width = 160 },
-    };
     const narrow_cols = [_]widgets.Col{
         .{ .name = "NAME", .width = 120, .key = 1 },
         .{ .name = "STATE", .width = 70, .key = 3 },
@@ -203,7 +194,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         .{ .name = "MEM", .width = 70, .align_end = true, .key = 5 },
         .{ .name = "ACTIONS", .width = 150 },
     };
-    widgets.tableHeader(c, if (compact) narrow_cols[0..] else full_cols[0..], &s.sort_containers);
+    widgets.tableHeader(c, if (compact) narrow_cols[0..] else metrics.fullCols(any_project), &s.sort_containers);
 
     var rows = ui.list(c, .{ .count = n, .row_height = ROW });
     while (rows.next()) |i| {
@@ -219,26 +210,28 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         // One line per cell, and no deferred box that siblings fall into:
         // `defer name_cell.end()` would make everything after it a child of
         // the name column, which is why this row rendered vertically.
-        widgets.cell(c, ct.name(), if (compact) 120 else 150, false);
-        if (!compact) widgets.cellMuted(c, ct.Image, 140, false);
-        widgets.pillCell(c, ct.health() orelse ct.State, if (compact) 70 else 76);
+        widgets.cell(c, ct.name(), if (compact) 120 else 124, false);
+        if (!compact) widgets.cellMuted(c, ct.Image, 104, false);
+        widgets.pillCell(c, ct.health() orelse ct.State, 70);
         const st = app.statFor(s, ct.Id);
         // A stopped container has no stats at all: say so with a dash rather
         // than a zero, which would read as "idle" instead of "unknown". A
         // paused one still reports — frozen, but real.
         if (ct.isUp()) {
-            widgets.cell(c, format.percent(c, st.cpu), if (compact) 56 else 62, true);
-            widgets.cell(c, format.bytes(c, st.mem), if (compact) 70 else 78, true);
+            widgets.cell(c, format.percent(c, st.cpu), if (compact) 56 else 54, true);
+            widgets.cell(c, format.bytes(c, st.mem), if (compact) 70 else 70, true);
         } else {
-            widgets.cellMuted(c, "—", if (compact) 56 else 62, true);
-            widgets.cellMuted(c, "—", if (compact) 70 else 78, true);
+            widgets.cellMuted(c, "—", if (compact) 56 else 54, true);
+            widgets.cellMuted(c, "—", if (compact) 70 else 70, true);
         }
         if (!compact) {
+            metrics.netCell(c, &ct, st);
+            metrics.diskCell(c, &ct, st);
+            if (!any_project) metrics.pidsCell(c, &ct, st);
+            if (!any_project) metrics.uptimeCell(c, &ct);
             if (any_project) widgets.cellMuted(c, ct.project() orelse "—", 90, false);
-            // A pill per published port; clicking one opens it in a browser.
-            if (widgets.portPills(c, &ct, if (any_project) 2 else 3, ports_w)) |binding| s.openPort(binding);
         }
-        actions(s, c, &ct, if (compact) 150 else 160);
+        actions(s, c, &ct, 150);
     }
     rows.end();
 }

@@ -6,7 +6,9 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 const prune = @import("engine/prune.zig");
+const cleanup_mod = @import("cleanup.zig");
 const inspect = @import("engine/inspect.zig");
+const lifetime = @import("engine/lifetime.zig");
 const stats_pool = @import("stats_pool.zig");
 const refresh_mod = @import("refresh.zig");
 const discovery = @import("engine/discovery.zig");
@@ -122,6 +124,9 @@ pub const State = struct {
     /// The detail pane's mode: curated facts, or the engine's own JSON.
     pane_inspect: bool = false,
     inspect_buf: ?[]u8 = null,
+    /// Restarts and the exact start time for the selected container, read from
+    /// one inspect on selection — not per refresh, which would double requests.
+    detail_lifetime: ?lifetime.Lifetime = null,
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
@@ -226,7 +231,19 @@ pub const State = struct {
         s.selected_name = ct.name();
         s.clearInspect();
         s.pane_inspect = false;
+        // The cheap, always-shown fact first: an engine that answers nothing
+        // still opens the pane with what the list already knows.
+        s.loadLifetime(ct.Id);
         s.loadLogs(ct.Id);
+    }
+
+    /// One inspect per selection: the restart count and the exact start time
+    /// live there, and asking per refresh would double the request count.
+    fn loadLifetime(s: *State, id: []const u8) void {
+        var client = s.client orelse return;
+        const raw = inspect.fetch(&client, .container, id, s.gpa) catch return;
+        defer s.gpa.free(raw);
+        s.detail_lifetime = lifetime.fromInspect(s.gpa, raw);
     }
 
     pub fn selectImage(s: *State, im: *const api.Image) void {
@@ -349,6 +366,7 @@ pub const State = struct {
     pub fn clearInspect(s: *State) void {
         if (s.inspect_buf) |buf| s.gpa.free(buf);
         s.inspect_buf = null;
+        s.detail_lifetime = null;
     }
 
     /// Drop the visible snapshot; only for switching engines.
@@ -482,35 +500,10 @@ pub const State = struct {
     }
 
     /// Runs the selected prune endpoints; containers first, then their leavings.
+    /// Lives in `cleanup.zig` beside its dialog; this indirection keeps the
+    /// state machine inside the 600-line rule.
     pub fn runPrune(s: *State) void {
-        var client = s.client orelse {
-            s.closePrune();
-            return;
-        };
-        var reclaimed: u64 = 0;
-        var failed = false;
-        const steps = [_]struct { on: bool, kind: prune.Kind }{
-            .{ .on = s.prune_opts.containers, .kind = .containers },
-            .{ .on = s.prune_opts.images, .kind = .images },
-            .{ .on = s.prune_opts.volumes, .kind = .volumes },
-            .{ .on = s.prune_opts.networks, .kind = .networks },
-            .{ .on = s.prune_opts.build_cache, .kind = .build_cache },
-        };
-        for (steps) |step| {
-            if (!step.on) continue;
-            reclaimed += prune.run(&client, step.kind) catch blk: {
-                failed = true;
-                break :blk 0;
-            };
-        }
-        s.prune_open = false;
-        if (failed) {
-            s.notify("Cleanup finished with errors", true);
-        } else {
-            var buf: [32]u8 = undefined;
-            s.notifyFmt("Freed {s}", .{format.bytesBuf(&buf, reclaimed)}, false);
-        }
-        s.refresh();
+        cleanup_mod.runPrune(s);
     }
 
     /// Opens a container's published port in the default browser. A binding on

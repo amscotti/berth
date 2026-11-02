@@ -13,6 +13,7 @@ pub const Stats = struct {
     memory_stats: Mem = .{},
     pids_stats: ?struct { current: u32 = 0 } = null,
     networks: ?std.json.Value = null,
+    blkio_stats: ?Blkio = null,
 
     pub const Cpu = struct {
         cpu_usage: Usage = .{},
@@ -27,6 +28,20 @@ pub const Stats = struct {
         limit: u64 = 0,
         stats: ?std.json.Value = null,
     };
+
+    pub const Blkio = struct {
+        io_service_bytes_recursive: ?[]const Entry = null,
+
+        pub const Entry = struct {
+            major: u64 = 0,
+            minor: u64 = 0,
+            op: []const u8 = "",
+            value: u64 = 0,
+        };
+    };
+
+    pub const Net = struct { rx: u64 = 0, tx: u64 = 0 };
+    pub const Disk = struct { read: u64 = 0, write: u64 = 0 };
 
     /// Percent of one core, the same figure `docker stats` prints: the delta in
     /// container CPU over the delta in system CPU, times the core count.
@@ -74,7 +89,58 @@ pub const Stats = struct {
     pub fn memLimit(self: Stats) u64 {
         return self.memory_stats.limit;
     }
+
+    /// Bytes received and sent, summed over every interface — the lifetime
+    /// figure `docker stats` shows, not a rate. A container with no network
+    /// namespace reports nothing here, which reads as an honest zero.
+    pub fn netTotals(self: Stats) Net {
+        var out: Net = .{ .rx = 0, .tx = 0 };
+        const networks = self.networks orelse return out;
+        if (networks != .object) return out;
+        var it = networks.object.iterator();
+        while (it.next()) |entry| {
+            const iface = entry.value_ptr.*;
+            if (iface != .object) continue;
+            out.rx += jsonU64(iface.object.get("rx_bytes"));
+            out.tx += jsonU64(iface.object.get("tx_bytes"));
+        }
+        return out;
+    }
+
+    /// Bytes read and written through the block layer. cgroup v1 names the ops
+    /// "Read"/"Write", v2 "read"/"write"; other ops (sync, discard, total) are
+    /// not bytes and are ignored, and every device is summed — that is what
+    /// `docker stats` does.
+    pub fn diskTotals(self: Stats) Disk {
+        var out: Disk = .{ .read = 0, .write = 0 };
+        const blkio = self.blkio_stats orelse return out;
+        const entries = blkio.io_service_bytes_recursive orelse return out;
+        for (entries) |e| {
+            if (std.ascii.eqlIgnoreCase(e.op, "read")) {
+                out.read += e.value;
+            } else if (std.ascii.eqlIgnoreCase(e.op, "write")) {
+                out.write += e.value;
+            }
+        }
+        return out;
+    }
+
+    /// Processes now. Missing `pids_stats` means the host's controller is off:
+    /// unknown, which the caller shows as a dash rather than a zero.
+    pub fn pidsCurrent(self: Stats) ?u32 {
+        const p = self.pids_stats orelse return null;
+        return p.current;
+    }
 };
+
+fn jsonU64(v: ?std.json.Value) u64 {
+    const value = v orelse return 0;
+    return switch (value) {
+        .integer => |i| @intCast(@max(@as(i64, 0), i)),
+        .float => |f| @intFromFloat(@max(@as(f64, 0), f)),
+        else => 0,
+    };
+}
 
 test "cpu percent uses the previous sample, not the lifetime average" {
     const json =
@@ -211,4 +277,58 @@ test "memory falls back to raw usage and to the older cache key" {
     var b = try std.json.parseFromSlice(Stats, std.testing.allocator, cached, .{ .ignore_unknown_fields = true });
     defer b.deinit();
     try std.testing.expectEqual(@as(u64, 500), b.value.memUsed());
+}
+
+test "network totals sum every interface" {
+    const json =
+        \\{"networks":{"eth0":{"rx_bytes":100,"tx_bytes":40},"eth1":{"rx_bytes":22,"tx_bytes":2}}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const net = parsed.value.netTotals();
+    try std.testing.expectEqual(@as(u64, 122), net.rx);
+    try std.testing.expectEqual(@as(u64, 42), net.tx);
+
+    const none = try std.json.parseFromSlice(Stats, std.testing.allocator, "{}", .{ .ignore_unknown_fields = true });
+    defer none.deinit();
+    try std.testing.expectEqual(@as(u64, 0), none.value.netTotals().rx);
+}
+
+test "disk totals match cgroup v1 and v2 op names, ignoring the rest" {
+    const v2 =
+        \\{"blkio_stats":{"io_service_bytes_recursive":[
+        \\ {"major":259,"minor":0,"op":"read","value":512},
+        \\ {"major":259,"minor":0,"op":"write","value":128},
+        \\ {"major":259,"minor":1,"op":"read","value":64},
+        \\ {"major":8,"minor":0,"op":"sync","value":999999}]}}
+    ;
+    var a = try std.json.parseFromSlice(Stats, std.testing.allocator, v2, .{ .ignore_unknown_fields = true });
+    defer a.deinit();
+    const disk = a.value.diskTotals();
+    try std.testing.expectEqual(@as(u64, 576), disk.read);
+    try std.testing.expectEqual(@as(u64, 128), disk.write);
+
+    const v1 =
+        \\{"blkio_stats":{"io_service_bytes_recursive":[
+        \\ {"major":259,"minor":0,"op":"Read","value":10},
+        \\ {"major":259,"minor":0,"op":"Write","value":5}]}}
+    ;
+    var b = try std.json.parseFromSlice(Stats, std.testing.allocator, v1, .{ .ignore_unknown_fields = true });
+    defer b.deinit();
+    try std.testing.expectEqual(@as(u64, 10), b.value.diskTotals().read);
+    try std.testing.expectEqual(@as(u64, 5), b.value.diskTotals().write);
+
+    const empty = try std.json.parseFromSlice(Stats, std.testing.allocator, "{\"blkio_stats\":{}}", .{ .ignore_unknown_fields = true });
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(u64, 0), empty.value.diskTotals().read);
+}
+
+test "pids are a number or unknown, never a silent zero" {
+    const has = try std.json.parseFromSlice(Stats, std.testing.allocator, "{\"pids_stats\":{\"current\":7}}", .{ .ignore_unknown_fields = true });
+    defer has.deinit();
+    try std.testing.expectEqual(@as(?u32, 7), has.value.pidsCurrent());
+
+    const without = try std.json.parseFromSlice(Stats, std.testing.allocator, "{}", .{ .ignore_unknown_fields = true });
+    defer without.deinit();
+    try std.testing.expectEqual(@as(?u32, null), without.value.pidsCurrent());
 }
