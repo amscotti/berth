@@ -44,17 +44,75 @@ fn detailPane(s: *app.State, c: *ui.Context) void {
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
     ui.text(c, s.selected_name, .{ .size = 15, .weight = .semibold, .truncate = .ellipsis });
     ui.spacer(c);
+    // Facts or the engine's own JSON, as Docker Desktop's Inspect tab does.
+    const facts_tab = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11)
+        .bg(if (!s.pane_inspect) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+    ui.text(c, "Facts", .{
+        .size = 11,
+        .weight = if (!s.pane_inspect) .medium else .regular,
+        .color = if (!s.pane_inspect) c.theme.accent else c.theme.muted,
+    });
+    if (facts_tab.clicked()) {
+        s.pane_inspect = false;
+        s.redraw();
+    }
+    facts_tab.end();
+    const json_tab = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11)
+        .bg(if (s.pane_inspect) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+    ui.text(c, "Inspect", .{
+        .size = 11,
+        .weight = if (s.pane_inspect) .medium else .regular,
+        .color = if (s.pane_inspect) c.theme.accent else c.theme.muted,
+    });
+    if (json_tab.clicked()) {
+        s.pane_inspect = true;
+        if (s.inspect_buf == null) s.reloadInspect();
+        s.redraw();
+    }
+    json_tab.end();
     const close = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11).bg(c.theme.surface_hover);
     ui.text(c, "Close", .{ .size = 11, .color = c.theme.muted });
     if (close.clicked()) s.clearSelection();
     close.end();
     head.end();
 
+    if (s.pane_inspect) {
+        inspectView(s, c);
+        return;
+    }
+
     switch (s.detail_kind) {
         .container => containerDetail(s, c),
         .image => imageDetail(s, c),
         .volume => volumeDetail(s, c),
         .network => networkDetail(s, c),
+    }
+}
+
+/// The engine's own JSON for the selected object, fetched on demand and owned
+/// by the state so a snapshot swap cannot pull it out from under the pane.
+fn inspectView(s: *app.State, c: *ui.Context) void {
+    const head = ui.div(c).row().wFull().itemsCenter().gap(8);
+    ui.text(c, "Inspect · as the engine sees it", .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+    ui.spacer(c);
+    const again = ui.div(c).row().h(20).px(7).itemsCenter().rounded(10).bg(c.theme.surface_hover);
+    ui.text(c, "Refresh", .{ .size = 10.5, .color = c.theme.muted });
+    if (again.clicked()) s.reloadInspect();
+    again.end();
+    head.end();
+
+    ui.scroll(c, .{ .width = .fill, .height = .fill, .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 }, .radius = 8, .background = c.theme.background });
+    defer ui.end(c);
+    if (s.inspect_buf) |text| {
+        ui.text(c, text, .{
+            .size = 10.5,
+            .mono = true,
+            .wrap = true,
+            .leading = 1.35,
+            .color = c.theme.text,
+        });
+    } else {
+        ui.text(c, "No inspect JSON yet. Refresh fetches it from the engine.", .{ .size = 11.5, .color = c.theme.muted });
     }
 }
 

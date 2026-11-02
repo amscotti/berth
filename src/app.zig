@@ -6,6 +6,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 const prune = @import("engine/prune.zig");
+const inspect = @import("engine/inspect.zig");
 const stats_pool = @import("stats_pool.zig");
 const refresh_mod = @import("refresh.zig");
 const discovery = @import("engine/discovery.zig");
@@ -118,6 +119,9 @@ pub const State = struct {
     /// Logs are owned by the state, not an arena: they must survive a snapshot
     /// swap, and are refreshed only when the selection changes or on request.
     log_buf: ?[]u8 = null,
+    /// The detail pane's mode: curated facts, or the engine's own JSON.
+    pane_inspect: bool = false,
+    inspect_buf: ?[]u8 = null,
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
@@ -160,37 +164,10 @@ pub const State = struct {
     }
 
     /// Resolves the container named in `pending_act` and runs the verb against
-    /// it through the same path the buttons use.
+    /// it through the same path the buttons use. Lives in `refresh.zig`, where
+    /// its caller is, so this file stays inside the line rule.
     pub fn runPendingAct(s: *State) bool {
-        const spec = s.pending_act_saved;
-        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return false;
-        const verb = spec[0..colon];
-        const name = spec[colon + 1 ..];
-        for (s.containers) |ct| {
-            if (!std.mem.eql(u8, ct.name(), name)) continue;
-            var buf: [256]u8 = undefined;
-            if (std.mem.eql(u8, verb, "stop")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/stop", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Stopped");
-            } else if (std.mem.eql(u8, verb, "start")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Started");
-            } else if (std.mem.eql(u8, verb, "pause")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/pause", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Paused");
-            } else if (std.mem.eql(u8, verb, "unpause") or std.mem.eql(u8, verb, "resume")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/unpause", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Resumed");
-            } else if (std.mem.eql(u8, verb, "restart")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Restarted");
-            } else if (std.mem.eql(u8, verb, "delete")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}?force=1", .{ct.Id}) catch return false;
-                return s.act("DELETE", path, "Deleted");
-            }
-            return false;
-        }
-        return false;
+        return refresh_mod.pendingAct(s);
     }
 
     /// Saves the choice, then opens the window again with it — after this
@@ -247,6 +224,8 @@ pub const State = struct {
         s.detail_kind = .container;
         s.selected = ct.Id;
         s.selected_name = ct.name();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.loadLogs(ct.Id);
     }
 
@@ -255,6 +234,8 @@ pub const State = struct {
         s.selected = im.Id;
         s.selected_name = if (im.dangling()) "untagged" else im.tag();
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -263,6 +244,8 @@ pub const State = struct {
         s.selected = v.Name;
         s.selected_name = v.Name;
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -271,6 +254,8 @@ pub const State = struct {
         s.selected = if (n.Id.len > 0) n.Id else n.Name;
         s.selected_name = n.Name;
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -279,6 +264,8 @@ pub const State = struct {
         s.selected = null;
         s.selected_name = "";
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -288,6 +275,32 @@ pub const State = struct {
         if (s.detail_kind != .container) return;
         const id = s.selected orelse return;
         s.loadLogs(id);
+    }
+
+    /// The pane's raw JSON, on the same terms: read on demand, owned by the
+    /// state, cleared with the selection it describes.
+    pub fn reloadInspect(s: *State) void {
+        const id = s.selected orelse return;
+        s.clearInspect();
+        var client = s.client orelse return;
+        const kind: inspect.Kind = switch (s.detail_kind) {
+            .container => .container,
+            .image => .image,
+            .volume => .volume,
+            .network => .network,
+        };
+        const raw = inspect.fetch(&client, kind, id, s.gpa) catch {
+            if (client.err_body.len > 0) {
+                s.notifyFmt("{s}", .{client.err_body}, true);
+            } else {
+                s.notify("could not read the inspect JSON", true);
+            }
+            s.redraw();
+            return;
+        };
+        defer s.gpa.free(raw);
+        s.inspect_buf = inspect.pretty(s.gpa, raw, 256 * 1024) catch null;
+        s.redraw();
     }
 
     fn loadLogs(s: *State, id: []const u8) void {
@@ -331,6 +344,13 @@ pub const State = struct {
         s.log_text = "";
     }
 
+    /// Same lifetime as the logs: the pane's JSON must survive snapshot swaps
+    /// and belong to exactly one selected object.
+    pub fn clearInspect(s: *State) void {
+        if (s.inspect_buf) |buf| s.gpa.free(buf);
+        s.inspect_buf = null;
+    }
+
     /// Drop the visible snapshot; only for switching engines.
     fn clearData(s: *State) void {
         if (s.retired) |*old| old.deinit();
@@ -346,6 +366,7 @@ pub const State = struct {
         s.selected = null;
         s.selected_name = "";
         s.clearLogs();
+        s.clearInspect();
         if (s.client) |*c| c.alloc = s.arena.allocator();
     }
 

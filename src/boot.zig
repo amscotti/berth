@@ -20,6 +20,7 @@ pub fn destroy(s: *app.State) void {
     if (s.runtimes.len > 0) s.gpa.free(s.runtimes);
     if (s.job) |job| refresh.discard(job);
     s.clearLogs();
+    s.clearInspect();
     s.search.deinit();
     if (s.retired) |*r| r.deinit();
     s.arena.deinit();

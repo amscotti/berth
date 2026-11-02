@@ -54,7 +54,7 @@ pub const Client = struct {
         return self.callOptsTimeout(method, p, body, max, raw, http.Conn.io_timeout_sec);
     }
 
-    fn callOptsTimeout(
+    pub fn callOptsTimeout(
         self: *Client,
         method: []const u8,
         p: []const u8,
