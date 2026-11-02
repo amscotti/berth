@@ -486,6 +486,17 @@ pub const State = struct {
         s.refresh();
     }
 
+    /// Opens a container's published port in the default browser. A binding on
+    /// a specific address goes there; the wildcard is localhost. The engine has
+    /// no scheme hint, so 443 is https and everything else is http.
+    pub fn openPort(s: *State, binding: api.HostBinding) void {
+        const where = if (binding.ip.len > 0) binding.ip else "localhost";
+        var buf: [80]u8 = undefined;
+        const scheme: []const u8 = if (binding.port == 443 or binding.port == 8443) "https" else "http";
+        const url = std.fmt.bufPrint(&buf, "{s}://{s}:{d}", .{ scheme, where, binding.port }) catch return;
+        if (!nanoui.shell.openUrl(url)) s.notify("could not open the browser", true);
+    }
+
     /// Runs one action against the engine, then refreshes. Returns whether a
     /// refresh was actually started, so a caller that also owns the timer does
     /// not re-arm it over the top of the new pass.

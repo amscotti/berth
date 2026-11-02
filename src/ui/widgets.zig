@@ -199,6 +199,54 @@ pub fn portsText(c: *ui.Context, ct: *const @import("../engine/api.zig").Contain
     return out;
 }
 
+/// Published ports as clickable pills: the host port, opening it in the
+/// browser when clicked. Fixed total width so the column never shifts, and the
+/// pills are bounded by that width however wide the digits are; at most `max`
+/// pills, then a muted "+k". Returns the binding whose pill was clicked.
+pub fn portPills(c: *ui.Context, ct: *const @import("../engine/api.zig").Container, max: usize, width: f32) ?@import("../engine/api.zig").HostBinding {
+    var ports: [16]@import("../engine/api.zig").HostBinding = undefined;
+    const total = ct.publishedPorts(&ports);
+    const filled = @min(total, ports.len);
+
+    // Pills are intrinsic-width, so bound them by the slot: reserve room for
+    // the "+k" suffix, then fit as many pills as their digits allow.
+    var budget = width - 24;
+    var shown: usize = 0;
+    while (shown < filled and shown < max) : (shown += 1) {
+        var digits: usize = 1;
+        var port = ports[shown].port;
+        while (port >= 10) : (port = @divTrunc(port, 10)) digits += 1;
+        const pill_w = 14 + @as(f32, @floatFromInt(digits)) * 6.6;
+        if (shown > 0) budget -= 4;
+        if (pill_w > budget) break;
+        budget -= pill_w;
+    }
+
+    const slot = ui.div(c).row().w(width).h(20).itemsCenter().gap(4).clip();
+    defer slot.end();
+    var clicked: ?@import("../engine/api.zig").HostBinding = null;
+    for (ports[0..shown]) |binding| {
+        const host = ui.div(c).row().h(18).px(7).itemsCenter().rounded(9)
+            .bg(c.theme.accent.alpha(0.12)).control();
+        if (host.clicked()) clicked = binding;
+        ui.text(c, c.print("{d}", .{binding.port}), .{
+            .size = 10.5,
+            .weight = .medium,
+            .color = c.theme.accent,
+            .tabular = true,
+        });
+        host.end();
+    }
+    if (total > shown) {
+        ui.text(c, c.print("+{d}", .{total - shown}), .{
+            .size = 10.5,
+            .color = c.theme.muted,
+            .tabular = true,
+        });
+    }
+    return clicked;
+}
+
 /// A labelled figure, used by the Overview and the Runtimes cards.
 pub fn metric(c: *ui.Context, label: []const u8, value: []const u8, width: f32) void {
     const box = ui.div(c).column().w(width).gap(2);

@@ -67,7 +67,13 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         facts(c, "Status", ct.Status);
         if (ct.project()) |project| facts(c, "Project", project);
         if (ct.service()) |service| facts(c, "Service", service);
-        if (widgets.portsText(c, &ct, 4).len > 0) facts(c, "Ports", widgets.portsText(c, &ct, 4));
+        if (widgets.portsText(c, &ct, 4).len > 0) {
+            const ports_row = ui.div(c).row().wFull().itemsCenter().gap(8);
+            ui.text(c, "Ports", .{ .size = 11, .color = c.theme.muted });
+            if (widgets.portPills(c, &ct, 4, 200)) |binding| s.openPort(binding);
+            ui.text(c, widgets.portsText(c, &ct, 4), .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
+            ports_row.end();
+        }
         break;
     }
 

@@ -111,3 +111,37 @@ test "only the three default networks are built in" {
     try std.testing.expect((api.Network{ .Name = "none" }).builtin());
     try std.testing.expect(!(api.Network{ .Name = "shop" }).builtin());
 }
+
+test "published ports dedup by host port across address families" {
+    const json =
+        \\{"Ports":[{"PrivatePort":80,"PublicPort":8080,"Type":"tcp"},
+        \\          {"PrivatePort":80,"PublicPort":8080,"Type":"tcp","IP":"::"},
+        \\          {"PrivatePort":443,"PublicPort":8443,"Type":"tcp","IP":"192.168.1.5"},
+        \\          {"PrivatePort":1900,"PublicPort":1900,"Type":"udp"},
+        \\          {"PrivatePort":9000,"Type":"tcp"}]}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.publishedPorts(&out));
+    try std.testing.expectEqual(@as(u16, 8080), out[0].port);
+    try std.testing.expectEqualStrings("", out[0].ip); // the wildcard is "any", not an address
+    try std.testing.expectEqual(@as(u16, 8443), out[1].port);
+    try std.testing.expectEqualStrings("192.168.1.5", out[1].ip); // a specific binding is kept
+}
+
+test "published ports cap at the buffer and keep counting past it" {
+    var ports: [24]api.Port = undefined;
+    for (&ports, 0..) |*p, i| {
+        p.* = .{ .PrivatePort = @intCast(1000 + i), .PublicPort = @intCast(30000 + i), .Type = "tcp" };
+    }
+    const ct: api.Container = .{ .Ports = &ports };
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 24), ct.publishedPorts(&out));
+}
+
+test "a container with nothing published fills nothing" {
+    const ct: api.Container = .{ .Ports = &.{.{ .PrivatePort = 9000, .Type = "tcp" }} };
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 0), ct.publishedPorts(&out));
+}

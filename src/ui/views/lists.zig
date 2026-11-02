@@ -234,8 +234,8 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         }
         if (!compact) {
             if (any_project) widgets.cellMuted(c, ct.project() orelse "—", 90, false);
-            // One port when the line would otherwise run into the buttons.
-            widgets.cellMuted(c, widgets.portsText(c, &ct, if (any_project) 2 else 3), ports_w, false);
+            // A pill per published port; clicking one opens it in a browser.
+            if (widgets.portPills(c, &ct, if (any_project) 2 else 3, ports_w)) |binding| s.openPort(binding);
         }
         actions(s, c, &ct);
     }

@@ -228,6 +228,14 @@ pub const Port = struct {
     Type: []const u8 = "",
 };
 
+/// A host-side binding a browser can be pointed at.
+pub const HostBinding = struct {
+    port: u16 = 0,
+    /// The address the port is bound on, when Docker reports one that is not
+    /// the wildcard; empty means "any", which is `localhost` to a browser.
+    ip: []const u8 = "",
+};
+
 pub const Container = struct {
     Id: []const u8 = "",
     Names: []const []const u8 = &.{},
@@ -270,6 +278,44 @@ pub const Container = struct {
 
     pub fn isRunning(self: Container) bool {
         return std.mem.eql(u8, self.State, "running");
+    }
+
+    /// The host-side TCP ports a container publishes, deduplicated by public
+    /// port (Docker lists one binding per address family). Returns the total,
+    /// which can exceed `out.len`: the buffer fills, the count stays honest,
+    /// and the caller can still say "+k more". UDP and SCTP bindings are not
+    /// browseable and are left out.
+    pub fn publishedPorts(self: Container, out: []HostBinding) usize {
+        var n: usize = 0;
+        var extra: usize = 0;
+        var last_extra: ?u16 = null;
+        for (self.Ports) |p| {
+            const public = p.PublicPort orelse continue;
+            if (std.mem.eql(u8, p.Type, "udp") or std.mem.eql(u8, p.Type, "sctp")) continue;
+            var seen = false;
+            for (out[0..n]) |q| {
+                if (q.port == public) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+            if (n == out.len) {
+                // Past the buffer: count, deduplicating the neighbouring
+                // address-family twin the way the in-buffer scan does.
+                if (last_extra == public) continue;
+                last_extra = public;
+                extra += 1;
+                continue;
+            }
+            const ip = p.IP orelse "";
+            out[n] = .{
+                .port = public,
+                .ip = if (std.mem.eql(u8, ip, "0.0.0.0") or std.mem.eql(u8, ip, "::")) "" else ip,
+            };
+            n += 1;
+        }
+        return n + extra;
     }
 
     /// Published ports as `8080→80/tcp`; at most `max` then `+n`.
