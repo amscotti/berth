@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+          - name: macos-arm64
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Zig artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+            ~/Library/Caches/zig
+          key: zig-${{ runner.os }}-${{ hashFiles('build.zig', 'build.zig.zon') }}
+
+      - name: Install Zig 0.17.0
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Debug build
+        run: zig build
+
+      - name: Unit tests
+        run: zig build test
+
+      - name: 600-line rule
+        run: zig build lines
+
+      - name: Release build and package
+        run: zig build dist
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: berth-${{ matrix.name }}-ci
+          path: zig-out/dist/*
+          if-no-files-found: error

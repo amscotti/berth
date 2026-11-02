@@ -16,7 +16,7 @@ do about it* in that order, left to right.
 | Tell | Fired? |
 |---|---|
 | Tech gradient, glassmorphism, blob art | no |
-| Generic indigo accent by default | partly — the accent is blue, chosen to match platform chrome, not the model's favourite violet |
+| Generic indigo accent by default | no — the accent is burnt amber on warm paper, not a default blue or violet |
 | Equal-weight feature-tile grid | partly — the Overview is four equal cards, but they carry live graphs, not copy |
 | Accent rail / icon topper / center stack | no |
 | Monument stat | no — large numbers are the point on a monitor |
@@ -98,3 +98,42 @@ Snapshots were taken of all nine views through the headless path
 reachable to exercise the error state. Each was read as an image, not inferred
 from code. The defects above are the ones that survived that reading; the fixes
 were re-snapshotted and re-read.
+
+## Second pass: nanomon as the reference
+
+The first pass kept the platform's cool grey and one blue accent. A later pass
+used [nanomon](https://github.com/justrach/nanomon), the same author's activity
+monitor, as the structural reference:
+
+- **One warm surface, one accent.** Paper (`#f7f3ea`) and charcoal (`#17140f`)
+  with burnt amber for selection; sage and rust carry state. The palette is
+  derived from the framework theme each frame, so System / Light / Dark still
+  follows the desktop live.
+- **The rail monitors.** Each page shows the figure it is about (running/total
+  containers, image and volume counts, store size, answering engines) and the
+  bottom line says *Live · every 5 s* plus the engine's name. Group labels
+  split Resources from Engine.
+- **Cards look like instruments.** A tinted glyph, a coloured label, one large
+  tabular figure, a context note ("of 4 cores", "of 3 containers", "reclaimable
+  4.0 KiB") and the graph in a recessed well.
+- **Runtimes leads with the answer.** Reachable engines get full cards; the
+  sockets that did not answer collapse into one compact card instead of a
+  screenful of red.
+- **Bars fill their track.** The host split and the disk strip use proportional
+  leaves, so they are correct at any window width; the disk bar gained a
+  colour legend.
+- **The dock icon is the rail's cube.** `macos/make-icon.py` draws it;
+  `macos/build.sh` copies `berth.icns` into the bundle.
+- **The tables are tables.** Headers sort (with an arrow and a coloured title),
+  rows have hover and selection, and Images, Volumes and Networks open the
+  same right-hand inspector as Containers. With the inspector open they switch
+  to compact columns instead of running under it.
+- **Refresh neither blanks nor blocks the page.** The pass runs on a worker
+  thread, builds into its own arena, and posts one commit back to the main
+  queue; the rail says "Refreshing…" while it is in flight. The list, graphs
+  and disk figures stay readable and the window stays responsive throughout.
+- **Clean up is a first-class action.** The Disk page and Settings →
+  Maintenance open a sheet of prune categories with their reclaimable sizes,
+  defaulting to stopped containers, unused images and build cache; volumes and
+  networks are opt-in because they outlive their containers. The old bottom
+  action bar was removed; its refresh and cleanup actions moved here.

@@ -175,3 +175,40 @@ test "a truncated frame falls back to raw rather than losing text" {
     try std.testing.expectEqualStrings(raw, text);
 }
 
+
+test "cpu falls back to the per-core list when online_cpus is absent" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000,"percpu_usage":[1,2,3,4]},"system_cpu_usage":40000000},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    // (2e6 / 2e7) * 4 cores * 100 = 40%.
+    try std.testing.expectApproxEqAbs(@as(f64, 40.0), parsed.value.cpuPercent(), 0.001);
+}
+
+test "a missing previous system sample reports zero, not an infinity" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":1000000}}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(f64, 0), parsed.value.cpuPercent());
+}
+
+test "memory falls back to raw usage and to the older cache key" {
+    const raw =
+        \\{"memory_stats":{"usage":900,"limit":1000}}
+    ;
+    var a = try std.json.parseFromSlice(Stats, std.testing.allocator, raw, .{ .ignore_unknown_fields = true });
+    defer a.deinit();
+    try std.testing.expectEqual(@as(u64, 900), a.value.memUsed());
+
+    const cached =
+        \\{"memory_stats":{"usage":900,"limit":1000,"stats":{"cache":400}}}
+    ;
+    var b = try std.json.parseFromSlice(Stats, std.testing.allocator, cached, .{ .ignore_unknown_fields = true });
+    defer b.deinit();
+    try std.testing.expectEqual(@as(u64, 500), b.value.memUsed());
+}

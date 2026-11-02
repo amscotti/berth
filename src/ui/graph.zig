@@ -28,11 +28,15 @@ pub const Options = struct {
 
 /// Draws `series` stacked in columns, newest on the right.
 pub fn cellGraph(c: *ui.Context, series: []const Series, opts: Options) void {
+    // `clip` is load-bearing: the dots are absolute leaves and a stale or
+    // wider-than-the-card rect would otherwise paint them outside the well.
     const well = ui.div(c).wFull().h(opts.height).rounded(8)
-        .bg(c.theme.background).border(c.theme.border).p(inset);
+        .bg(c.theme.background).border(c.theme.border).p(inset).clip();
     const it = well.interaction();
-    const rect = it.rect orelse ui.Rect{ .x = 0, .y = 0, .w = 600, .h = opts.height };
     defer well.end();
+    // Without a laid-out rect there is no honest width to scale to; draw
+    // nothing this frame rather than guessing 600 and overflowing a narrow card.
+    const rect = it.rect orelse return;
 
     const inner_w = @max(@as(f32, 1), rect.w - 2 * inset);
     const inner_h = @max(@as(f32, 1), opts.height - 2 * inset);

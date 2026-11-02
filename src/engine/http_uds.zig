@@ -43,9 +43,27 @@ pub const Conn = struct {
     io: Io,
     stream: Io.net.Stream,
 
+    /// A socket that has accepted but gone quiet must not block the window
+    /// forever: Docker's `/system/df` can take seconds, and a Lima forwarder
+    /// that dies mid-response leaves `read` waiting with no one to close it.
+    /// Five seconds is one refresh interval: long enough for a real df, short
+    /// enough that a dead forwarder cannot make the window look hung.
+    pub const io_timeout_sec: isize = 5;
+
     pub fn open(io: Io, path: []const u8) !Conn {
+        return openTimeout(io, path, io_timeout_sec);
+    }
+
+    /// The same connection with an explicit timeout, for probes: a stale
+    /// socket must not hold up the scan for the normal request budget.
+    pub fn openTimeout(io: Io, path: []const u8, seconds: isize) !Conn {
         const addr = try Io.net.UnixAddress.init(path);
-        return .{ .io = io, .stream = try addr.connect(io) };
+        const conn: Conn = .{ .io = io, .stream = try addr.connect(io) };
+        const tv: std.posix.timeval = .{ .sec = seconds, .usec = 0 };
+        const fd = conn.stream.socket.handle;
+        std.posix.setsockopt(fd, @intCast(std.posix.SOL.SOCKET), @intCast(std.posix.SO.RCVTIMEO), std.mem.asBytes(&tv)) catch {};
+        std.posix.setsockopt(fd, @intCast(std.posix.SOL.SOCKET), @intCast(std.posix.SO.SNDTIMEO), std.mem.asBytes(&tv)) catch {};
+        return conn;
     }
 
     pub fn close(self: *Conn) void {
@@ -234,4 +252,66 @@ test "a short body is an error, not a silent truncation" {
 test "a body over the limit is refused" {
     const raw = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n0123456789abcdef\r\n0\r\n\r\n";
     try std.testing.expectError(error.TooLarge, decode(std.testing.allocator, raw, 8));
+}
+
+test "header names are case-insensitive and unknown transfers are refused" {
+    const head = try parseHead("HTTP/1.1 200 OK\r\ntransfer-encoding: Chunked\r\ncontent-length: 12");
+    try std.testing.expect(head.chunked);
+    try std.testing.expectEqual(@as(?usize, 12), head.content_length);
+
+    try std.testing.expectError(
+        error.UnsupportedTransfer,
+        parseHead("HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip"),
+    );
+}
+
+test "a bare status line is a valid empty response" {
+    const res = try decode(std.testing.allocator, "HTTP/1.1 304 Not Modified", 1024);
+    defer res.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 304), res.status);
+    try std.testing.expectEqualStrings("", res.body);
+}
+
+test "content-length wins over trailing bytes" {
+    const raw = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nbodyEXTRA";
+    const res = try decode(std.testing.allocator, raw, 1024);
+    defer res.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("body", res.body);
+}
+
+test "a malformed chunk is an error, not silent data loss" {
+    try std.testing.expectError(
+        error.BadChunk,
+        dechunk(std.testing.allocator, "zz\r\nhello\r\n0\r\n\r\n", 1024),
+    );
+    try std.testing.expectError(
+        error.BadChunk,
+        dechunk(std.testing.allocator, "5\r\nhello", 1024),
+    );
+}
+
+test "a socket that accepts but never answers times out" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var server = try addr.listen(std.testing.io, .{});
+    defer server.deinit(std.testing.io);
+
+    // The connection is queued by the kernel; no one accepts it and no one
+    // writes a response. This is the stalled-forwarder shape.
+    var conn = try Conn.openTimeout(std.testing.io, path, 1);
+    defer conn.close();
+    const started = Io.Clock.awake.now(std.testing.io).nanoseconds;
+    try std.testing.expectError(
+        error.WouldBlock,
+        conn.request(std.testing.allocator, "GET", "/_ping", "", 1024),
+    );
+    const elapsed = @divTrunc(Io.Clock.awake.now(std.testing.io).nanoseconds - started, std.time.ns_per_ms);
+    try std.testing.expect(elapsed >= 700);
+    try std.testing.expect(elapsed < 3000);
 }

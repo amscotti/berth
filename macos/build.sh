@@ -23,6 +23,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp zig-out/bin/berth "$APP/Contents/MacOS/berth"
 cp macos/Info.plist "$APP/Contents/Info.plist"
+cp macos/berth.icns "$APP/Contents/Resources/berth.icns"
 
 # An unsigned bundle runs locally; Gatekeeper only complains once it has been
 # downloaded. This ad-hoc signature keeps macOS from treating it as damaged.

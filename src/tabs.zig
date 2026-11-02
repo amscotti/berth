@@ -62,7 +62,7 @@ pub const Tab = enum {
             .images => "doc",
             .volumes => "folder",
             .networks => "network",
-            .stacks => "code",
+            .stacks => "rectangle.on.rectangle",
             .disk => "internaldrive",
             .runtimes => "desktopcomputer",
             .settings => "pencil",
@@ -85,4 +85,31 @@ pub fn tabFromName(name: []const u8) ?Tab {
         if (std.ascii.eqlIgnoreCase(name, pair.n)) return pair.t;
     }
     return null;
+}
+
+test "tab names parse case-insensitively and reject unknown ones" {
+    try std.testing.expectEqual(Tab.containers, tabFromName("containers").?);
+    try std.testing.expectEqual(Tab.containers, tabFromName("Containers").?);
+    try std.testing.expectEqual(Tab.settings, tabFromName("SETTINGS").?);
+    try std.testing.expect(tabFromName("events") == null);
+    try std.testing.expect(tabFromName("") == null);
+}
+
+test "every tab has a label and an icon" {
+    inline for (@typeInfo(Tab).@"enum".field_values) |value| {
+        const tab: Tab = @enumFromInt(value);
+        try std.testing.expect(tab.label().len > 0);
+        try std.testing.expect(tab.icon().len > 0);
+    }
+}
+
+test "filters keep exactly the containers they name" {
+    const running: api.Container = .{ .State = "running" };
+    const stopped: api.Container = .{ .State = "exited" };
+    try std.testing.expect(Filter.all.keeps(&running));
+    try std.testing.expect(Filter.all.keeps(&stopped));
+    try std.testing.expect(Filter.running.keeps(&running));
+    try std.testing.expect(!Filter.running.keeps(&stopped));
+    try std.testing.expect(Filter.stopped.keeps(&stopped));
+    try std.testing.expect(!Filter.stopped.keeps(&running));
 }

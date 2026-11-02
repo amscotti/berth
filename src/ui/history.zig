@@ -87,3 +87,24 @@ test "history fills, then drops the oldest" {
     try std.testing.expectEqual(@as(f32, 6), h.values(.cpu)[0]);
     try std.testing.expectEqual(@as(f32, @floatFromInt(Cap + 5)), h.peak(.cpu));
 }
+
+test "an empty history reads as zero, not uninitialised memory" {
+    var h: History = .{};
+    try std.testing.expectEqual(@as(f32, 0), h.latest(.mem));
+    try std.testing.expectEqual(@as(f32, 0), h.peak(.host_cpu));
+    try std.testing.expectEqual(@as(usize, 0), h.values(.disk).len);
+}
+
+test "each series keeps its own column" {
+    var h: History = .{};
+    h.push(.{ .cpu = 1, .mem = 2, .running = 3, .disk = 4, .host_cpu = 5, .host_mem = 6 });
+    h.push(.{ .cpu = 7, .mem = 8, .running = 9, .disk = 10, .host_cpu = 11, .host_mem = 12 });
+    try std.testing.expectEqual(@as(f32, 7), h.latest(.cpu));
+    try std.testing.expectEqual(@as(f32, 8), h.latest(.mem));
+    try std.testing.expectEqual(@as(f32, 9), h.latest(.running));
+    try std.testing.expectEqual(@as(f32, 10), h.latest(.disk));
+    try std.testing.expectEqual(@as(f32, 11), h.latest(.host_cpu));
+    try std.testing.expectEqual(@as(f32, 12), h.latest(.host_mem));
+    try std.testing.expectEqual(@as(f32, 7), h.peak(.cpu));
+    try std.testing.expectEqual(@as(f32, 12), h.peak(.host_mem));
+}

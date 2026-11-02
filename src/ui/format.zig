@@ -22,6 +22,16 @@ pub fn bytes(c: *ui.Context, n: anytype) []const u8 {
     return c.print("{d:.1} {s}", .{ value, UNITS[unit] });
 }
 
+/// The same figure into a caller's buffer, for places without a frame context
+/// (a toast built in a callback, for instance).
+pub fn bytesBuf(buf: []u8, n: u64) []const u8 {
+    var value: f64 = @floatFromInt(n);
+    var unit: usize = 0;
+    while (value >= 1024 and unit + 1 < UNITS.len) : (unit += 1) value /= 1024;
+    if (unit == 0) return std.fmt.bufPrint(buf, "{d} B", .{n}) catch "?";
+    return std.fmt.bufPrint(buf, "{d:.1} {s}", .{ value, UNITS[unit] }) catch "?";
+}
+
 /// A signed byte figure, for reclaimable totals.
 pub fn bytesSigned(c: *ui.Context, n: i64) []const u8 {
     if (n < 0) return c.print("-{s}", .{bytes(c, @as(u64, @intCast(-n)))});
@@ -114,4 +124,24 @@ test "percent keeps a decimal below a hundred" {
     var b: [32]u8 = undefined;
     try std.testing.expectEqualStrings("0.4%", percentInto(&b, 0.42));
     try std.testing.expectEqualStrings("142%", percentInto(&b, 142.4));
+}
+
+test "bytesBuf formats the same units without a frame context" {
+    var b: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0 B", bytesBuf(&b, 0));
+    try std.testing.expectEqualStrings("1.5 KiB", bytesBuf(&b, 1536));
+    try std.testing.expectEqualStrings("1.5 GiB", bytesBuf(&b, 1610612736));
+}
+
+test "percent switches to a whole number at one hundred" {
+    var b: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("99.9%", percentInto(&b, 99.94));
+    try std.testing.expectEqualStrings("100%", percentInto(&b, 100));
+    try std.testing.expectEqualStrings("250%", percentInto(&b, 250));
+}
+
+test "a day and beyond keeps two fields" {
+    var b: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("1d 00h", durationInto(&b, 86400));
+    try std.testing.expectEqualStrings("2d 06h", durationInto(&b, 194400));
 }

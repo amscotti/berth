@@ -51,7 +51,19 @@ pub const Client = struct {
     /// One request, one response, connection closed. The body is owned.
     /// `p` is prefixed with the negotiated API version unless `raw` is set.
     pub fn callOpts(self: *Client, method: []const u8, p: []const u8, body: []const u8, max: usize, raw: bool) ![]u8 {
-        var conn = try http.Conn.open(self.io, self.socket);
+        return self.callOptsTimeout(method, p, body, max, raw, http.Conn.io_timeout_sec);
+    }
+
+    fn callOptsTimeout(
+        self: *Client,
+        method: []const u8,
+        p: []const u8,
+        body: []const u8,
+        max: usize,
+        raw: bool,
+        seconds: isize,
+    ) ![]u8 {
+        var conn = try http.Conn.openTimeout(self.io, self.socket, seconds);
         defer conn.close();
         var full: []u8 = undefined;
         if (raw) {
@@ -78,7 +90,11 @@ pub const Client = struct {
 
     /// Parses a JSON answer into `T`, then frees the bytes.
     pub fn getOpts(self: *Client, comptime T: type, p: []const u8, raw: bool) !T {
-        const body = try self.callOpts("GET", p, "", 8 * 1024 * 1024, raw);
+        return self.getOptsTimeout(T, p, raw, http.Conn.io_timeout_sec);
+    }
+
+    fn getOptsTimeout(self: *Client, comptime T: type, p: []const u8, raw: bool, seconds: isize) !T {
+        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, raw, seconds);
         defer self.gpa.free(body);
         const parsed = std.json.parseFromSliceLeaky(T, self.alloc, body, .{
             .ignore_unknown_fields = true,
@@ -131,7 +147,10 @@ pub const Client = struct {
     }
 
     pub fn df(self: *Client) !Df {
-        return self.get(Df, "/system/df");
+        // Shorter than the default: df walks every store, and on a stalled
+        // forwarder it is the call that used to freeze the window. Missing
+        // disk figures for one refresh is better than a hung monitor.
+        return self.getOptsTimeout(Df, "/system/df", false, 3);
     }
 
     /// One stats sample, with `precpu` populated: `stream=false` alone waits
@@ -390,6 +409,21 @@ pub const Network = struct {
     }
 };
 
+/// How many containers are attached to `network`. The `/networks` list leaves
+/// `Containers` empty on current engines, so count from each container's
+/// `NetworkSettings.Networks` instead of trusting the list's field.
+pub fn attachedCount(containers: []const Container, network: []const u8) usize {
+    var n: usize = 0;
+    for (containers) |ct| {
+        const settings = ct.NetworkSettings orelse continue;
+        if (settings != .object) continue;
+        const nets = settings.object.get("Networks") orelse continue;
+        if (nets != .object) continue;
+        if (nets.object.get(network) != null) n += 1;
+    }
+    return n;
+}
+
 /// `/system/df` in both shapes: `*Usage` from API 1.52, the flat fields before.
 pub const Df = struct {
     LayersSize: u64 = 0,
@@ -422,6 +456,29 @@ pub const Df = struct {
         var sum: i64 = 0;
         if (self.Images) |list| {
             for (list) |i| sum += @intCast(i.Size);
+        }
+        return sum;
+    }
+
+    /// Everything the engine's stores hold, not only images: the figure the
+    /// overview's DISK card and its graph stand for.
+    pub fn totalBytes(self: Df) i64 {
+        var sum = self.imageBytes();
+        if (self.ContainerUsage) |u| sum += u.TotalSize;
+        if (self.VolumeUsage) |u| {
+            sum += u.TotalSize;
+        } else if (self.Volumes) |list| {
+            for (list) |v| {
+                if (v.UsageData) |d| {
+                    // -1 means "not measured"; adding it would shrink the total.
+                    if (d.Size > 0) sum += d.Size;
+                }
+            }
+        }
+        if (self.BuildCacheUsage) |u| {
+            sum += u.TotalSize;
+        } else if (self.BuildCache) |list| {
+            for (list) |b| sum += b.Size;
         }
         return sum;
     }
@@ -488,4 +545,59 @@ test "df reads the new shape and the old one" {
     var b = try std.json.parseFromSlice(Df, std.testing.allocator, old_shape, .{ .ignore_unknown_fields = true });
     defer b.deinit();
     try std.testing.expectEqual(@as(i64, 42), b.value.imageBytes());
+}
+
+test "df total is every store, not just images" {
+    const json =
+        \\{"ImageUsage":{"TotalSize":100},"ContainerUsage":{"TotalSize":10},
+        \\ "VolumeUsage":{"TotalSize":5},"BuildCacheUsage":{"TotalSize":2}}
+    ;
+    var parsed = try std.json.parseFromSlice(Df, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(i64, 117), parsed.value.totalBytes());
+
+    const old =
+        \\{"Images":[{"Size":40},{"Size":2}],
+        \\ "Volumes":[{"UsageData":{"Size":7}},{"UsageData":{"Size":-1}}],
+        \\ "BuildCache":[{"Size":3}]}
+    ;
+    var b = try std.json.parseFromSlice(Df, std.testing.allocator, old, .{ .ignore_unknown_fields = true });
+    defer b.deinit();
+    // The -1 volume means "not measured" and must not shrink the total.
+    try std.testing.expectEqual(@as(i64, 52), b.value.totalBytes());
+}
+
+test "attached counts come from container network settings" {
+    const json =
+        \\{"Id":"a","Names":["/web"],"NetworkSettings":{"Networks":{"bridge":{},"shop":{}}}}
+    ;
+    var parsed = try std.json.parseFromSlice(Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const list = [_]Container{parsed.value};
+    try std.testing.expectEqual(@as(usize, 1), attachedCount(&list, "bridge"));
+    try std.testing.expectEqual(@as(usize, 1), attachedCount(&list, "shop"));
+    try std.testing.expectEqual(@as(usize, 0), attachedCount(&list, "host"));
+
+    const none = [_]Container{.{ .Id = "b" }};
+    try std.testing.expectEqual(@as(usize, 0), attachedCount(&none, "bridge"));
+}
+
+test "an image is dangling without a usable tag" {
+    const tagged = Image{ .RepoTags = &.{"alpine:3.22"} };
+    try std.testing.expect(!tagged.dangling());
+    try std.testing.expectEqualStrings("alpine:3.22", tagged.tag());
+
+    const none = Image{ .RepoTags = &.{"<none>:<none>"} };
+    try std.testing.expect(none.dangling());
+
+    const absent = Image{};
+    try std.testing.expect(absent.dangling());
+    try std.testing.expectEqualStrings("<none>:<none>", absent.tag());
+}
+
+test "only the three default networks are built in" {
+    try std.testing.expect((Network{ .Name = "bridge" }).builtin());
+    try std.testing.expect((Network{ .Name = "host" }).builtin());
+    try std.testing.expect((Network{ .Name = "none" }).builtin());
+    try std.testing.expect(!(Network{ .Name = "shop" }).builtin());
 }

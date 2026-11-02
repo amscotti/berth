@@ -64,7 +64,7 @@ pub const Found = struct {
 
 /// Every candidate socket, deduplicated, in the order a user would expect:
 /// Docker Desktop first, then Colima, then Podman, then plain dockerd.
-pub fn candidates(gpa: std.mem.Allocator) ![][]const u8 {
+pub fn candidates(io: std.Io, gpa: std.mem.Allocator) ![][]const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (list.items) |s| gpa.free(s);
@@ -91,6 +91,9 @@ pub fn candidates(gpa: std.mem.Allocator) ![][]const u8 {
         try addJoin(gpa, &list, home, "/.colima/default/docker.sock");
         try addJoin(gpa, &list, home, "/.colima/docker.sock");
         try addJoin(gpa, &list, home, "/.lima/default/sock/docker.sock");
+        // Lima names the socket after the instance, so a VM called `docker`
+        // lives under `~/.lima/docker/` and would otherwise be invisible.
+        try addLimaInstances(io, gpa, &list, home);
     }
     if (xdg) |d| {
         try addJoin(gpa, &list, d, "/podman/podman.sock");
@@ -116,6 +119,30 @@ fn addJoin(gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), base: []con
     try add(gpa, list, joined);
 }
 
+/// Every Lima instance, not just `default`: `limactl start docker` produces
+/// `~/.lima/docker/sock/docker.sock`, which is a perfectly ordinary engine.
+fn addLimaInstances(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), home: []const u8) !void {
+    const root = try std.fmt.allocPrint(gpa, "{s}/.lima", .{home});
+    defer gpa.free(root);
+    const dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        // `_config` and friends are Lima's own bookkeeping, not instances.
+        if (!isLimaInstance(entry.name)) continue;
+        const sock = try std.fmt.allocPrint(gpa, "{s}/{s}/sock/docker.sock", .{ root, entry.name });
+        defer gpa.free(sock);
+        try add(gpa, list, sock);
+    }
+}
+
+/// Lima's own bookkeeping directories start with an underscore; they are not
+/// engine instances and have no socket.
+pub fn isLimaInstance(name: []const u8) bool {
+    return name.len > 0 and name[0] != '_';
+}
+
 /// Guesses the runtime from its socket path. Only used for the label; the
 /// protocol is the same either way.
 pub fn kindOf(path: []const u8) Kind {
@@ -132,7 +159,7 @@ pub fn kindOf(path: []const u8) Kind {
 /// and info already read. Unreachable candidates are returned too, so the
 /// Runtimes view can explain what was tried.
 pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
-    const paths = try candidates(gpa);
+    const paths = try candidates(io, gpa);
     defer {
         for (paths) |p| gpa.free(p);
         gpa.free(paths);
@@ -166,7 +193,9 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
 
 /// `GET /_ping` — the one call every Docker-compatible engine answers.
 pub fn probe(client: *api.Client) bool {
-    var conn = http.Conn.open(client.io, client.socket) catch return false;
+    // Two seconds: a healthy engine answers /_ping at once, and a stale
+    // forwarder must not make discovery take eight seconds per candidate.
+    var conn = http.Conn.openTimeout(client.io, client.socket, 2) catch return false;
     defer conn.close();
     const res = conn.request(client.gpa, "GET", "/_ping", "", 4096) catch return false;
     defer res.deinit(client.gpa);
@@ -180,4 +209,22 @@ test "a socket path names its runtime" {
     try std.testing.expectEqual(Kind.podman, kindOf("/run/user/1000/podman/podman.sock"));
     try std.testing.expectEqual(Kind.docker_desktop, kindOf("/Users/x/.docker/run/docker.sock"));
     try std.testing.expectEqual(Kind.dockerd, kindOf("/var/run/docker.sock"));
+}
+
+test "lima instance directories exclude lima's own bookkeeping" {
+    try std.testing.expect(isLimaInstance("docker"));
+    try std.testing.expect(isLimaInstance("berth-docker"));
+    try std.testing.expect(!isLimaInstance("_config"));
+    try std.testing.expect(!isLimaInstance(""));
+
+    try std.testing.expectEqual(Kind.lima, kindOf("/Users/x/.lima/docker/sock/docker.sock"));
+    try std.testing.expectEqual(Kind.podman_machine, kindOf("/Users/x/.local/share/containers/podman/machine/applehv/podman.sock"));
+    try std.testing.expectEqual(Kind.podman, kindOf("/run/user/1000/podman/podman.sock"));
+}
+
+test "every runtime kind has a human label" {
+    inline for (@typeInfo(Kind).@"enum".field_values) |value| {
+        const kind: Kind = @enumFromInt(value);
+        try std.testing.expect(kind.label().len > 0);
+    }
 }

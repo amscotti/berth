@@ -3,6 +3,7 @@
 const std = @import("std");
 const nanoui = @import("nanoui");
 const app_mod = @import("app.zig");
+const boot = @import("boot.zig");
 const settings = @import("settings.zig");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
@@ -29,8 +30,8 @@ pub fn main(init: std.process.Init) !void {
     const app = try nanoui.App.create(init, .{ .name = "berth" });
     defer app.destroy();
 
-    const state = try app_mod.State.create(gpa, init.io, app);
-    defer state.destroy();
+    const state = try boot.create(gpa, init.io, app);
+    defer boot.destroy(state);
 
     // Preferences first: the appearance decides the theme the window opens
     // with, and the theme is fixed at creation.

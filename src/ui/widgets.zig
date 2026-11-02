@@ -9,6 +9,11 @@ pub const muted = 12.5;
 pub const body = 13.0;
 pub const title = 22.0;
 
+/// "1 image", "2 images": a count that reads like a sentence, not a label.
+pub fn count(c: *ui.Context, n: usize, one: []const u8, many: []const u8) []const u8 {
+    return c.print("{d} {s}", .{ n, if (n == 1) one else many });
+}
+
 /// Title, count and the one primary action, in the same order on every page.
 pub fn pageHeader(c: *ui.Context, heading: []const u8, subtitle: []const u8) void {
     const h = ui.div(c).row().wFull().itemsCenter().gap(10).pb(12);
@@ -24,25 +29,49 @@ pub const Col = struct {
     name: []const u8,
     width: f32,
     align_end: bool = false,
+    /// The sort key this header sets; 0 means the column is not sortable.
+    key: u8 = 0,
     /// A column that exists in the layout but is not drawn this frame.
     skip: bool = false,
 };
 
-pub fn tableHeader(c: *ui.Context, cols: []const Col) void {
-    const row = ui.div(c).row().wFull().itemsCenter().px(12).pb(6).gap(8);
-    defer row.end();
-    for (cols) |col| {
-        if (col.skip) continue;
-        const cell_box = ui.div(c).column().w(col.width).h(18).justifyCenter().itemsStart();
-        defer cell_box.end();
-        if (col.align_end) {
-            const inner = ui.div(c).row().wFull().justifyEnd();
-            defer inner.end();
-            ui.text(c, col.name, .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+/// Which column a table is ordered by, and which way.
+pub const Sort = struct {
+    key: u8 = 0,
+    desc: bool = false,
+
+    /// Pick a column: a new one starts ascending, the same one flips.
+    pub fn pick(self: *Sort, key: u8) void {
+        if (self.key == key) {
+            self.desc = !self.desc;
         } else {
-            ui.text(c, col.name, .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+            self.key = key;
+            self.desc = false;
         }
     }
+};
+
+pub fn tableHeader(c: *ui.Context, cols: []const Col, sort: ?*Sort) void {
+    const row = ui.div(c).row().wFull().itemsCenter().px(12).pb(6).gap(8);
+    for (cols) |col| {
+        if (col.skip) continue;
+        var head_cell = ui.div(c).row().w(col.width).h(18).itemsCenter().gap(3).control();
+        if (col.align_end) head_cell = head_cell.justifyEnd();
+        defer head_cell.end();
+
+        const active = col.key != 0 and sort != null and sort.?.key == col.key;
+        ui.text(c, col.name, .{
+            .size = 11,
+            .weight = .medium,
+            .color = if (active) c.theme.accent else c.theme.muted,
+        });
+        if (active) ui.text(c, if (sort.?.desc) "▼" else "▲", .{ .size = 8, .color = c.theme.accent });
+
+        if (col.key != 0 and sort != null and head_cell.clicked()) sort.?.pick(col.key);
+    }
+    row.end();
+    const rule = ui.div(c).wFull().h(1).bg(c.theme.border);
+    rule.end();
 }
 
 /// One cell of a row: text clipped to its column, numbers right-aligned and
@@ -86,6 +115,14 @@ pub fn pill(c: *ui.Context, state: []const u8) void {
     const box = ui.div(c).row().itemsCenter().px(8).h(20).rounded(10).bg(color.alpha(0.14));
     defer box.end();
     ui.text(c, state, .{ .size = 11, .weight = .medium, .color = color });
+}
+
+/// A coloured tile with a glyph in it, the small mark a card and a rail item
+/// carry so the eye finds the section before it reads the word.
+pub fn chip(c: *ui.Context, icon: []const u8, color: ui.Color, size: f32) void {
+    const box = ui.div(c).row().w(size).h(size).center().rounded(size * 0.28).bg(color.alpha(0.14));
+    defer box.end();
+    ui.icon(c, icon, .{ .size = size * 0.58, .color = color });
 }
 
 pub fn statusColor(c: *ui.Context, state: []const u8) ui.Color {
@@ -202,4 +239,15 @@ pub fn legend(c: *ui.Context, color: ui.Color, label: []const u8, value: []const
 pub fn card(c: *ui.Context, width: f32) void {
     const box = ui.div(c).column().w(width).p(16).gap(10).rounded(10).bg(c.theme.surface).border(c.theme.border);
     defer box.end();
+}
+
+test "a new sort column starts ascending and the same one flips" {
+    var sort: Sort = .{ .key = 1 };
+    sort.pick(1);
+    try std.testing.expect(sort.desc);
+    sort.pick(1);
+    try std.testing.expect(!sort.desc);
+    sort.pick(3);
+    try std.testing.expectEqual(@as(u8, 3), sort.key);
+    try std.testing.expect(!sort.desc);
 }

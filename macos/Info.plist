@@ -10,6 +10,8 @@
     <string>dev.berth.app</string>
     <key>CFBundleExecutable</key>
     <string>berth</string>
+    <key>CFBundleIconFile</key>
+    <string>berth.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

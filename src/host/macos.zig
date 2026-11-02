@@ -1,12 +1,11 @@
-//! The Mac, through sysctl only.
+//! The Mac, through Mach host statistics.
 //!
-//! **Written but not yet compiled**: this machine runs Linux and Zig needs the
-//! macOS SDK to build for Darwin, so the first build of this file will happen
-//! on the Mac. It is kept deliberately small — `sysctlbyname` with integer
-//! results, no Mach structs — so there is as little as possible to get wrong.
-//!
-//! `kern.cp_time` is an array of CPU ticks (user, nice, sys, idle, intr); the
-//! arithmetic is the same as Linux's `/proc/stat` from a different source.
+//! Current macOS does not publish `vm.page_active_count` or `kern.cp_time`
+//! through sysctl any more, so the numbers come from `host_statistics`, the
+//! same call `vm_stat` and Activity Monitor make. The struct below is the
+//! `vm_statistics64` prefix through `total_uncompressed_pages_in_compressor`
+//! (38 integers, the REV1 count), which every macOS that has the 64-bit call
+//! fills; later revisions only append fields we do not read.
 const std = @import("std");
 
 pub const Sample = struct {
@@ -16,6 +15,10 @@ pub const Sample = struct {
     engine_rss: u64 = 0,
 };
 
+const mach_port_t = u32;
+const kern_return_t = c_int;
+const mach_msg_type_number_t = u32;
+
 extern "c" fn sysctlbyname(
     name: [*:0]const u8,
     oldp: ?*anyopaque,
@@ -23,6 +26,67 @@ extern "c" fn sysctlbyname(
     newp: ?*anyopaque,
     newlen: usize,
 ) c_int;
+
+extern "c" fn mach_host_self() mach_port_t;
+extern "c" fn host_statistics(
+    host: mach_port_t,
+    flavor: c_int,
+    info: ?*anyopaque,
+    count: *mach_msg_type_number_t,
+) kern_return_t;
+extern "c" fn host_statistics64(
+    host: mach_port_t,
+    flavor: c_int,
+    info: ?*anyopaque,
+    count: *mach_msg_type_number_t,
+) kern_return_t;
+
+const HOST_CPU_LOAD_INFO: c_int = 3;
+const HOST_VM_INFO64: c_int = 4;
+
+/// `vm_statistics64` through `total_uncompressed_pages_in_compressor`.
+const VmStats = extern struct {
+    free_count: u32,
+    active_count: u32,
+    inactive_count: u32,
+    wire_count: u32,
+    zero_fill_count: u64,
+    reactivations: u64,
+    pageins: u64,
+    pageouts: u64,
+    faults: u64,
+    cow_faults: u64,
+    lookups: u64,
+    hits: u64,
+    purges: u64,
+    purgeable_count: u32,
+    speculative_count: u32,
+    decompressions: u64,
+    compressions: u64,
+    swapins: u64,
+    swapouts: u64,
+    compressor_page_count: u32,
+    throttled_count: u32,
+    external_page_count: u32,
+    internal_page_count: u32,
+    total_uncompressed_pages_in_compressor: u64,
+};
+
+/// `HOST_VM_INFO64_REV1_COUNT`: the prefix this struct describes.
+const vm_info_count: mach_msg_type_number_t = @sizeOf(VmStats) / @sizeOf(u32);
+
+const CpuLoad = extern struct {
+    cpu_ticks: [4]u32,
+};
+
+/// `HOST_CPU_LOAD_INFO_COUNT`.
+const cpu_info_count: mach_msg_type_number_t = @sizeOf(CpuLoad) / @sizeOf(u32);
+
+// CPU_STATE_USER, SYSTEM, IDLE, NICE, in the order the kernel returns them.
+const cpu_user = 0;
+const cpu_system = 1;
+const cpu_idle = 2;
+const cpu_nice = 3;
 
 /// A sysctl that answers with one integer, of either 32 or 64 bits — macOS is
 /// inconsistent about which, so the returned length decides.
@@ -37,32 +101,32 @@ fn intByName(name: [*:0]const u8) ?u64 {
     };
 }
 
-pub const Ticks = struct { busy: u64 = 0, total: u64 = 0 };
-
-/// The `kern.cp_time` counters folded into busy and total. The fourth is idle,
-/// so everything else is work.
-pub fn parseCpTime(values: []const u64) Ticks {
-    if (values.len < 4) return .{};
-    var total: u64 = 0;
-    for (values) |v| total += v;
-    return .{ .busy = total - values[3], .total = total };
-}
-
-pub fn percentBetween(prev: Ticks, now: Ticks) f32 {
-    if (now.total <= prev.total or now.busy < prev.busy) return 0;
-    const d_total = now.total - prev.total;
-    const d_busy = now.busy - prev.busy;
-    if (d_total == 0) return 0;
-    return @as(f32, @floatFromInt(d_busy)) / @as(f32, @floatFromInt(d_total)) * 100.0;
+/// The CPU share between two tick snapshots. The counters are 32-bit and wrap
+/// after roughly 497 days of uptime, so the difference is wrapping — a plain
+/// subtraction would report one bogus idle frame at the wrap.
+pub fn percentBetween(prev: [4]u32, now: [4]u32) f32 {
+    const user = now[cpu_user] -% prev[cpu_user];
+    const system = now[cpu_system] -% prev[cpu_system];
+    const nice = now[cpu_nice] -% prev[cpu_nice];
+    const idle = now[cpu_idle] -% prev[cpu_idle];
+    const busy: u32 = user +% system +% nice;
+    const total: u32 = busy +% idle;
+    if (total == 0) return 0;
+    return @as(f32, @floatFromInt(busy)) / @as(f32, @floatFromInt(total)) * 100.0;
 }
 
 pub const Sampler = struct {
-    prev: ?Ticks = null,
+    host: mach_port_t = 0,
+    prev: ?[4]u32 = null,
 
     pub fn sample(self: *Sampler, io: std.Io, gpa: std.mem.Allocator) Sample {
         _ = io;
         _ = gpa;
         var out: Sample = .{};
+
+        // A send right, kept for the life of the process: taking one per
+        // sample would leak a port name every five seconds.
+        if (self.host == 0) self.host = mach_host_self();
 
         out.mem_total = intByName("hw.memsize") orelse 0;
 
@@ -70,25 +134,41 @@ pub const Sampler = struct {
         // hand out again without swapping. Free pages alone would count every
         // cached file as used, which is how memory monitors end up alarming.
         const page_size = intByName("hw.pagesize") orelse 4096;
-        const active = intByName("vm.page_active_count") orelse 0;
-        const wired = intByName("vm.page_wire_count") orelse 0;
-        const compressed = intByName("vm.compressor_page_count") orelse 0;
-        out.mem_used = (active + wired + compressed) * page_size;
-        if (out.mem_used > out.mem_total) out.mem_used = out.mem_total;
+        var vm: VmStats = std.mem.zeroes(VmStats);
+        var vm_len = vm_info_count;
+        if (host_statistics64(self.host, HOST_VM_INFO64, &vm, &vm_len) == 0) {
+            const pages = @as(u64, vm.active_count) +
+                @as(u64, vm.wire_count) +
+                @as(u64, vm.compressor_page_count);
+            out.mem_used = pages * page_size;
+            if (out.mem_used > out.mem_total) out.mem_used = out.mem_total;
+        }
 
-        var cp_time: [5]u64 = @splat(0);
-        var len: usize = @sizeOf(@TypeOf(cp_time));
-        if (sysctlbyname("kern.cp_time", &cp_time, &len, null, 0) == 0) {
-            const ticks = parseCpTime(&cp_time);
-            if (self.prev) |prev| out.cpu_percent = percentBetween(prev, ticks);
-            self.prev = ticks;
+        var cpu: CpuLoad = std.mem.zeroes(CpuLoad);
+        var cpu_len = cpu_info_count;
+        if (host_statistics(self.host, HOST_CPU_LOAD_INFO, &cpu, &cpu_len) == 0) {
+            if (self.prev) |prev| out.cpu_percent = percentBetween(prev, cpu.cpu_ticks);
+            self.prev = cpu.cpu_ticks;
         }
         return out;
     }
 };
 
-test "cp_time folds into busy and total" {
-    const t = parseCpTime(&[_]u64{ 100, 0, 100, 700, 100 });
-    try std.testing.expectEqual(@as(u64, 1000), t.total);
-    try std.testing.expectEqual(@as(u64, 300), t.busy);
+test "cpu percent folds user, system and nice into busy" {
+    const before = [4]u32{ 100, 50, 800, 50 };
+    const after = [4]u32{ 300, 100, 1100, 50 };
+    // 200 user + 50 system + 0 nice busy, 300 idle.
+    try std.testing.expectApproxEqAbs(@as(f32, 45.45), percentBetween(before, after), 0.01);
+}
+
+test "cpu percent survives a counter wrap" {
+    const before = [4]u32{ std.math.maxInt(u32) - 9, 0, 0, 0 };
+    const after = [4]u32{ 10, 10, 80, 0 };
+    // 20 user + 10 system busy, 80 idle.
+    try std.testing.expectApproxEqAbs(@as(f32, 27.27), percentBetween(before, after), 0.01);
+}
+
+test "the vm statistics prefix is the REV1 count" {
+    try std.testing.expectEqual(@as(mach_msg_type_number_t, 38), vm_info_count);
+    try std.testing.expectEqual(@as(usize, 152), @sizeOf(VmStats));
 }

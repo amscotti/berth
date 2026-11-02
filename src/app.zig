@@ -1,17 +1,16 @@
-//! The application: one state, one refresh machine, one dispatch to the views.
-//!
-//! Refresh runs as a chain of one-shot callbacks rather than a thread: each
-//! turn performs exactly one request and reschedules itself with
-//! `App.after(0, …)`, so the window paints between requests and there is no
-//! shared mutable state to lock. A local engine answers a container list in
-//! milliseconds; `/system/df` is the one slow call, which is why it is last and
-//! cached.
+//! The application: one state, one snapshot, one dispatch to the views. Each
+//! refresh runs on a worker thread (`refresh.zig`) and commits in one step, so
+//! the UI thread never waits on the engine.
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const api = @import("engine/api.zig");
+const prune = @import("engine/prune.zig");
+const stats_pool = @import("stats_pool.zig");
+const refresh_mod = @import("refresh.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
+const widgets = @import("ui/widgets.zig");
 const History = @import("ui/history.zig").History;
 const host = @import("host/host.zig");
 const tabs = @import("tabs.zig");
@@ -39,15 +38,21 @@ pub const Tab = tabs.Tab;
 pub const Filter = tabs.Filter;
 pub const tabFromName = tabs.tabFromName;
 
-const Step = enum { idle, ping, version, info, containers, images, volumes, networks, stats, df, done };
+/// What the right-hand inspector is showing. `selected` holds the id for a
+/// container or image, and the name for a volume or network.
+pub const DetailKind = enum { container, image, volume, network };
+
+/// What a cleanup run may remove; volumes and networks are opt-in.
+pub const PruneOptions = struct {
+    containers: bool = true,
+    images: bool = true,
+    volumes: bool = false,
+    networks: bool = false,
+    build_cache: bool = true,
+};
 
 /// One container's live figures, from a single stats sample.
-pub const Stat = struct {
-    id: []const u8 = "",
-    cpu: f64 = 0,
-    mem: u64 = 0,
-    limit: u64 = 0,
-};
+pub const Stat = stats_pool.Sample;
 
 pub const Toast = struct {
     text: []const u8,
@@ -70,6 +75,10 @@ pub const State = struct {
 
     tab: Tab = .overview,
     filter: Filter = .all,
+    sort_containers: widgets.Sort = .{ .key = 1 },
+    sort_images: widgets.Sort = .{ .key = 1 },
+    sort_volumes: widgets.Sort = .{ .key = 1 },
+    sort_networks: widgets.Sort = .{ .key = 1 },
     runtimes: []discovery.Runtime = &.{},
     active: usize = 0,
 
@@ -79,10 +88,16 @@ pub const State = struct {
     /// the frame that is already on screen still points into it; freeing it
     /// immediately is a use-after-free that shows up as a segfault in memcpy.
     retired: ?std.heap.ArenaAllocator = null,
+    /// The background refresh, if one is in flight.
+    job: ?*refresh_mod.Job = null,
+    /// Bumped when the engine changes; a late job from the old engine is
+    /// discarded instead of committing its snapshot over the new one.
+    generation: u64 = 0,
+    /// A refresh was asked for while a pass was in flight.
+    refresh_wanted: bool = false,
 
     containers: []api.Container = &.{},
     stats: []Stat = &.{},
-    stat_i: usize = 0,
     images: []api.Image = &.{},
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
@@ -94,10 +109,14 @@ pub const State = struct {
     /// the theme is a window-creation option, not something to mutate.
     recreate: ?*const fn (*State) void = null,
 
-    /// The container whose detail pane is open, by id.
+    /// The row whose detail pane is open; the meaning depends on `detail_kind`.
+    detail_kind: DetailKind = .container,
     selected: ?[]const u8 = null,
     selected_name: []const u8 = "",
     log_text: []const u8 = "",
+    /// Logs are owned by the state, not an arena: they must survive a snapshot
+    /// swap, and are refreshed only when the selection changes or on request.
+    log_buf: ?[]u8 = null,
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
@@ -116,11 +135,17 @@ pub const State = struct {
     /// Keep sampling on a timer, so the graphs move without a click.
     auto_refresh: bool = true,
 
-    step: Step = .idle,
     error_text: []const u8 = "",
+    /// Backs an error copied out of a finished job's arena.
+    error_buf: [256]u8 = undefined,
     last_update: i64 = 0,
     toast: ?Toast = null,
+    toast_until: i64 = 0,
+    /// Backs a formatted toast; `Toast.text` is a slice, not an owner.
+    toast_buf: [160]u8 = undefined,
     pending: ?Pending = null,
+    prune_open: bool = false,
+    prune_opts: PruneOptions = .{},
 
     /// The theme to open a window with. `null` means "follow the system",
     /// which the framework does live on macOS; Linux has no such notification
@@ -135,29 +160,30 @@ pub const State = struct {
 
     /// Resolves the container named in `pending_act` and runs the verb against
     /// it through the same path the buttons use.
-    fn runPendingAct(s: *State) void {
+    pub fn runPendingAct(s: *State) bool {
         const spec = s.pending_act_saved;
-        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return;
+        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return false;
         const verb = spec[0..colon];
         const name = spec[colon + 1 ..];
         for (s.containers) |ct| {
             if (!std.mem.eql(u8, ct.name(), name)) continue;
             var buf: [256]u8 = undefined;
             if (std.mem.eql(u8, verb, "stop")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/stop", .{ct.Id}) catch return;
-                s.act("POST", path, "Stopped");
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/stop", .{ct.Id}) catch return false;
+                return s.act("POST", path, "Stopped");
             } else if (std.mem.eql(u8, verb, "start")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return;
-                s.act("POST", path, "Started");
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return false;
+                return s.act("POST", path, "Started");
             } else if (std.mem.eql(u8, verb, "restart")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return;
-                s.act("POST", path, "Restarted");
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return false;
+                return s.act("POST", path, "Restarted");
             } else if (std.mem.eql(u8, verb, "delete")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}?force=1", .{ct.Id}) catch return;
-                s.act("DELETE", path, "Deleted");
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}?force=1", .{ct.Id}) catch return false;
+                return s.act("DELETE", path, "Deleted");
             }
-            return;
+            return false;
         }
+        return false;
     }
 
     /// Saves the choice, then opens the window again with it — after this
@@ -174,9 +200,17 @@ pub const State = struct {
         if (s.recreate) |reopen| reopen(s);
     }
 
+    /// The machine's own figures do not depend on an engine answering. Sampling
+    /// them on the failure paths keeps the HOST card on screen while the
+    /// engine is down, which is exactly when a monitor is being looked at.
+    fn sampleHost(s: *State) void {
+        s.host_sample = s.host.sample(s.io, s.gpa);
+        s.redraw();
+    }
+
     /// One point for the graphs: what the containers are using, how many are
     /// up, and how much disk the engine holds.
-    fn sample(s: *State) void {
+    pub fn sample(s: *State) void {
         var cpu: f32 = 0;
         var mem: f32 = 0;
         var running: f32 = 0;
@@ -189,7 +223,7 @@ pub const State = struct {
             }
         }
         var disk: f32 = 0;
-        if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.imageBytes()));
+        if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.totalBytes()));
         s.host_sample = s.host.sample(s.io, s.gpa);
         s.history.push(.{
             .cpu = cpu,
@@ -203,40 +237,73 @@ pub const State = struct {
 
     /// Opens a container's detail pane and reads its last 200 log lines.
     pub fn select(s: *State, ct: *const api.Container) void {
+        s.detail_kind = .container;
         s.selected = ct.Id;
         s.selected_name = ct.name();
         s.loadLogs(ct.Id);
     }
 
-    pub fn clearSelection(s: *State) void {
-        s.selected = null;
-        s.selected_name = "";
-        s.log_text = "";
+    pub fn selectImage(s: *State, im: *const api.Image) void {
+        s.detail_kind = .image;
+        s.selected = im.Id;
+        s.selected_name = if (im.dangling()) "untagged" else im.tag();
+        s.clearLogs();
         s.redraw();
     }
 
+    pub fn selectVolume(s: *State, v: *const api.Volume) void {
+        s.detail_kind = .volume;
+        s.selected = v.Name;
+        s.selected_name = v.Name;
+        s.clearLogs();
+        s.redraw();
+    }
+
+    pub fn selectNetwork(s: *State, n: *const api.Network) void {
+        s.detail_kind = .network;
+        s.selected = if (n.Id.len > 0) n.Id else n.Name;
+        s.selected_name = n.Name;
+        s.clearLogs();
+        s.redraw();
+    }
+
+    pub fn clearSelection(s: *State) void {
+        s.detail_kind = .container;
+        s.selected = null;
+        s.selected_name = "";
+        s.clearLogs();
+        s.redraw();
+    }
+
+    /// Logs are read on demand, not on every refresh: the copy belongs to the
+    /// state so a snapshot swap cannot invalidate it.
+    pub fn reloadLogs(s: *State) void {
+        if (s.detail_kind != .container) return;
+        const id = s.selected orelse return;
+        s.loadLogs(id);
+    }
+
     fn loadLogs(s: *State, id: []const u8) void {
+        s.clearLogs();
         var client = s.client orelse return;
-        s.log_text = client.logs(id, 200) catch "could not read this container's logs";
+        const text = client.logs(id, 200) catch {
+            s.log_text = "could not read this container's logs";
+            s.redraw();
+            return;
+        };
+        const copy = s.gpa.dupe(u8, text) catch {
+            s.log_text = "could not read this container's logs";
+            s.redraw();
+            return;
+        };
+        s.log_buf = copy;
+        s.log_text = copy;
         s.redraw();
     }
 
     /// The view the window calls every frame.
     pub fn view(s: *State, c: *ui.Context) void {
         shell.view(s, c);
-    }
-
-    pub fn create(gpa: std.mem.Allocator, io: std.Io, app: *nanoui.App) !*State {
-        const s = try gpa.create(State);
-        s.* = .{ .gpa = gpa, .io = io, .app = app, .arena = .init(gpa) };
-        return s;
-    }
-
-    pub fn destroy(s: *State) void {
-        s.dropRuntimes();
-        if (s.retired) |*r| r.deinit();
-        s.arena.deinit();
-        s.gpa.destroy(s);
     }
 
     fn dropRuntimes(s: *State) void {
@@ -250,19 +317,28 @@ pub const State = struct {
         s.runtimes = &.{};
     }
 
-    /// A fresh snapshot: the old arena goes, the parsed data with it.
-    fn resetData(s: *State) void {
+    /// Free the log copy that belongs to the current selection.
+    pub fn clearLogs(s: *State) void {
+        if (s.log_buf) |buf| s.gpa.free(buf);
+        s.log_buf = null;
+        s.log_text = "";
+    }
+
+    /// Drop the visible snapshot; only for switching engines.
+    fn clearData(s: *State) void {
         if (s.retired) |*old| old.deinit();
-        s.retired = s.arena; // one more cycle before this is freed
+        s.retired = s.arena;
         s.arena = .init(s.gpa);
         s.containers = &.{};
         s.stats = &.{};
-        s.stat_i = 0;
         s.images = &.{};
         s.volumes = &.{};
         s.networks = &.{};
         s.df = null;
         s.error_text = "";
+        s.selected = null;
+        s.selected_name = "";
+        s.clearLogs();
         if (s.client) |*c| c.alloc = s.arena.allocator();
     }
 
@@ -273,20 +349,27 @@ pub const State = struct {
     }
 
     pub fn selectRuntime(s: *State, index: usize) void {
-        if (index >= s.runtimes.len) return;
+        if (index >= s.runtimes.len or s.job != null) return;
         s.active = index;
+        s.generation += 1;
         const rt = &s.runtimes[index];
         s.client = api.Client.init(s.io, s.gpa, rt.socket);
-        s.client.?.alloc = s.arena.allocator();
+        s.clearData();
         s.refresh();
     }
 
     /// Rescans for engines, picks the first that answers, and loads it.
     pub fn discover(s: *State) void {
+        if (s.job != null) return;
+        s.generation += 1;
+        // The old client points at a socket owned by `runtimes`; stop using it
+        // before those strings are freed.
+        s.client = null;
         s.dropRuntimes();
         const found = discovery.scan(s.gpa, s.io) catch {
             s.error_text = "could not scan for container engines";
-            s.redraw();
+            s.sampleHost();
+            s.retryDiscover();
             return;
         };
         s.runtimes = found.runtimes;
@@ -299,13 +382,15 @@ pub const State = struct {
         }
         if (s.runtimes.len == 0) {
             s.error_text = "no container engine found";
-            s.redraw();
+            s.sampleHost();
+            s.retryDiscover();
             return;
         }
         const rt = &s.runtimes[s.active];
         if (!rt.reachable) {
             s.error_text = "no container engine is answering";
-            s.redraw();
+            s.sampleHost();
+            s.retryDiscover();
             return;
         }
         s.client = api.Client.init(s.io, s.gpa, rt.socket);
@@ -313,12 +398,19 @@ pub const State = struct {
         s.refresh();
     }
 
+    /// Re-probe after a failed scan. Fifteen seconds, not five: probing every
+    /// candidate is only cheap when one of them answers.
+    fn retryDiscover(s: *State) void {
+        if (s.auto_refresh) nanoui.App.after(15_000, s, refresh_mod.autoTick);
+    }
+
     pub fn refresh(s: *State) void {
         if (s.client == null) return;
-        s.resetData();
-        s.step = .ping;
-        nanoui.App.after(0, s, tick);
-        s.redraw();
+        if (s.job != null) {
+            s.refresh_wanted = true;
+            return;
+        }
+        refresh_mod.start(s);
     }
 
     pub fn redraw(s: *State) void {
@@ -327,18 +419,84 @@ pub const State = struct {
 
     pub fn notify(s: *State, text: []const u8, bad: bool) void {
         s.toast = .{ .text = text, .bad = bad };
+        s.toast_until = format.now() + 4;
+        nanoui.App.after(4000, s, expireToast);
         s.redraw();
     }
 
-    /// Runs one action against the engine, then refreshes.
-    pub fn act(s: *State, method: []const u8, path: []const u8, verb: []const u8) void {
-        var client = s.client orelse return;
+    /// Toasts are transient now: the rail is the only place they appear, so a
+    /// stale "Stopped" must not sit there forever.
+    fn expireToast(ctx: ?*anyopaque) callconv(.c) void {
+        const s: *State = @ptrCast(@alignCast(ctx.?));
+        if (s.toast == null) return;
+        if (format.now() < s.toast_until) {
+            nanoui.App.after(1000, s, expireToast);
+            return;
+        }
+        s.toast = null;
+        s.redraw();
+    }
+
+    /// A toast with numbers in it, copied into `toast_buf` for the frame.
+    pub fn notifyFmt(s: *State, comptime fmt: []const u8, args: anytype) void {
+        const text = std.fmt.bufPrint(&s.toast_buf, fmt, args) catch "done";
+        s.notify(text, false);
+    }
+
+    pub fn openPrune(s: *State) void {
+        s.prune_open = true;
+        s.redraw();
+    }
+
+    pub fn closePrune(s: *State) void {
+        s.prune_open = false;
+        s.redraw();
+    }
+
+    /// Runs the selected prune endpoints; containers first, then their leavings.
+    pub fn runPrune(s: *State) void {
+        var client = s.client orelse {
+            s.closePrune();
+            return;
+        };
+        var reclaimed: u64 = 0;
+        var failed = false;
+        const steps = [_]struct { on: bool, kind: prune.Kind }{
+            .{ .on = s.prune_opts.containers, .kind = .containers },
+            .{ .on = s.prune_opts.images, .kind = .images },
+            .{ .on = s.prune_opts.volumes, .kind = .volumes },
+            .{ .on = s.prune_opts.networks, .kind = .networks },
+            .{ .on = s.prune_opts.build_cache, .kind = .build_cache },
+        };
+        for (steps) |step| {
+            if (!step.on) continue;
+            reclaimed += prune.run(&client, step.kind) catch blk: {
+                failed = true;
+                break :blk 0;
+            };
+        }
+        s.prune_open = false;
+        if (failed) {
+            s.notify("Cleanup finished with errors", true);
+        } else {
+            var buf: [32]u8 = undefined;
+            s.notifyFmt("Freed {s}", .{format.bytesBuf(&buf, reclaimed)});
+        }
+        s.refresh();
+    }
+
+    /// Runs one action against the engine, then refreshes. Returns whether a
+    /// refresh was actually started, so a caller that also owns the timer does
+    /// not re-arm it over the top of the new pass.
+    pub fn act(s: *State, method: []const u8, path: []const u8, verb: []const u8) bool {
+        var client = s.client orelse return false;
         client.action(method, path) catch {
             s.notify("action failed", true);
-            return;
+            return false;
         };
         s.notify(verb, false);
         s.refresh();
+        return true;
     }
 
     pub fn confirm(s: *State, id: []const u8, name: []const u8, verb: []const u8, method: []const u8, comptime path_fmt: []const u8) void {
@@ -356,161 +514,14 @@ pub const State = struct {
     pub fn resolvePending(s: *State, ok: bool) void {
         const p = s.pending orelse return;
         s.pending = null;
-        if (ok) s.act(p.method, p.path, p.verb) else s.redraw();
+        if (ok) {
+            _ = s.act(p.method, p.path, p.verb);
+        } else s.redraw();
         s.gpa.free(p.id);
         s.gpa.free(p.name);
         s.gpa.free(p.path);
     }
 };
-
-/// One request per turn, rescheduling itself, so the frame keeps painting.
-fn tick(ctx: ?*anyopaque) callconv(.c) void {
-    const s: *State = @ptrCast(@alignCast(ctx.?));
-    if (s.client == null) return;
-    // A pointer into the state, not to a temporary: `&(s.client orelse return)`
-    // aliases a copy, so an API version adopted here would be thrown away.
-    const client = &s.client.?;
-
-    switch (s.step) {
-        .ping => {
-            if (!discovery.probe(client)) {
-                s.error_text = "engine stopped answering";
-                s.step = .done;
-                s.redraw();
-                return;
-            }
-            s.step = .version;
-        },
-        .version => {
-            const v = client.version() catch {
-                s.error_text = if (client.err_body.len > 0) client.err_body else "could not read the engine version";
-                s.step = .done;
-                s.redraw();
-                return;
-            };
-            if (s.activeRuntime()) |rt| rt.version = v;
-            // Speak whatever this engine speaks: asking Docker 29 for 1.43
-            // routes earns a 400, not an answer.
-            client.adoptApi(v.ApiVersion);
-            s.step = .info;
-        },
-        .info => {
-            const info = client.info() catch {
-                s.error_text = if (client.err_body.len > 0) client.err_body else "could not read engine info";
-                s.step = .done;
-                s.redraw();
-                return;
-            };
-            if (s.activeRuntime()) |rt| rt.info = info;
-            s.step = .containers;
-        },
-        .containers => {
-            s.containers = client.containers() catch {
-                s.error_text = if (client.err_body.len > 0) client.err_body else "could not list containers";
-                s.step = .done;
-                s.redraw();
-                return;
-            };
-            // One slot per container, filled a turn at a time: each sample
-            // waits two collection cycles, so doing them all at once would
-            // freeze the window for seconds.
-            s.stats = s.arena.allocator().alloc(Stat, s.containers.len) catch &.{};
-            for (s.containers, 0..) |ct, i| {
-                if (i < s.stats.len) s.stats[i] = .{ .id = ct.Id };
-            }
-            s.stat_i = 0;
-            // The id and name we were holding point into the arena that is now
-            // retired: find the container again in the fresh snapshot.
-            if (s.selected) |old_id| {
-                var kept = false;
-                for (s.containers) |ct| {
-                    if (std.mem.eql(u8, ct.Id, old_id)) {
-                        s.selected = ct.Id;
-                        s.selected_name = ct.name();
-                        kept = true;
-                        break;
-                    }
-                }
-                if (!kept) {
-                    s.selected = null;
-                    s.selected_name = "";
-                    s.log_text = "";
-                } else {
-                    s.loadLogs(s.selected.?);
-                }
-            }
-            if (s.pending_select.len > 0) {
-                for (s.containers) |ct| {
-                    if (std.mem.eql(u8, ct.name(), s.pending_select)) {
-                        s.selected = ct.Id;
-                        s.selected_name = ct.name();
-                        s.loadLogs(ct.Id);
-                        break;
-                    }
-                }
-            }
-            s.redraw();
-            s.step = .images;
-        },
-        .images => {
-            s.images = client.images() catch &.{};
-            s.redraw();
-            s.step = .volumes;
-        },
-        .volumes => {
-            const list = client.volumes() catch api.ListResponse(api.Volume){};
-            s.volumes = list.Volumes;
-            s.redraw();
-            s.step = .networks;
-        },
-        .networks => {
-            s.networks = client.networks() catch &.{};
-            s.redraw();
-            s.step = .stats;
-        },
-        .stats => {
-            if (s.stat_i >= s.containers.len) {
-                s.stat_i = 0;
-                s.step = .df;
-            } else {
-                const ct = s.containers[s.stat_i];
-                if (ct.isRunning() and s.stat_i < s.stats.len) {
-                    if (client.stats(ct.Id)) |st| {
-                        s.stats[s.stat_i] = .{
-                            .id = ct.Id,
-                            .cpu = st.cpuPercent(),
-                            .mem = st.memUsed(),
-                            .limit = st.memLimit(),
-                        };
-                    } else |_| {}
-                }
-                s.stat_i += 1;
-                s.redraw();
-                // Stay on this step, but let the window paint between samples.
-                nanoui.App.after(0, s, tick);
-                return;
-            }
-        },
-        .df => {
-            s.df = client.df() catch null;
-            s.last_update = format.now();
-            s.step = .done;
-            s.sample();
-            // Only now is it safe to act: `act` starts a new refresh, and
-            // doing that from inside a step let this chain overwrite it.
-            if (s.pending_act.len > 0) {
-                const spec = s.pending_act;
-                s.pending_act = "";
-                s.pending_act_saved = spec;
-                s.runPendingAct();
-            }
-            s.redraw();
-            if (s.auto_refresh) nanoui.App.after(5000, s, autoTick);
-        },
-        .done, .idle => return,
-    }
-    if (s.step != .done) nanoui.App.after(0, s, tick) else s.redraw();
-}
 
 /// A container's figures, or zeros when none were collected (a stopped
 /// container has no stats at all).
@@ -519,14 +530,6 @@ pub fn statFor(s: *State, id: []const u8) Stat {
         if (std.mem.eql(u8, st.id, id)) return st;
     }
     return .{};
-}
-
-/// The timer that keeps the graphs fed: one refresh, then it re-arms itself
-/// from the end of that refresh.
-fn autoTick(ctx: ?*anyopaque) callconv(.c) void {
-    const s: *State = @ptrCast(@alignCast(ctx.?));
-    if (s.step != .done) return; // a refresh is already in flight
-    s.refresh();
 }
 
 /// How many containers are running, for the header count.

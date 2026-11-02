@@ -61,3 +61,19 @@ pub fn save(gpa: std.mem.Allocator, io: std.Io, data: Data) !void {
     defer file.close(io);
     try file.writeStreamingAll(io, body.written());
 }
+
+test "appearance labels are stable" {
+    try std.testing.expectEqualStrings("System", Appearance.system.label());
+    try std.testing.expectEqualStrings("Light", Appearance.light.label());
+    try std.testing.expectEqualStrings("Dark", Appearance.dark.label());
+}
+
+test "saved settings parse and default to system" {
+    const dark = try std.json.parseFromSlice(Data, std.testing.allocator, "{\"appearance\":\"dark\"}", .{ .ignore_unknown_fields = true });
+    defer dark.deinit();
+    try std.testing.expectEqual(Appearance.dark, dark.value.appearance);
+
+    const empty = try std.json.parseFromSlice(Data, std.testing.allocator, "{}", .{ .ignore_unknown_fields = true });
+    defer empty.deinit();
+    try std.testing.expectEqual(Appearance.system, empty.value.appearance);
+}

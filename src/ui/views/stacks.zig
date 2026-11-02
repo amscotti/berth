@@ -14,7 +14,7 @@ pub fn view(s: *app.State, c: *ui.Context) void {
         if (ct.project() == null) continue;
         if (isFirstOfProject(s.containers, ct)) projects += 1;
     }
-    const subtitle = c.print("{d} projects", .{projects});
+    const subtitle = widgets.count(c, projects, "project", "projects");
     widgets.pageHeader(c, "Stacks", subtitle);
 
     if (projects == 0) {
@@ -78,4 +78,18 @@ fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: @impor
         ui.spacer(c);
         widgets.pill(c, ct.State);
     }
+}
+
+test "a compose project is claimed once, by its first container" {
+    var a = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
+    defer a.deinit();
+    var b = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
+    defer b.deinit();
+    const items = [_]@import("../../engine/api.zig").Container{
+        .{ .Id = "1", .Labels = a.value },
+        .{ .Id = "2", .Labels = b.value },
+    };
+    try std.testing.expect(isFirstOfProject(items[0..1], items[0]));
+    try std.testing.expect(!isFirstOfProject(items[0..2], items[1]));
+    try std.testing.expect(!isFirstOfProject(items[0..1], .{ .Id = "3" }));
 }
