@@ -21,6 +21,9 @@ pub const Appearance = enum {
 
 pub const Data = struct {
     appearance: Appearance = .system,
+    /// The socket the user last chose, or a custom one. Empty means "let
+    /// discovery pick".
+    socket: []const u8 = "",
 };
 
 fn filePath(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
@@ -46,7 +49,11 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io) Data {
         .ignore_unknown_fields = true,
     }) catch return .{};
     defer parsed.deinit();
-    return parsed.value;
+    var data = parsed.value;
+    // The parsed socket points into the document's arena; give the caller a
+    // copy it owns (or the static empty string).
+    if (data.socket.len > 0) data.socket = gpa.dupe(u8, data.socket) catch "";
+    return data;
 }
 
 pub fn save(gpa: std.mem.Allocator, io: std.Io, data: Data) !void {
@@ -76,4 +83,8 @@ test "saved settings parse and default to system" {
     const empty = try std.json.parseFromSlice(Data, std.testing.allocator, "{}", .{ .ignore_unknown_fields = true });
     defer empty.deinit();
     try std.testing.expectEqual(Appearance.system, empty.value.appearance);
+
+    const custom = try std.json.parseFromSlice(Data, std.testing.allocator, "{\"socket\":\"/tmp/custom.sock\"}", .{ .ignore_unknown_fields = true });
+    defer custom.deinit();
+    try std.testing.expectEqualStrings("/tmp/custom.sock", custom.value.socket);
 }

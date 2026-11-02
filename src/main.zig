@@ -51,8 +51,14 @@ pub fn main(init: std.process.Init) !void {
     defer boot.destroy(state);
 
     // Preferences first: the appearance decides the theme the window opens
-    // with, and the theme is fixed at creation.
-    state.appearance = settings.load(gpa, init.io).appearance;
+    // with, and the theme is fixed at creation. A remembered socket is
+    // transferred to the state, which owns it from here.
+    const prefs = settings.load(gpa, init.io);
+    state.appearance = prefs.appearance;
+    if (prefs.socket.len > 0) {
+        state.preferred_socket = @constCast(prefs.socket);
+        state.socket_input.set(prefs.socket);
+    }
     // An explicit override, for screenshots and for anyone whose desktop does
     // not report a theme. It wins over the saved preference for this run only.
     if (getenv("BERTH_THEME")) |p| {

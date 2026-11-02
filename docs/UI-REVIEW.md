@@ -169,3 +169,37 @@ monitor, as the structural reference:
   defaulting to stopped containers, unused images and build cache; volumes and
   networks are opt-in because they outlive their containers. The old bottom
   action bar was removed; its refresh and cleanup actions moved here.
+
+## Initial-review follow-up
+
+The first release review found eight behaviours that did not match the
+intent. They are fixed, and the evidence is in `runtimes-light.png`,
+`runtimes-open-light.png`, `settings-menu-light.png`, `confirm-light.png`,
+`prune-light.png`, and `volumes-light.png`.
+
+- **Volume sizes.** `/volumes` omits usage; the app now fills each row and the
+  inspector from `/system/df`, and retains the last good df for one timed-out
+  pass without keeping a pointer into a retired arena.
+- **Engine discovery.** Only sockets that exist are probed; Docker Desktop,
+  OrbStack, Rancher Desktop, Colima, Lima, and the current Podman machine
+  layouts are included. Aliases to one daemon are deduplicated by the engine's
+  own ID. A failed scan retries in two seconds, and a chosen or typed socket is
+  probed first on the next launch.
+- **Runtimes.** The rail badge is the number answering, not a total. The page
+  groups sockets by engine kind; "Show N sockets" expands the paths. A custom
+  socket field validates before saving and has a Forget action.
+- **Choosing an engine.** Settings has a chooser listing the answering engines,
+  plus a link to the full socket list. Appearance is left, Engine right, and
+  both cards stretch to the same height.
+- **Dialog buttons.** Confirm/Clean up and Cancel now share one size and
+  baseline; the old code nested Cancel inside Confirm because of deferred ends.
+- **CPU.** The overview history is normalised to the same "of N cores" share as
+  the headline figure; the sparkline is labelled `recent`. A value that is
+  current-zero with past dots now reads as history, not a mismatch.
+- **Rail status.** No busy text, no Rediscover button, no width change every
+  five seconds: an amber dot and a constant "Refresh · every 5 s", with the
+  updated clock as the indicator. Rescan lives on Runtimes.
+- **Truthful figures.** Engine switches clear the previous engine's history;
+  failed stats stay `—`; pending confirmations are closed when the engine
+  changes; the UI client adopts the engine's API version, so actions and
+  Inspect work on current Docker releases.

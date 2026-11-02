@@ -6,7 +6,6 @@ const app = @import("../../app.zig");
 const api = @import("../../engine/api.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
-const prefs = @import("../../settings.zig");
 const graph = @import("../graph.zig");
 const history = @import("../history.zig");
 
@@ -23,7 +22,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     var cpu_sum: f32 = 0;
     var mem_sum: u64 = 0;
     for (s.containers, 0..) |ct, i| {
-        if (!ct.isUp() or i >= s.stats.len) continue;
+        if (!ct.isUp() or i >= s.stats.len or !s.stats[i].sampled) continue;
         cpu_sum += @floatCast(s.stats[i].cpu);
         mem_sum += s.stats[i].mem;
     }
@@ -198,6 +197,7 @@ fn graphCard(
     widgets.chip(c, icon, color, 20);
     ui.text(c, label, .{ .size = 12.5, .weight = .semibold, .color = color });
     ui.spacer(c);
+    ui.text(c, "recent", .{ .size = 9.5, .color = c.theme.muted.alpha(0.8) });
     head.end();
 
     const figure = ui.div(c).row().wFull().itemsEnd().gap(8);
@@ -316,158 +316,4 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
     if (clean.clicked()) s.openPrune();
     clean.end();
     actions.end();
-}
-
-pub fn runtimes(s: *app.State, c: *ui.Context) void {
-    var live: usize = 0;
-    for (s.runtimes) |rt| {
-        if (rt.reachable) live += 1;
-    }
-    widgets.pageHeader(c, "Runtimes", c.print("{d} answering · {d} sockets probed", .{ live, s.runtimes.len }));
-
-    const list = ui.div(c).column().wFull().gap(8);
-    defer list.end();
-
-    // The engines that answer come first, one card each: that is the list a
-    // user came for. The ones that do not answer are one compact card below,
-    // because a screenful of red cards buries the working engine.
-    for (s.runtimes, 0..) |rt, i| {
-        if (!rt.reachable) continue;
-        const active = i == s.active;
-        const card = ui.div(c).row().wFull().itemsCenter().gap(12).p(14).rounded(10)
-            .bg(if (active) c.theme.accent.alpha(0.08) else c.theme.surface)
-            .border(if (active) c.theme.accent else c.theme.border);
-        defer card.end();
-
-        widgets.chip(c, "desktopcomputer", if (active) c.theme.accent else c.theme.muted, 28);
-
-        const text_col = ui.div(c).column().grow().gap(2);
-        ui.text(c, rt.name, .{ .size = 13, .weight = .medium });
-        ui.text(c, rt.socket, .{ .size = 11, .color = c.theme.muted, .truncate = .middle });
-        ui.text(c, c.print("v{s} · API {s}", .{ rt.version.Version, rt.version.ApiVersion }), .{ .size = 11, .color = c.theme.muted });
-        text_col.end();
-
-        if (!active) {
-            const sw = ui.div(c).row().h(26).px(10).itemsCenter().rounded(13).bg(c.theme.accent);
-            defer sw.end();
-            ui.text(c, "Use", .{ .size = 12, .weight = .medium, .color = c.theme.accent_text });
-            if (sw.clicked()) s.selectRuntime(i);
-        } else {
-            ui.text(c, "active", .{ .size = 11, .weight = .medium, .color = c.theme.accent });
-        }
-    }
-
-    if (live == s.runtimes.len) return;
-    const dead = ui.div(c).column().wFull().gap(7).p(14).rounded(10).bg(c.theme.surface).border(c.theme.border);
-    defer dead.end();
-    const head = ui.div(c).row().wFull().itemsCenter().gap(8);
-    ui.text(c, "Not answering", .{ .size = 12.5, .weight = .semibold, .color = c.theme.muted });
-    ui.spacer(c);
-    ui.text(c, c.print("{d} sockets", .{s.runtimes.len - live}), .{ .size = 11, .color = c.theme.muted });
-    head.end();
-
-    for (s.runtimes, 0..) |rt, i| {
-        if (rt.reachable) continue;
-        const row = ui.div(c).row().wFull().itemsCenter().gap(8).h(22);
-        defer row.end();
-        const dot = ui.div(c).w(6).h(6).rounded(3).bg(c.theme.danger.alpha(0.7));
-        dot.end();
-        ui.text(c, rt.name, .{ .size = 12, .color = c.theme.text });
-        if (i == s.active) ui.text(c, "selected", .{ .size = 10.5, .color = c.theme.muted });
-        ui.spacer(c);
-        ui.text(c, rt.socket, .{ .size = 10.5, .color = c.theme.muted, .truncate = .middle });
-    }
-}
-
-pub fn settings(s: *app.State, c: *ui.Context) void {
-    widgets.pageHeader(c, "Settings", "berth 0.1 · a native container monitor");
-    const page = ui.div(c).column().wFull().gap(12);
-    defer page.end();
-
-    // About: full width, and every paragraph wraps inside its card. Long prose
-    // used to run straight out of the old 560pt box.
-    const about = ui.div(c).column().wFull().gap(7).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
-    ui.text(c, "About berth", .{ .size = 15, .weight = .semibold });
-    // A readable measure: a card this wide should not turn body copy into
-    // 150-character lines just because the window grew.
-    const prose = ui.div(c).column().w(640).gap(6);
-    ui.text(c, "berth is a native monitor for Docker, Podman, Colima and Lima. It talks to the engine's HTTP API over its Unix socket directly — no webview, no helper daemon, no telemetry.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "The last complete snapshot stays on screen while a worker refreshes the next one, so the tables and graphs neither blank nor freeze. Container CPU and memory use the same two-sample window as `docker stats`.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "Built in Zig 0.17 on nanoui. On macOS the host figures come from Mach's host statistics; on Linux, from /proc. The warm palette and cell graphs follow nanoui's sibling project, nanomon.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "Every list has live search, containers pause and resume, and the inspector carries the engine's own JSON and a copyable `docker run` line. Not built yet: Events, Compose up/down, pulling images or running new containers.", .{ .size = 11.5, .color = c.theme.muted.alpha(0.8), .wrap = true });
-    prose.end();
-    about.end(); // before the row, or the row and everything below nest inside it
-
-    // Engine and appearance sit side by side; each card is wide enough for its
-    // socket path and its theme buttons at the 960pt minimum.
-    const middle = ui.div(c).row().wFull().gap(12);
-    const engine = ui.div(c).column().grow().gap(5).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
-    ui.text(c, "Engine", .{ .size = 15, .weight = .semibold });
-    if (s.activeRuntime()) |r| {
-        ui.text(c, r.name, .{ .size = 12.5, .weight = .medium });
-        ui.text(c, if (r.reachable) c.print("v{s} · API {s}", .{ r.version.Version, r.version.ApiVersion }) else "not answering", .{
-            .size = 11.5,
-            .color = if (r.reachable) c.theme.muted else c.theme.danger,
-        });
-        ui.text(c, r.socket, .{ .size = 11, .mono = true, .color = c.theme.muted, .wrap = true });
-        ui.spacer(c);
-        if (settingButton(c, "Choose engine…", false)) {
-            s.tab = .runtimes;
-            s.redraw();
-        }
-    } else {
-        ui.text(c, "No engine selected. Open Runtimes to see what was probed.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    }
-    engine.end();
-
-    const appearance = ui.div(c).column().grow().gap(5).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
-    ui.text(c, "Appearance", .{ .size = 15, .weight = .semibold });
-    ui.text(c, "System follows this machine's desktop. The choice is remembered between launches.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    const row = ui.div(c).row().gap(6).pt(4);
-    for ([_]prefs.Appearance{ .system, .light, .dark }) |option| {
-        const on = s.appearance == option;
-        const button = ui.div(c).row().h(28).px(12).itemsCenter().rounded(14)
-            .bg(if (on) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
-        defer button.end();
-        ui.text(c, option.label(), .{
-            .size = 12,
-            .weight = if (on) .medium else .regular,
-            .color = if (on) c.theme.accent else c.theme.text,
-        });
-        if (button.clicked()) s.setAppearance(option);
-    }
-    row.end(); // before the next section, or it becomes a child of this row
-    ui.spacer(c);
-    ui.text(c, "Comfortable rows. A compact row height is not available yet.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
-    appearance.end();
-    middle.end();
-
-    // The old bottom bar's actions live here now.
-    const maint = ui.div(c).column().wFull().gap(8).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
-    defer maint.end();
-    const head = ui.div(c).row().wFull().itemsCenter().gap(8);
-    ui.text(c, "Maintenance", .{ .size = 15, .weight = .semibold });
-    ui.spacer(c);
-    ui.text(c, if (s.df) |df| c.print("{s} reclaimable", .{format.bytesSigned(c, df.reclaimable())}) else "reclaimable —", .{
-        .size = 11.5,
-        .color = c.theme.muted,
-    });
-    head.end();
-    ui.text(c, "Clean up removes stopped containers, unused images and build cache; unused volumes and networks are opt-in. Refresh reloads the engine immediately instead of waiting for the next five-second pass.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    const actions = ui.div(c).row().wFull().gap(8).pt(2);
-    if (settingButton(c, "Clean up unused…", true)) s.openPrune();
-    if (settingButton(c, "Refresh now", false)) s.refresh();
-    actions.end();
-}
-
-fn settingButton(c: *ui.Context, label: []const u8, primary: bool) bool {
-    const box = ui.div(c).row().h(28).px(12).itemsCenter().rounded(14)
-        .bg(if (primary) c.theme.accent else c.theme.surface_hover);
-    defer box.end();
-    ui.text(c, label, .{
-        .size = 12,
-        .weight = .medium,
-        .color = if (primary) c.theme.accent_text else c.theme.text,
-    });
-    return box.clicked();
 }

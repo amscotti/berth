@@ -2,6 +2,7 @@
 //! the implementation stays inside the 600-line rule.
 const std = @import("std");
 const api = @import("api.zig");
+const volumes_mod = @import("volumes.zig");
 
 test "a container's compose labels" {
     const json =
@@ -194,4 +195,20 @@ test "published ports come out in host-port order" {
     try std.testing.expectEqual(@as(usize, 2), parsed.value.publishedPorts(&out));
     try std.testing.expectEqual(@as(u16, 8080), out[0].port);
     try std.testing.expectEqual(@as(u16, 8443), out[1].port);
+}
+
+test "volume sizes fall back to the df document" {
+    var volumes = [_]api.Volume{
+        .{ .Name = "shop-data" },
+        .{ .Name = "cache", .UsageData = .{ .Size = 7, .RefCount = 1 } },
+    };
+    var df_volumes = [_]api.Volume{
+        .{ .Name = "shop-data", .UsageData = .{ .Size = 2048, .RefCount = 0 } },
+        .{ .Name = "cache", .UsageData = .{ .Size = 999, .RefCount = 9 } },
+    };
+    const df = api.Df{ .Volumes = df_volumes[0..] };
+    volumes_mod.mergeVolumeUsage(volumes[0..], df);
+    try std.testing.expectEqual(@as(i64, 2048), volumes[0].UsageData.?.Size);
+    // An existing measurement is not overwritten by a later guess.
+    try std.testing.expectEqual(@as(i64, 7), volumes[1].UsageData.?.Size);
 }
