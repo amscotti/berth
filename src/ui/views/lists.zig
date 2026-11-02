@@ -7,6 +7,7 @@ const app = @import("../../app.zig");
 const api = @import("../../engine/api.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
+const search = @import("search.zig");
 const shell = @import("../shell.zig");
 
 const ROW = 44.0;
@@ -49,7 +50,7 @@ const ImageSort = struct {
         const x = ctx.items[a];
         const y = ctx.items[b];
         const order: std.math.Order = switch (ctx.key) {
-            1 => std.ascii.orderIgnoreCase(imageLabel(x), imageLabel(y)),
+            1 => std.ascii.orderIgnoreCase(x.label(), y.label()),
             2 => std.ascii.orderIgnoreCase(x.Id, y.Id),
             3 => numOrder(@floatFromInt(x.Size), @floatFromInt(y.Size)),
             4 => numOrder(@floatFromInt(x.Created), @floatFromInt(y.Created)),
@@ -103,9 +104,6 @@ const NetworkSort = struct {
     }
 };
 
-fn imageLabel(im: api.Image) []const u8 {
-    return if (im.dangling()) "untagged" else im.tag();
-}
 
 fn volumeSize(v: api.Volume) i64 {
     const u = v.UsageData orelse return -1;
@@ -119,23 +117,27 @@ fn volumeUse(v: api.Volume) i64 {
 
 pub fn containers(s: *app.State, c: *ui.Context) void {
     // The rows this filter keeps, chosen once so the count and the list agree.
+    // The search query ANDs with the chip: both narrow what is on screen.
+    const q = c.alloc().dupe(u8, s.search.containers.text()) catch "";
     var shown: [512]*const @import("../../engine/api.zig").Container = undefined;
     var n: usize = 0;
     for (s.containers) |*ct| {
         if (!s.filter.keeps(ct)) continue;
+        if (!search.keepContainer(q, ct)) continue;
         if (n == shown.len) break;
         shown[n] = ct;
         n += 1;
     }
 
-    const subtitle = if (s.filter == .all)
+    const subtitle = if (s.filter == .all and q.len == 0)
         c.print("{d} running · {d} total", .{ app.runningCount(s), s.containers.len })
     else
         c.print("{d} of {d} shown", .{ n, s.containers.len });
     widgets.pageHeader(c, "Containers", subtitle);
 
-    // Filter chips, in the same place and shape on every view that grows one.
-    const chips = ui.div(c).row().gap(6).pb(8);
+    // Filter chips, in the same place and shape on every view that grows one,
+    // with the search field at the end of the same row.
+    const chips = ui.div(c).row().wFull().gap(6).pb(8);
     for ([_]app.Filter{ .all, .running, .stopped }) |option| {
         const on = s.filter == option;
         const chip = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12)
@@ -151,6 +153,8 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
             s.redraw();
         }
     }
+    ui.spacer(c);
+    _ = search.box(c, &s.search.containers, "Search containers", if (s.selected != null) 120 else 190);
     chips.end();
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
@@ -158,6 +162,8 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     if (n == 0) {
         if (s.containers.len == 0) {
             widgets.emptyState(c, "cube", "No containers yet", "docker run --rm -it alpine sh");
+        } else if (q.len > 0) {
+            widgets.emptyState(c, "cube", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every container");
         } else {
             widgets.emptyState(c, "cube", "None match this filter", "All shows every container");
         }
@@ -257,11 +263,33 @@ fn smallButton(c: *ui.Context, label: []const u8, danger: bool) bool {
 }
 
 pub fn images(s: *app.State, c: *ui.Context) void {
-    const count = widgets.count(c, s.images.len, "image", "images");
-    widgets.pageHeader(c, "Images", count);
+    const q = c.alloc().dupe(u8, s.search.images.text()) catch "";
+    const order = c.alloc().alloc(usize, s.images.len) catch return;
+    var shown: usize = 0;
+    for (s.images, 0..) |im, i| {
+        if (!search.keepImage(q, im)) continue;
+        order[shown] = i;
+        shown += 1;
+    }
+    std.mem.sort(usize, order[0..shown], ImageSort{
+        .items = s.images,
+        .key = s.sort_images.key,
+        .desc = s.sort_images.desc,
+    }, ImageSort.lessThan);
+
+    const subtitle = if (q.len > 0)
+        c.print("{d} of {d} shown", .{ shown, s.images.len })
+    else
+        widgets.count(c, s.images.len, "image", "images");
+    widgets.pageHeader(c, "Images", subtitle);
+    searchRow(c, &s.search.images, "Search images", 190);
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
     if (s.images.len == 0) {
         widgets.emptyState(c, "doc", "No images", "docker pull alpine");
+        return;
+    }
+    if (shown == 0) {
+        widgets.emptyState(c, "doc", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every image");
         return;
     }
     const compact = s.selected != null and s.detail_kind == .image;
@@ -279,15 +307,7 @@ pub fn images(s: *app.State, c: *ui.Context) void {
     };
     widgets.tableHeader(c, if (compact) &compact_cols else &full_cols, &s.sort_images);
 
-    const order = c.alloc().alloc(usize, s.images.len) catch return;
-    for (order, 0..) |*slot, i| slot.* = i;
-    std.mem.sort(usize, order, ImageSort{
-        .items = s.images,
-        .key = s.sort_images.key,
-        .desc = s.sort_images.desc,
-    }, ImageSort.lessThan);
-
-    var rows = ui.list(c, .{ .count = s.images.len, .row_height = ROW });
+    var rows = ui.list(c, .{ .count = shown, .row_height = ROW });
     while (rows.next()) |i| {
         const im = s.images[order[i]];
         const is_selected = s.detail_kind == .image and s.selected != null and std.mem.eql(u8, s.selected.?, im.Id);
@@ -297,13 +317,11 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
         if (row.clicked()) s.selectImage(&im);
-        // `<none>:<none>` is what the API calls an untagged image; saying
-        // "untagged" once is kinder and no less accurate.
         const label_w: f32 = if (compact) 240 else 300;
         if (im.dangling()) {
-            widgets.cellMuted(c, "untagged", label_w, false);
+            widgets.cellMuted(c, im.label(), label_w, false);
         } else {
-            widgets.cell(c, im.tag(), label_w, false);
+            widgets.cell(c, im.label(), label_w, false);
         }
         const id = im.Id;
         const short = if (id.len > 19) id[7..19] else id;
@@ -318,11 +336,43 @@ pub fn images(s: *app.State, c: *ui.Context) void {
     rows.end();
 }
 
+/// The row above every list that has no filter chips: the search field on the
+/// left, so an empty list keeps it too.
+fn searchRow(c: *ui.Context, buffer: *ui.TextBuffer, placeholder: []const u8, width: f32) void {
+    const row = ui.div(c).row().wFull().gap(6).pb(8);
+    _ = search.box(c, buffer, placeholder, width);
+    row.end();
+}
+
+
 pub fn volumes(s: *app.State, c: *ui.Context) void {
-    const count = widgets.count(c, s.volumes.len, "volume", "volumes");
-    widgets.pageHeader(c, "Volumes", count);
+    const q = c.alloc().dupe(u8, s.search.volumes.text()) catch "";
+    const order = c.alloc().alloc(usize, s.volumes.len) catch return;
+    var shown: usize = 0;
+    for (s.volumes, 0..) |v, i| {
+        if (!search.keepVolume(q, v)) continue;
+        order[shown] = i;
+        shown += 1;
+    }
+    std.mem.sort(usize, order[0..shown], VolumeSort{
+        .items = s.volumes,
+        .key = s.sort_volumes.key,
+        .desc = s.sort_volumes.desc,
+    }, VolumeSort.lessThan);
+
+    const subtitle = if (q.len > 0)
+        c.print("{d} of {d} shown", .{ shown, s.volumes.len })
+    else
+        widgets.count(c, s.volumes.len, "volume", "volumes");
+    widgets.pageHeader(c, "Volumes", subtitle);
+    searchRow(c, &s.search.volumes, "Search volumes", 190);
+    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
     if (s.volumes.len == 0) {
         widgets.emptyState(c, "folder", "No volumes", "Volumes appear here once a container declares one");
+        return;
+    }
+    if (shown == 0) {
+        widgets.emptyState(c, "folder", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every volume");
         return;
     }
     const compact = s.selected != null and s.detail_kind == .volume;
@@ -340,15 +390,7 @@ pub fn volumes(s: *app.State, c: *ui.Context) void {
     };
     widgets.tableHeader(c, if (compact) &compact_cols else &full_cols, &s.sort_volumes);
 
-    const order = c.alloc().alloc(usize, s.volumes.len) catch return;
-    for (order, 0..) |*slot, i| slot.* = i;
-    std.mem.sort(usize, order, VolumeSort{
-        .items = s.volumes,
-        .key = s.sort_volumes.key,
-        .desc = s.sort_volumes.desc,
-    }, VolumeSort.lessThan);
-
-    var rows = ui.list(c, .{ .count = s.volumes.len, .row_height = ROW });
+    var rows = ui.list(c, .{ .count = shown, .row_height = ROW });
     while (rows.next()) |i| {
         const v = s.volumes[order[i]];
         const is_selected = s.detail_kind == .volume and s.selected != null and std.mem.eql(u8, s.selected.?, v.Name);
@@ -378,11 +420,36 @@ pub fn volumes(s: *app.State, c: *ui.Context) void {
     rows.end();
 }
 
+
 pub fn networks(s: *app.State, c: *ui.Context) void {
-    const count = widgets.count(c, s.networks.len, "network", "networks");
-    widgets.pageHeader(c, "Networks", count);
+    const q = c.alloc().dupe(u8, s.search.networks.text()) catch "";
+    const order = c.alloc().alloc(usize, s.networks.len) catch return;
+    var shown: usize = 0;
+    for (s.networks, 0..) |n, i| {
+        if (!search.keepNetwork(q, n)) continue;
+        order[shown] = i;
+        shown += 1;
+    }
+    std.mem.sort(usize, order[0..shown], NetworkSort{
+        .items = s.networks,
+        .containers = s.containers,
+        .key = s.sort_networks.key,
+        .desc = s.sort_networks.desc,
+    }, NetworkSort.lessThan);
+
+    const subtitle = if (q.len > 0)
+        c.print("{d} of {d} shown", .{ shown, s.networks.len })
+    else
+        widgets.count(c, s.networks.len, "network", "networks");
+    widgets.pageHeader(c, "Networks", subtitle);
+    searchRow(c, &s.search.networks, "Search networks", 190);
+    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
     if (s.networks.len == 0) {
         widgets.emptyState(c, "network", "No networks", "");
+        return;
+    }
+    if (shown == 0) {
+        widgets.emptyState(c, "network", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every network");
         return;
     }
     const compact = s.selected != null and s.detail_kind == .network;
@@ -400,16 +467,7 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
     };
     widgets.tableHeader(c, if (compact) &compact_cols else &full_cols, &s.sort_networks);
 
-    const order = c.alloc().alloc(usize, s.networks.len) catch return;
-    for (order, 0..) |*slot, i| slot.* = i;
-    std.mem.sort(usize, order, NetworkSort{
-        .items = s.networks,
-        .containers = s.containers,
-        .key = s.sort_networks.key,
-        .desc = s.sort_networks.desc,
-    }, NetworkSort.lessThan);
-
-    var rows = ui.list(c, .{ .count = s.networks.len, .row_height = ROW });
+    var rows = ui.list(c, .{ .count = shown, .row_height = ROW });
     while (rows.next()) |i| {
         const n = s.networks[order[i]];
         const is_selected = s.detail_kind == .network and s.selected != null and
@@ -438,6 +496,7 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
     }
     rows.end();
 }
+
 
 test "container sorting is case-insensitive and reversible" {
     const items = [_]api.Container{

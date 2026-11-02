@@ -72,6 +72,11 @@ pub fn main(init: std.process.Init) !void {
         if (std.ascii.eqlIgnoreCase(name, "running")) state.filter = .running;
         if (std.ascii.eqlIgnoreCase(name, "stopped")) state.filter = .stopped;
     }
+    // `BERTH_SEARCH=web` fills the open view's search field, so a filtered
+    // table can be snapshotted headlessly.
+    if (getenv("BERTH_SEARCH")) |p| {
+        if (state.search.forTab(state.tab)) |buffer| buffer.set(std.mem.span(p));
+    }
     if (getenv("BERTH_ACT")) |p| {
         state.pending_act = std.mem.span(p);
         state.auto_refresh = false; // one action, then stop refreshing

@@ -366,6 +366,11 @@ pub const Image = struct {
         const tags = self.RepoTags orelse return true;
         return tags.len == 0 or std.mem.startsWith(u8, tags[0], "<none>");
     }
+
+    /// What a table row shows: the first tag, or "untagged".
+    pub fn label(self: Image) []const u8 {
+        return if (self.dangling()) "untagged" else self.tag();
+    }
 };
 
 pub const Volume = struct {

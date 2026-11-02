@@ -1,6 +1,8 @@
 //! The views a window can show, and the filters within one. Kept out of
 //! `app.zig` so that file stays inside the 600-line rule.
 const std = @import("std");
+const nanoui = @import("nanoui");
+const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 
 /// What the container list shows. Filters are per view and stay where the
@@ -70,6 +72,36 @@ pub const Tab = enum {
     }
 };
 
+
+/// One search buffer per list view. They are separate so that focus, caret
+/// and undo belong to the field on screen, and so switching tabs keeps each
+/// view's query where the user left it. `TextBuffer` allocates on the C heap,
+/// so `deinit` is called from the state's teardown.
+pub const Search = struct {
+    containers: ui.TextBuffer = .{},
+    images: ui.TextBuffer = .{},
+    volumes: ui.TextBuffer = .{},
+    networks: ui.TextBuffer = .{},
+
+    pub fn deinit(self: *Search) void {
+        self.containers.deinit();
+        self.images.deinit();
+        self.volumes.deinit();
+        self.networks.deinit();
+    }
+
+    /// The buffer of the view on screen, or null for the views that have no
+    /// table to search.
+    pub fn forTab(self: *Search, tab: Tab) ?*ui.TextBuffer {
+        return switch (tab) {
+            .containers => &self.containers,
+            .images => &self.images,
+            .volumes => &self.volumes,
+            .networks => &self.networks,
+            else => null,
+        };
+    }
+};
 
 /// A tab by its name, for `BERTH_TAB`. A plain table: reflection over an
 /// enum's field names changed shape in 0.17 and buys nothing here.

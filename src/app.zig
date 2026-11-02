@@ -75,6 +75,7 @@ pub const State = struct {
 
     tab: Tab = .overview,
     filter: Filter = .all,
+    search: tabs.Search = .{},
     sort_containers: widgets.Sort = .{ .key = 1 },
     sort_images: widgets.Sort = .{ .key = 1 },
     sort_volumes: widgets.Sort = .{ .key = 1 },
