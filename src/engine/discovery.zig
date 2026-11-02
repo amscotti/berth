@@ -158,6 +158,11 @@ pub fn kindOf(path: []const u8) Kind {
 /// Probes every candidate and returns the ones that answer, with their version
 /// and info already read. Unreachable candidates are returned too, so the
 /// Runtimes view can explain what was tried.
+///
+/// The probes run together: a machine with several stale Lima instances has a
+/// dozen sockets, and waiting two seconds on each before the first snapshot is
+/// a twenty-second launch. Only the reachable ones then pay for version/info,
+/// on this thread, because their strings outlive the probe.
 pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
     const paths = try candidates(io, gpa);
     defer {
@@ -165,30 +170,65 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
         gpa.free(paths);
     }
 
-    var out: std.ArrayList(Runtime) = .empty;
-    errdefer out.deinit(gpa);
-
-    for (paths) |path| {
-        var rt: Runtime = .{
-            .name = try gpa.dupe(u8, kindOf(path).label()),
-            .kind = kindOf(path),
-            .socket = try gpa.dupe(u8, path),
-        };
-        var client = api.Client.init(io, gpa, path);
-        rt.reachable = probe(&client);
-        if (rt.reachable) {
-            rt.version = client.version() catch api.Version{};
-            rt.info = client.info() catch api.Info{};
-            if (rt.info.Name.len > 0) {
-                gpa.free(rt.name);
-                rt.name = try std.fmt.allocPrint(gpa, "{s} · {s}", .{ rt.kind.label(), rt.info.Name });
-            }
-        } else {
-            rt.error_text = try gpa.dupe(u8, "no answer on this socket");
+    const runtimes = try gpa.alloc(Runtime, paths.len);
+    for (runtimes) |*rt| rt.* = .{ .name = "", .kind = .dockerd, .socket = "" };
+    errdefer {
+        for (runtimes) |rt| {
+            gpa.free(rt.name);
+            gpa.free(rt.socket);
+            gpa.free(rt.error_text);
         }
-        try out.append(gpa, rt);
+        gpa.free(runtimes);
     }
-    return .{ .runtimes = try out.toOwnedSlice(gpa) };
+
+    for (paths, 0..) |path, i| {
+        runtimes[i] = try runtimeFor(gpa, path);
+    }
+
+    // Bounded so a pathological candidate list cannot spawn without limit;
+    // anything past the bound is probed in place, in the same total order.
+    var threads: [16]std.Thread = undefined;
+    var spawned: usize = 0;
+    for (runtimes, 0..) |*rt, i| {
+        if (i >= threads.len) break;
+        threads[spawned] = std.Thread.spawn(.{}, probeOne, .{ io, rt }) catch break;
+        spawned += 1;
+    }
+    for (threads[0..spawned]) |thread| thread.join();
+    for (runtimes[spawned..]) |*rt| probeOne(io, rt);
+
+    for (runtimes) |*rt| {
+        if (!rt.reachable) {
+            rt.error_text = try gpa.dupe(u8, "no answer on this socket");
+            continue;
+        }
+        var client = api.Client.init(io, gpa, rt.socket);
+        rt.version = client.version() catch api.Version{};
+        rt.info = client.info() catch api.Info{};
+        if (rt.info.Name.len > 0) {
+            // Allocate before freeing: an OOM here must not leave `rt.name`
+            // pointing at memory the error path frees again.
+            const name = try std.fmt.allocPrint(gpa, "{s} · {s}", .{ rt.kind.label(), rt.info.Name });
+            gpa.free(rt.name);
+            rt.name = name;
+        }
+    }
+    return .{ .runtimes = runtimes };
+}
+
+fn runtimeFor(gpa: std.mem.Allocator, path: []const u8) !Runtime {
+    const name = try gpa.dupe(u8, kindOf(path).label());
+    errdefer gpa.free(name);
+    const socket = try gpa.dupe(u8, path);
+    return .{ .name = name, .kind = kindOf(path), .socket = socket };
+}
+
+/// A worker owns a client on the page allocator and writes only its own
+/// runtime's reachability; the strings it would allocate are read later, on
+/// the scan's thread.
+fn probeOne(io: std.Io, rt: *Runtime) void {
+    var client = api.Client.init(io, std.heap.page_allocator, rt.socket);
+    rt.reachable = probe(&client);
 }
 
 /// `GET /_ping` — the one call every Docker-compatible engine answers.
@@ -224,7 +264,7 @@ test "lima instance directories exclude lima's own bookkeeping" {
 
 test "every runtime kind has a human label" {
     inline for (@typeInfo(Kind).@"enum".field_values) |value| {
-        const kind: Kind = @enumFromInt(value);
+        const kind: Kind = @fromBackingInt(@intCast(value));
         try std.testing.expect(kind.label().len > 0);
     }
 }

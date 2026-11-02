@@ -80,12 +80,6 @@ fn load(job: *Job) void {
         return;
     };
     client.adoptApi(version.ApiVersion);
-    job.snapshot.version = version;
-
-    job.snapshot.info = client.info() catch {
-        job.error_text = if (client.err_body.len > 0) client.err_body else "could not read engine info";
-        return;
-    };
     job.snapshot.containers = client.containers() catch {
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not list containers";
         return;
@@ -200,10 +194,9 @@ fn commit(s: *app.State, job: *Job) void {
     s.networks = snap.networks;
     // A timed-out df must not erase figures that were valid a moment ago.
     if (snap.df) |df| s.df = df;
-    if (s.activeRuntime()) |rt| {
-        rt.version = snap.version;
-        rt.info = snap.info;
-    }
+    // Engine version/info come from discovery and stay in runtime memory;
+    // copying them out of this arena on every pass is how a failed /info used
+    // to leave a string pointing into the retired snapshot.
     if (s.client) |*client| client.alloc = s.arena.allocator();
 
     resolveSelection(s);

@@ -18,6 +18,9 @@ pub const Sample = struct {
     blk_read: u64 = 0,
     blk_write: u64 = 0,
     pids: ?u32 = null,
+    /// False until a stats call succeeded: an unknown figure must read as a
+    /// dash, not as the zero the struct was initialized with.
+    sampled: bool = false,
 };
 
 const workers_max = 8;
@@ -58,6 +61,7 @@ fn work(job: Job) void {
             .blk_read = disk.read,
             .blk_write = disk.write,
             .pids = st.pidsCurrent(),
+            .sampled = true,
         };
     }
 }

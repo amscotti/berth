@@ -173,7 +173,6 @@ test "memory is the working set, not the page cache" {
     try std.testing.expectEqual(@as(u64, 1073741824), parsed.value.memLimit());
 }
 
-
 /// Container logs. Non-TTY containers multiplex stdout and stderr with an
 /// 8-byte header per frame — `[stream, 0, 0, 0, len_be32]` — while TTY
 /// containers send raw bytes. Assuming one shape makes the other look like
@@ -240,7 +239,6 @@ test "a truncated frame falls back to raw rather than losing text" {
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings(raw, text);
 }
-
 
 test "cpu falls back to the per-core list when online_cpus is absent" {
     const json =

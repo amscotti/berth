@@ -238,10 +238,17 @@ pub const Port = struct {
 /// A host-side binding a browser can be pointed at.
 pub const HostBinding = struct {
     port: u16 = 0,
+    /// The port inside the container, for the `8080→80` spelling in the
+    /// inspector. Kept from the first binding that carried the host port.
+    private_port: u16 = 0,
     /// The address the port is bound on, when Docker reports one that is not
     /// the wildcard; empty means "any", which is `localhost` to a browser.
     ip: []const u8 = "",
 };
+
+fn bindingLessThan(_: void, a: HostBinding, b: HostBinding) bool {
+    return a.port < b.port;
+}
 
 pub const Container = struct {
     Id: []const u8 = "",
@@ -340,10 +347,14 @@ pub const Container = struct {
             const ip = p.IP orelse "";
             out[n] = .{
                 .port = public,
+                .private_port = p.PrivatePort,
                 .ip = if (std.mem.eql(u8, ip, "0.0.0.0") or std.mem.eql(u8, ip, "::")) "" else ip,
             };
             n += 1;
         }
+        // The engine's port list is not ordered; the table and the inspector
+        // must show the same first pills.
+        std.mem.sort(HostBinding, out[0..n], {}, bindingLessThan);
         return n + extra;
     }
 
@@ -365,7 +376,6 @@ pub const Container = struct {
         return fbs.buffered();
     }
 };
-
 
 pub const Mount = struct {
     Type: []const u8 = "",

@@ -4,6 +4,38 @@ Every view, both themes, judged against the design contract rather than against
 the code. Nine defects; all fixed. Screenshots at the end of each row are the
 evidence, in `docs/ui/`.
 
+## The Tier 1 pass, with vision
+
+The search, ports, pause/resume, health, Inspect, metrics and copy-run work was
+then walked again at 960×600, 1280×820 and 1440×900, in both themes:
+
+- Search moved into the page header on all four lists, with a clear button and
+  a "Clear search" action on the empty result. Counts only say "N of M shown"
+  when something is actually hidden.
+- The container name and image share one two-line cell, which bought the ports
+  column back. Network/disk/pids/uptime each gained a grouped slot; Ports is
+  back in the table and sorted host-side.
+- Status says health when there is one. A stopped row shows one dash per
+  unknown figure, not a column of stacked dashes.
+- The inspector is now title + close, a Facts/Inspect row, then content. Facts
+  labels share a column; ports read `18080→80` and are clickable; started-at
+  and restart count come from inspect; the JSON view has Copy and Refresh.
+- At 1120 points the rail folds to icons; the inspector is 430 or 360; table
+  densities are full, medium, dense, compact and tiny, chosen by the content
+  width. Actions stay pinned right and the name column takes spare width.
+- The panel pages scroll at 600 points tall, and the Settings prose is held to
+  a readable measure. The window opens at 1280×760, and a theme switch keeps
+  the size the user chose.
+- "Updated" and "Started" are local wall-clock times, not UTC. First launch is
+  a skeleton, not "0 images": discovery probes its candidates in parallel, and
+  engine metadata is read once at discovery, so a metadata hiccup cannot throw
+  away a good container list.
+
+Evidence: `overview.png`, `containers-light.png`, `containers-dark.png`,
+`detail-light.png`, `inspect-light.png`, `containers-960.png`,
+`detail-960.png`, `containers-1440.png`, `settings-light.png`.
+
+
 ## What the surface is
 
 This is a **Monitor** surface: the user is watching state change. Density and

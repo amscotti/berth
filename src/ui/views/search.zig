@@ -1,10 +1,7 @@
-//! Text search for the list views: one field beside the chips, one predicate
-//! per table, matching the fields the row actually shows. Kept here so
-//! `lists.zig` stays inside the 600-line rule and so the matching rules are
-//! testable without a window.
+//! Text search for the list views: one predicate per table, matching the
+//! fields the row actually shows. Kept here so `lists.zig` stays inside the
+//! 600-line rule and so the matching rules are testable without a window.
 const std = @import("std");
-const nanoui = @import("nanoui");
-const ui = nanoui.ui;
 const api = @import("../../engine/api.zig");
 
 /// A case-insensitive substring test. The query is typed, so it is short; a
@@ -20,16 +17,6 @@ pub fn contains(haystack: []const u8, needle: []const u8) bool {
         return true;
     }
     return false;
-}
-
-/// The search field itself. A fixed width, because an intrinsic-width field
-/// would shift everything after it — the same rule the pill cells follow.
-pub fn box(c: *ui.Context, buffer: *ui.TextBuffer, placeholder: []const u8, width: f32) ui.TextFieldResult {
-    return ui.textField(c, buffer, .{
-        .placeholder = placeholder,
-        .width = .{ .px = width },
-        .size = 12.5,
-    });
 }
 
 /// The fields each table shows, so what matches is what the user can see.

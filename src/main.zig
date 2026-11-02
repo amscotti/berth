@@ -8,21 +8,38 @@ const settings = @import("settings.zig");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
 
-/// Opens the window again with the current theme. A new window is created
-/// before the old one closes, so the app never sees its last window go.
+/// Opens the window again with the current theme, at the size it already had:
+/// switching appearance must not also resize the window the user arranged.
 fn reopen(state: *app_mod.State) void {
+    const old = state.window;
+    const size: [2]f64 = if (old) |w| w.contentSize() else .{ 1280, 760 };
     const next = state.app.newWindow(.{
         .title = "berth",
-        .width = 1180,
-        .height = 760,
+        .width = size[0],
+        .height = size[1],
         .min_width = 960,
         .min_height = 600,
         .theme = state.themeFor(),
         .content = .{ .view = .init(state, app_mod.State.view) },
     }) catch return;
-    if (state.window) |old| old.close();
+    if (old) |w| w.close();
     state.window = next;
     next.redraw();
+}
+
+/// `BERTH_SIZE=960x600` opens the window at that content size. It is how the
+/// layout is checked at the small end without a mouse, and how snapshots of
+/// each breakpoint are taken.
+fn sizeOverride() ?[2]f64 {
+    const p = getenv("BERTH_SIZE") orelse return null;
+    const text = std.mem.span(p);
+    const x = std.mem.indexOfScalar(u8, text, 'x') orelse return null;
+    const w = std.fmt.parseFloat(f64, text[0..x]) catch return null;
+    const h = std.fmt.parseFloat(f64, text[x + 1 ..]) catch return null;
+    if (w < 320 or h < 240) return null;
+    // The window's own minimum is the real floor; a test override below it
+    // would only produce a layout the app promises not to support.
+    return .{ @max(w, 960), @max(h, 600) };
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -45,10 +62,11 @@ pub fn main(init: std.process.Init) !void {
     }
     state.recreate = &reopen;
 
+    const size = sizeOverride() orelse .{ 1280, 760 };
     state.window = try app.newWindow(.{
         .title = "berth",
-        .width = 1180,
-        .height = 760,
+        .width = size[0],
+        .height = size[1],
         .min_width = 960,
         .min_height = 600,
         .theme = state.themeFor(),

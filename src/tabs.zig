@@ -72,7 +72,6 @@ pub const Tab = enum {
     }
 };
 
-
 /// One search buffer per list view. They are separate so that focus, caret
 /// and undo belong to the field on screen, and so switching tabs keeps each
 /// view's query where the user left it. `TextBuffer` allocates on the C heap,
@@ -129,7 +128,7 @@ test "tab names parse case-insensitively and reject unknown ones" {
 
 test "every tab has a label and an icon" {
     inline for (@typeInfo(Tab).@"enum".field_values) |value| {
-        const tab: Tab = @enumFromInt(value);
+        const tab: Tab = @fromBackingInt(@intCast(value));
         try std.testing.expect(tab.label().len > 0);
         try std.testing.expect(tab.icon().len > 0);
     }

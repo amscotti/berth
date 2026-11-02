@@ -9,119 +9,42 @@ const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const search = @import("search.zig");
 const metrics = @import("metrics.zig");
+const columns = @import("columns.zig");
+const sorting = @import("sorting.zig");
 const shell = @import("../shell.zig");
 
 const ROW = 44.0;
 
-fn numOrder(a: f64, b: f64) std.math.Order {
-    if (a < b) return .lt;
-    if (a > b) return .gt;
-    return .eq;
+fn loaded(s: *app.State) bool {
+    // A failed first pass is still a finished pass: show its error, not a
+    // skeleton that would never end.
+    return s.last_update != 0 or s.error_text.len > 0;
 }
 
-fn ordered(order: std.math.Order, desc: bool) bool {
-    return if (desc) order == .gt else order == .lt;
+/// The search field shrinks with the room the table has. At the smallest size
+/// the placeholder becomes one word rather than a clipped phrase.
+fn searchWidth(content: f32) f32 {
+    if (content >= 760) return 190;
+    if (content >= 520) return 160;
+    return 132;
 }
 
-const ContainerSort = struct {
-    s: *app.State,
-    key: u8,
-    desc: bool,
-
-    fn lessThan(ctx: ContainerSort, a: *const api.Container, b: *const api.Container) bool {
-        const order: std.math.Order = switch (ctx.key) {
-            1 => std.ascii.orderIgnoreCase(a.name(), b.name()),
-            2 => std.ascii.orderIgnoreCase(a.Image, b.Image),
-            3 => std.ascii.orderIgnoreCase(a.State, b.State),
-            4 => numOrder(app.statFor(ctx.s, a.Id).cpu, app.statFor(ctx.s, b.Id).cpu),
-            5 => numOrder(@floatFromInt(app.statFor(ctx.s, a.Id).mem), @floatFromInt(app.statFor(ctx.s, b.Id).mem)),
-            6 => std.ascii.orderIgnoreCase(a.project() orelse "", b.project() orelse ""),
-            7, 8, 9, 10 => numOrder(metrics.statKey(ctx.s, ctx.key, a), metrics.statKey(ctx.s, ctx.key, b)),
-            else => .eq,
-        };
-        return ordered(order, ctx.desc);
-    }
-};
-
-const ImageSort = struct {
-    items: []const api.Image,
-    key: u8,
-    desc: bool,
-
-    fn lessThan(ctx: ImageSort, a: usize, b: usize) bool {
-        const x = ctx.items[a];
-        const y = ctx.items[b];
-        const order: std.math.Order = switch (ctx.key) {
-            1 => std.ascii.orderIgnoreCase(x.label(), y.label()),
-            2 => std.ascii.orderIgnoreCase(x.Id, y.Id),
-            3 => numOrder(@floatFromInt(x.Size), @floatFromInt(y.Size)),
-            4 => numOrder(@floatFromInt(x.Created), @floatFromInt(y.Created)),
-            5 => std.ascii.orderIgnoreCase(if (x.dangling()) "dangling" else "ready", if (y.dangling()) "dangling" else "ready"),
-            else => .eq,
-        };
-        return ordered(order, ctx.desc);
-    }
-};
-
-const VolumeSort = struct {
-    items: []const api.Volume,
-    key: u8,
-    desc: bool,
-
-    fn lessThan(ctx: VolumeSort, a: usize, b: usize) bool {
-        const x = ctx.items[a];
-        const y = ctx.items[b];
-        const order: std.math.Order = switch (ctx.key) {
-            1 => std.ascii.orderIgnoreCase(x.Name, y.Name),
-            2 => std.ascii.orderIgnoreCase(x.Driver, y.Driver),
-            3 => numOrder(@floatFromInt(volumeSize(x)), @floatFromInt(volumeSize(y))),
-            4 => numOrder(@floatFromInt(volumeUse(x)), @floatFromInt(volumeUse(y))),
-            5 => std.ascii.orderIgnoreCase(x.Mountpoint, y.Mountpoint),
-            else => .eq,
-        };
-        return ordered(order, ctx.desc);
-    }
-};
-
-const NetworkSort = struct {
-    items: []const api.Network,
-    containers: []const api.Container,
-    key: u8,
-    desc: bool,
-
-    fn lessThan(ctx: NetworkSort, a: usize, b: usize) bool {
-        const x = ctx.items[a];
-        const y = ctx.items[b];
-        const order: std.math.Order = switch (ctx.key) {
-            1 => std.ascii.orderIgnoreCase(x.Name, y.Name),
-            2 => std.ascii.orderIgnoreCase(x.Driver, y.Driver),
-            3 => std.ascii.orderIgnoreCase(x.Scope, y.Scope),
-            4 => numOrder(
-                @floatFromInt(api.attachedCount(ctx.containers, x.Name)),
-                @floatFromInt(api.attachedCount(ctx.containers, y.Name)),
-            ),
-            else => .eq,
-        };
-        return ordered(order, ctx.desc);
-    }
-};
-
-
-fn volumeSize(v: api.Volume) i64 {
-    const u = v.UsageData orelse return -1;
-    return u.Size;
-}
-
-fn volumeUse(v: api.Volume) i64 {
-    const u = v.UsageData orelse return -1;
-    return u.RefCount;
+fn searchPlaceholder(c: *ui.Context, noun: []const u8, width: f32) []const u8 {
+    if (width < 150) return "Search";
+    return c.print("Search {s}", .{noun});
 }
 
 pub fn containers(s: *app.State, c: *ui.Context) void {
+    if (!loaded(s)) {
+        _ = widgets.pageHeaderSearch(c, "Containers", "Reading engine…", null);
+        widgets.loadingRows(c, 6);
+        return;
+    }
+
     // The rows this filter keeps, chosen once so the count and the list agree.
     // The search query ANDs with the chip: both narrow what is on screen.
     const q = c.alloc().dupe(u8, s.search.containers.text()) catch "";
-    var shown: [512]*const @import("../../engine/api.zig").Container = undefined;
+    var shown: [512]*const api.Container = undefined;
     var n: usize = 0;
     for (s.containers) |*ct| {
         if (!s.filter.keeps(ct)) continue;
@@ -131,14 +54,23 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         n += 1;
     }
 
-    const subtitle = if (s.filter == .all and q.len == 0)
-        c.print("{d} running · {d} total", .{ app.runningCount(s), s.containers.len })
+    // "N of M shown" only when something is actually hidden; otherwise the
+    // running/total summary is the more useful sentence.
+    const filtered = s.filter != .all or q.len > 0;
+    const subtitle = if (filtered and n < s.containers.len)
+        c.print("{d} of {d} shown", .{ n, s.containers.len })
     else
-        c.print("{d} of {d} shown", .{ n, s.containers.len });
-    widgets.pageHeader(c, "Containers", subtitle);
+        c.print("{d} running · {d} total", .{ app.runningCount(s), s.containers.len });
 
-    // Filter chips, in the same place and shape on every view that grows one,
-    // with the search field at the end of the same row.
+    const width = s.layout.content;
+    const box_w = searchWidth(width);
+    if (widgets.pageHeaderSearch(c, "Containers", subtitle, .{
+        .buffer = &s.search.containers,
+        .placeholder = searchPlaceholder(c, "containers", box_w),
+        .width = box_w,
+    })) s.redraw();
+
+    // Filter chips, in the same place and shape on every view that grows one.
     const chips = ui.div(c).row().wFull().gap(6).pb(8);
     for ([_]app.Filter{ .all, .running, .stopped }) |option| {
         const on = s.filter == option;
@@ -155,83 +87,95 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
             s.redraw();
         }
     }
-    ui.spacer(c);
-    _ = search.box(c, &s.search.containers, "Search containers", if (s.selected != null) 120 else 190);
     chips.end();
 
-    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    if (s.error_text.len > 0 and s.containers.len == 0) widgets.errorBanner(c, s.error_text);
 
     if (n == 0) {
         if (s.containers.len == 0) {
-            widgets.emptyState(c, "cube", "No containers yet", "docker run --rm -it alpine sh");
+            if (s.error_text.len > 0) {
+                _ = widgets.emptyStateAction(c, "cube", "Engine not answering", "Check the engine, then refresh from the rail", null);
+            } else {
+                _ = widgets.emptyStateAction(c, "cube", "No containers yet", "docker run --rm -it alpine sh", null);
+            }
         } else if (q.len > 0) {
-            widgets.emptyState(c, "cube", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every container");
+            if (widgets.emptyStateAction(c, "cube", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every container", "Clear search")) {
+                s.search.containers.clear();
+                s.redraw();
+            }
         } else {
-            widgets.emptyState(c, "cube", "None match this filter", "All shows every container");
+            if (widgets.emptyStateAction(c, "cube", "None match this filter", "All shows every container", "Show all")) {
+                s.filter = .all;
+                s.redraw();
+            }
         }
         return;
     }
 
-    // With the detail pane open the list has ~430pt less room, so it keeps
-    // only the columns that answer "which container, and how busy".
-    const compact = s.selected != null;
     // Only when something is actually grouped: a column of dashes costs width
     // that the ports column needs, and says nothing.
     var any_project = false;
     for (s.containers) |ct| {
         if (ct.project() != null) any_project = true;
     }
-    std.mem.sort(*const api.Container, shown[0..n], ContainerSort{
+    std.mem.sort(*const api.Container, shown[0..n], sorting.ContainerSort{
         .s = s,
         .key = s.sort_containers.key,
         .desc = s.sort_containers.desc,
-    }, ContainerSort.lessThan);
+    }, sorting.ContainerSort.lessThan);
 
-    const narrow_cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 120, .key = 1 },
-        .{ .name = "STATE", .width = 70, .key = 3 },
-        .{ .name = "CPU", .width = 56, .align_end = true, .key = 4 },
-        .{ .name = "MEM", .width = 70, .align_end = true, .key = 5 },
-        .{ .name = "ACTIONS", .width = 150 },
-    };
-    widgets.tableHeader(c, if (compact) narrow_cols[0..] else metrics.fullCols(any_project), &s.sort_containers);
+    var col_buf: [10]widgets.Col = undefined;
+    const cols = columns.containers(width, any_project, &col_buf);
+    widgets.tableHeader(c, cols.header, &s.sort_containers);
 
     var rows = ui.list(c, .{ .count = n, .row_height = ROW });
     while (rows.next()) |i| {
         const ct = shown[i].*;
         const is_selected = s.selected != null and std.mem.eql(u8, s.selected.?, ct.Id);
-        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(4)
+        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(10).rounded(4)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else if (i % 2 == 1) c.theme.surface_hover.alpha(0.35) else c.theme.surface)
             .control();
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
         if (row.clicked()) s.select(&ct);
 
-        // One line per cell, and no deferred box that siblings fall into:
-        // `defer name_cell.end()` would make everything after it a child of
-        // the name column, which is why this row rendered vertically.
-        widgets.cell(c, ct.name(), if (compact) 120 else 124, false);
-        if (!compact) widgets.cellMuted(c, ct.Image, 104, false);
-        widgets.pillCell(c, ct.health() orelse ct.State, 70);
+        metrics.nameCell(c, &ct, cols.name);
+        widgets.pillCell(c, ct.health() orelse ct.State, cols.state);
         const st = app.statFor(s, ct.Id);
         // A stopped container has no stats at all: say so with a dash rather
         // than a zero, which would read as "idle" instead of "unknown". A
         // paused one still reports — frozen, but real.
-        if (ct.isUp()) {
-            widgets.cell(c, format.percent(c, st.cpu), if (compact) 56 else 54, true);
-            widgets.cell(c, format.bytes(c, st.mem), if (compact) 70 else 70, true);
+        if (ct.isUp() and st.sampled) {
+            widgets.cell(c, format.percent(c, st.cpu), cols.cpu, true);
         } else {
-            widgets.cellMuted(c, "—", if (compact) 56 else 54, true);
-            widgets.cellMuted(c, "—", if (compact) 70 else 70, true);
+            widgets.cellMuted(c, "—", cols.cpu, true);
         }
-        if (!compact) {
-            metrics.netCell(c, &ct, st);
-            metrics.diskCell(c, &ct, st);
-            if (!any_project) metrics.pidsCell(c, &ct, st);
-            if (!any_project) metrics.uptimeCell(c, &ct);
-            if (any_project) widgets.cellMuted(c, ct.project() orelse "—", 90, false);
+        if (cols.mem > 0) {
+            if (ct.isUp() and st.sampled) {
+                widgets.cell(c, format.bytes(c, st.mem), cols.mem, true);
+            } else {
+                widgets.cellMuted(c, "—", cols.mem, true);
+            }
         }
-        actions(s, c, &ct, 150);
+        if (cols.net > 0) {
+            const gap = ui.div(c).w(6);
+            gap.end();
+            metrics.netCell(c, &ct, st, cols.net);
+        }
+        if (cols.disk > 0) metrics.diskCell(c, &ct, st, cols.disk);
+        if (cols.pids > 0) {
+            const gap = ui.div(c).w(6);
+            gap.end();
+            metrics.pidsCell(c, &ct, st, cols.pids);
+        }
+        if (cols.uptime > 0) metrics.uptimeCell(c, &ct, cols.uptime);
+        if (cols.project > 0) widgets.cellMuted(c, ct.project() orelse "—", cols.project, false);
+        if (cols.ports > 0) {
+            // A pill per published port; clicking one opens it in a browser.
+            if (widgets.portPills(c, &ct, 2, cols.ports, false)) |binding| s.openPort(binding);
+        }
+        ui.spacer(c);
+        actions(s, c, &ct, cols.actions);
     }
     rows.end();
 }
@@ -263,6 +207,12 @@ fn smallButton(c: *ui.Context, label: []const u8, danger: bool) bool {
 }
 
 pub fn images(s: *app.State, c: *ui.Context) void {
+    if (!loaded(s)) {
+        _ = widgets.pageHeaderSearch(c, "Images", "Reading engine…", null);
+        widgets.loadingRows(c, 5);
+        return;
+    }
+
     const q = c.alloc().dupe(u8, s.search.images.text()) catch "";
     const order = c.alloc().alloc(usize, s.images.len) catch return;
     var shown: usize = 0;
@@ -271,81 +221,84 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         order[shown] = i;
         shown += 1;
     }
-    std.mem.sort(usize, order[0..shown], ImageSort{
+    std.mem.sort(usize, order[0..shown], sorting.ImageSort{
         .items = s.images,
         .key = s.sort_images.key,
         .desc = s.sort_images.desc,
-    }, ImageSort.lessThan);
+    }, sorting.ImageSort.lessThan);
 
-    const subtitle = if (q.len > 0)
+    const subtitle = if (q.len > 0 and shown < s.images.len)
         c.print("{d} of {d} shown", .{ shown, s.images.len })
     else
         widgets.count(c, s.images.len, "image", "images");
-    widgets.pageHeader(c, "Images", subtitle);
-    searchRow(c, &s.search.images, "Search images", 190);
-    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    const width = s.layout.content;
+    const box_w = searchWidth(width);
+    if (widgets.pageHeaderSearch(c, "Images", subtitle, .{
+        .buffer = &s.search.images,
+        .placeholder = searchPlaceholder(c, "images", box_w),
+        .width = box_w,
+    })) s.redraw();
+
+    if (s.error_text.len > 0 and s.images.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.images.len == 0) {
-        widgets.emptyState(c, "doc", "No images", "docker pull alpine");
+        if (s.error_text.len > 0) {
+            _ = widgets.emptyStateAction(c, "doc", "Engine not answering", "Check the engine, then refresh from the rail", null);
+        } else {
+            _ = widgets.emptyStateAction(c, "doc", "No images", "docker pull alpine", null);
+        }
         return;
     }
     if (shown == 0) {
-        widgets.emptyState(c, "doc", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every image");
+        if (widgets.emptyStateAction(c, "doc", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every image", "Clear search")) {
+            s.search.images.clear();
+            s.redraw();
+        }
         return;
     }
-    const compact = s.selected != null and s.detail_kind == .image;
-    const full_cols = [_]widgets.Col{
-        .{ .name = "REPOSITORY:TAG", .width = 300, .key = 1 },
-        .{ .name = "ID", .width = 110, .key = 2 },
-        .{ .name = "SIZE", .width = 100, .align_end = true, .key = 3 },
-        .{ .name = "AGE", .width = 100, .align_end = true, .key = 4 },
-        .{ .name = "STATUS", .width = 120, .key = 5 },
-    };
-    const compact_cols = [_]widgets.Col{
-        .{ .name = "REPOSITORY:TAG", .width = 240, .key = 1 },
-        .{ .name = "ID", .width = 100, .key = 2 },
-        .{ .name = "SIZE", .width = 80, .align_end = true, .key = 3 },
-    };
-    widgets.tableHeader(c, if (compact) &compact_cols else &full_cols, &s.sort_images);
+
+    var col_buf: [5]widgets.Col = undefined;
+    const cols = columns.images(width, &col_buf);
+    widgets.tableHeader(c, cols.header, &s.sort_images);
 
     var rows = ui.list(c, .{ .count = shown, .row_height = ROW });
     while (rows.next()) |i| {
         const im = s.images[order[i]];
         const is_selected = s.detail_kind == .image and s.selected != null and std.mem.eql(u8, s.selected.?, im.Id);
-        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(4)
+        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(10).rounded(4)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else if (i % 2 == 1) c.theme.surface_hover.alpha(0.35) else c.theme.surface)
             .control();
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
         if (row.clicked()) s.selectImage(&im);
-        const label_w: f32 = if (compact) 240 else 300;
         if (im.dangling()) {
-            widgets.cellMuted(c, im.label(), label_w, false);
+            widgets.cellMuted(c, im.label(), cols.repo, false);
         } else {
-            widgets.cell(c, im.label(), label_w, false);
+            widgets.cell(c, im.label(), cols.repo, false);
         }
         const id = im.Id;
         const short = if (id.len > 19) id[7..19] else id;
-        widgets.cellMuted(c, short, if (compact) 100 else 110, false);
-        widgets.cell(c, format.bytes(c, im.Size), if (compact) 80 else 100, true);
-        if (!compact) {
-            widgets.cellMuted(c, format.ago(c, im.Created, format.now()), 100, true);
+        widgets.cellMuted(c, short, cols.id, false);
+        widgets.cell(c, format.bytes(c, im.Size), cols.size, true);
+        if (cols.age > 0) {
+            widgets.cellMuted(c, format.ago(c, im.Created, format.now()), cols.age, true);
+            if (cols.status_gap > 0) {
+                const gap = ui.div(c).w(cols.status_gap);
+                gap.end();
+            }
             // A fixed slot: an intrinsic-width pill shifts everything after it.
-            widgets.pillCell(c, if (im.dangling()) "dangling" else "ready", 120);
+            widgets.pillCell(c, if (im.dangling()) "dangling" else "ready", cols.status);
         }
     }
     rows.end();
 }
 
-/// The row above every list that has no filter chips: the search field on the
-/// left, so an empty list keeps it too.
-fn searchRow(c: *ui.Context, buffer: *ui.TextBuffer, placeholder: []const u8, width: f32) void {
-    const row = ui.div(c).row().wFull().gap(6).pb(8);
-    _ = search.box(c, buffer, placeholder, width);
-    row.end();
-}
-
-
 pub fn volumes(s: *app.State, c: *ui.Context) void {
+    if (!loaded(s)) {
+        _ = widgets.pageHeaderSearch(c, "Volumes", "Reading engine…", null);
+        widgets.loadingRows(c, 5);
+        return;
+    }
+
     const q = c.alloc().dupe(u8, s.search.volumes.text()) catch "";
     const order = c.alloc().alloc(usize, s.volumes.len) catch return;
     var shown: usize = 0;
@@ -354,74 +307,86 @@ pub fn volumes(s: *app.State, c: *ui.Context) void {
         order[shown] = i;
         shown += 1;
     }
-    std.mem.sort(usize, order[0..shown], VolumeSort{
+    std.mem.sort(usize, order[0..shown], sorting.VolumeSort{
         .items = s.volumes,
         .key = s.sort_volumes.key,
         .desc = s.sort_volumes.desc,
-    }, VolumeSort.lessThan);
+    }, sorting.VolumeSort.lessThan);
 
-    const subtitle = if (q.len > 0)
+    const subtitle = if (q.len > 0 and shown < s.volumes.len)
         c.print("{d} of {d} shown", .{ shown, s.volumes.len })
     else
         widgets.count(c, s.volumes.len, "volume", "volumes");
-    widgets.pageHeader(c, "Volumes", subtitle);
-    searchRow(c, &s.search.volumes, "Search volumes", 190);
-    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    const width = s.layout.content;
+    const box_w = searchWidth(width);
+    if (widgets.pageHeaderSearch(c, "Volumes", subtitle, .{
+        .buffer = &s.search.volumes,
+        .placeholder = searchPlaceholder(c, "volumes", box_w),
+        .width = box_w,
+    })) s.redraw();
+
+    if (s.error_text.len > 0 and s.volumes.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.volumes.len == 0) {
-        widgets.emptyState(c, "folder", "No volumes", "Volumes appear here once a container declares one");
+        if (s.error_text.len > 0) {
+            _ = widgets.emptyStateAction(c, "folder", "Engine not answering", "Check the engine, then refresh from the rail", null);
+        } else {
+            _ = widgets.emptyStateAction(c, "folder", "No volumes", "Volumes appear here once a container declares one", null);
+        }
         return;
     }
     if (shown == 0) {
-        widgets.emptyState(c, "folder", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every volume");
+        if (widgets.emptyStateAction(c, "folder", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every volume", "Clear search")) {
+            s.search.volumes.clear();
+            s.redraw();
+        }
         return;
     }
-    const compact = s.selected != null and s.detail_kind == .volume;
-    const full_cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 260, .key = 1 },
-        .{ .name = "DRIVER", .width = 100, .key = 2 },
-        .{ .name = "SIZE", .width = 100, .align_end = true, .key = 3 },
-        .{ .name = "IN USE", .width = 90, .align_end = true, .key = 4 },
-        .{ .name = "MOUNTPOINT", .width = 260, .key = 5 },
-    };
-    const compact_cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 180, .key = 1 },
-        .{ .name = "DRIVER", .width = 70, .key = 2 },
-        .{ .name = "MOUNTPOINT", .width = 180, .key = 5 },
-    };
-    widgets.tableHeader(c, if (compact) &compact_cols else &full_cols, &s.sort_volumes);
+
+    var col_buf: [5]widgets.Col = undefined;
+    const cols = columns.volumes(width, &col_buf);
+    widgets.tableHeader(c, cols.header, &s.sort_volumes);
 
     var rows = ui.list(c, .{ .count = shown, .row_height = ROW });
     while (rows.next()) |i| {
         const v = s.volumes[order[i]];
         const is_selected = s.detail_kind == .volume and s.selected != null and std.mem.eql(u8, s.selected.?, v.Name);
-        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(4)
+        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(10).rounded(4)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else if (i % 2 == 1) c.theme.surface_hover.alpha(0.35) else c.theme.surface)
             .control();
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
         if (row.clicked()) s.selectVolume(&v);
-        widgets.cell(c, v.Name, if (compact) 180 else 260, false);
-        widgets.cellMuted(c, v.Driver, if (compact) 70 else 100, false);
-        if (!compact) {
+        widgets.cell(c, v.Name, cols.name, false);
+        widgets.cellMuted(c, v.Driver, cols.driver, false);
+        if (cols.size > 0) {
             if (v.UsageData) |u| {
                 if (u.Size >= 0) {
-                    widgets.cell(c, format.bytes(c, @as(u64, @intCast(u.Size))), 100, true);
+                    widgets.cell(c, format.bytes(c, @as(u64, @intCast(u.Size))), cols.size, true);
                 } else {
-                    widgets.cellMuted(c, "—", 100, true);
+                    widgets.cellMuted(c, "—", cols.size, true);
                 }
-                widgets.cell(c, c.print("{d}", .{u.RefCount}), 90, true);
+                widgets.cell(c, c.print("{d}", .{u.RefCount}), cols.in_use, true);
             } else {
-                widgets.cellMuted(c, "—", 100, true);
-                widgets.cellMuted(c, "—", 90, true);
+                widgets.cellMuted(c, "—", cols.size, true);
+                widgets.cellMuted(c, "—", cols.in_use, true);
             }
         }
-        widgets.cellMuted(c, v.Mountpoint, if (compact) 180 else 260, false);
+        if (cols.mount_gap > 0) {
+            const gap = ui.div(c).w(cols.mount_gap);
+            gap.end();
+        }
+        widgets.cellMuted(c, v.Mountpoint, cols.mount, false);
     }
     rows.end();
 }
 
-
 pub fn networks(s: *app.State, c: *ui.Context) void {
+    if (!loaded(s)) {
+        _ = widgets.pageHeaderSearch(c, "Networks", "Reading engine…", null);
+        widgets.loadingRows(c, 5);
+        return;
+    }
+
     const q = c.alloc().dupe(u8, s.search.networks.text()) catch "";
     const order = c.alloc().alloc(usize, s.networks.len) catch return;
     var shown: usize = 0;
@@ -430,135 +395,68 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
         order[shown] = i;
         shown += 1;
     }
-    std.mem.sort(usize, order[0..shown], NetworkSort{
+    std.mem.sort(usize, order[0..shown], sorting.NetworkSort{
         .items = s.networks,
         .containers = s.containers,
         .key = s.sort_networks.key,
         .desc = s.sort_networks.desc,
-    }, NetworkSort.lessThan);
+    }, sorting.NetworkSort.lessThan);
 
-    const subtitle = if (q.len > 0)
+    const subtitle = if (q.len > 0 and shown < s.networks.len)
         c.print("{d} of {d} shown", .{ shown, s.networks.len })
     else
         widgets.count(c, s.networks.len, "network", "networks");
-    widgets.pageHeader(c, "Networks", subtitle);
-    searchRow(c, &s.search.networks, "Search networks", 190);
-    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    const width = s.layout.content;
+    const box_w = searchWidth(width);
+    if (widgets.pageHeaderSearch(c, "Networks", subtitle, .{
+        .buffer = &s.search.networks,
+        .placeholder = searchPlaceholder(c, "networks", box_w),
+        .width = box_w,
+    })) s.redraw();
+
+    if (s.error_text.len > 0 and s.networks.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.networks.len == 0) {
-        widgets.emptyState(c, "network", "No networks", "");
+        if (s.error_text.len > 0) {
+            _ = widgets.emptyStateAction(c, "network", "Engine not answering", "Check the engine, then refresh from the rail", null);
+        } else {
+            _ = widgets.emptyStateAction(c, "network", "No networks", "", null);
+        }
         return;
     }
     if (shown == 0) {
-        widgets.emptyState(c, "network", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every network");
+        if (widgets.emptyStateAction(c, "network", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every network", "Clear search")) {
+            s.search.networks.clear();
+            s.redraw();
+        }
         return;
     }
-    const compact = s.selected != null and s.detail_kind == .network;
-    const full_cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 240, .key = 1 },
-        .{ .name = "DRIVER", .width = 100, .key = 2 },
-        .{ .name = "SCOPE", .width = 90, .key = 3 },
-        .{ .name = "ATTACHED", .width = 90, .align_end = true, .key = 4 },
-    };
-    const compact_cols = [_]widgets.Col{
-        .{ .name = "NAME", .width = 180, .key = 1 },
-        .{ .name = "DRIVER", .width = 80, .key = 2 },
-        .{ .name = "SCOPE", .width = 70, .key = 3 },
-        .{ .name = "ATTACHED", .width = 70, .align_end = true, .key = 4 },
-    };
-    widgets.tableHeader(c, if (compact) &compact_cols else &full_cols, &s.sort_networks);
+
+    const cols = columns.networks(width);
+    widgets.tableHeader(c, cols.header, &s.sort_networks);
 
     var rows = ui.list(c, .{ .count = shown, .row_height = ROW });
     while (rows.next()) |i| {
         const n = s.networks[order[i]];
         const is_selected = s.detail_kind == .network and s.selected != null and
             (std.mem.eql(u8, s.selected.?, n.Id) or std.mem.eql(u8, s.selected.?, n.Name));
-        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(8).rounded(4)
+        var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(10).rounded(4)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else if (i % 2 == 1) c.theme.surface_hover.alpha(0.35) else c.theme.surface)
             .control();
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
         if (row.clicked()) s.selectNetwork(&n);
         const dim = n.builtin();
-        const name_w: f32 = if (compact) 180 else 240;
-        const driver_w: f32 = if (compact) 80 else 100;
-        const scope_w: f32 = if (compact) 70 else 90;
         if (dim) {
-            widgets.cellMuted(c, n.Name, name_w, false);
+            widgets.cellMuted(c, n.Name, cols.name, false);
             // The API reports an absent driver as the string "null".
-            widgets.cellMuted(c, if (std.mem.eql(u8, n.Driver, "null")) "—" else n.Driver, driver_w, false);
-            widgets.cellMuted(c, n.Scope, scope_w, false);
+            widgets.cellMuted(c, if (std.mem.eql(u8, n.Driver, "null")) "—" else n.Driver, cols.driver, false);
+            widgets.cellMuted(c, n.Scope, cols.scope, false);
         } else {
-            widgets.cell(c, n.Name, name_w, false);
-            widgets.cellMuted(c, n.Driver, driver_w, false);
-            widgets.cellMuted(c, n.Scope, scope_w, false);
+            widgets.cell(c, n.Name, cols.name, false);
+            widgets.cellMuted(c, n.Driver, cols.driver, false);
+            widgets.cellMuted(c, n.Scope, cols.scope, false);
         }
-        widgets.cellMuted(c, c.print("{d}", .{api.attachedCount(s.containers, n.Name)}), if (compact) 70 else 90, true);
+        widgets.cellMuted(c, c.print("{d}", .{api.attachedCount(s.containers, n.Name)}), cols.attached, true);
     }
     rows.end();
-}
-
-
-test "container sorting is case-insensitive and reversible" {
-    const items = [_]api.Container{
-        .{ .Id = "b", .Names = &.{"/Web"}, .Image = "nginx", .State = "running" },
-        .{ .Id = "a", .Names = &.{"/api"}, .Image = "alpine", .State = "exited" },
-    };
-    const name_asc = ContainerSort{ .s = undefined, .key = 1, .desc = false };
-    const name_desc = ContainerSort{ .s = undefined, .key = 1, .desc = true };
-    try std.testing.expect(name_asc.lessThan(&items[1], &items[0]));
-    try std.testing.expect(name_desc.lessThan(&items[0], &items[1]));
-
-    const image_asc = ContainerSort{ .s = undefined, .key = 2, .desc = false };
-    try std.testing.expect(image_asc.lessThan(&items[1], &items[0]));
-
-    const state_asc = ContainerSort{ .s = undefined, .key = 3, .desc = false };
-    try std.testing.expect(state_asc.lessThan(&items[1], &items[0]));
-}
-
-test "image sorting follows tag, size and dangling state" {
-    const items = [_]api.Image{
-        .{ .Id = "2", .RepoTags = &.{"nginx:alpine"}, .Size = 90 },
-        .{ .Id = "1", .RepoTags = &.{"alpine:3.22"}, .Size = 12 },
-        .{ .Id = "3", .RepoTags = &.{}, .Size = 1 },
-    };
-    const tag = ImageSort{ .items = items[0..], .key = 1, .desc = false };
-    try std.testing.expect(tag.lessThan(1, 0)); // alpine < nginx
-    try std.testing.expect(tag.lessThan(0, 2)); // nginx < untagged
-    try std.testing.expect(!tag.lessThan(2, 0));
-
-    const size = ImageSort{ .items = items[0..], .key = 3, .desc = false };
-    try std.testing.expect(size.lessThan(2, 1)); // 1 B < 12
-    try std.testing.expect(size.lessThan(1, 0)); // 12 < 90
-
-    const status = ImageSort{ .items = items[0..], .key = 5, .desc = false };
-    try std.testing.expect(status.lessThan(2, 0)); // dangling < ready
-}
-
-test "volume sorting handles size, use and missing usage data" {
-    const items = [_]api.Volume{
-        .{ .Name = "b", .Driver = "local", .Mountpoint = "/b", .UsageData = .{ .Size = 20, .RefCount = 1 } },
-        .{ .Name = "a", .Driver = "nfs", .Mountpoint = "/a", .UsageData = .{ .Size = 10, .RefCount = 5 } },
-        .{ .Name = "c", .Driver = "local", .Mountpoint = "/c" },
-    };
-    const name = VolumeSort{ .items = items[0..], .key = 1, .desc = false };
-    try std.testing.expect(name.lessThan(1, 0));
-    const size = VolumeSort{ .items = items[0..], .key = 3, .desc = false };
-    try std.testing.expect(size.lessThan(1, 0)); // 10 < 20
-    try std.testing.expect(size.lessThan(2, 1)); // -1 (unknown) < 10
-    const used = VolumeSort{ .items = items[0..], .key = 4, .desc = false };
-    try std.testing.expect(used.lessThan(0, 1)); // 1 < 5
-}
-
-test "network sorting follows name, driver and scope" {
-    const items = [_]api.Network{
-        .{ .Name = "shop", .Driver = "bridge", .Scope = "local" },
-        .{ .Name = "bridge", .Driver = "bridge", .Scope = "local" },
-        .{ .Name = "host", .Driver = "host", .Scope = "local" },
-    };
-    const name = NetworkSort{ .items = items[0..], .containers = &.{}, .key = 1, .desc = false };
-    try std.testing.expect(name.lessThan(1, 0));
-    const driver = NetworkSort{ .items = items[0..], .containers = &.{}, .key = 2, .desc = false };
-    try std.testing.expect(driver.lessThan(0, 2)); // bridge < host
-    const desc = NetworkSort{ .items = items[0..], .containers = &.{}, .key = 1, .desc = true };
-    try std.testing.expect(desc.lessThan(0, 1));
 }

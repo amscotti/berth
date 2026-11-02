@@ -31,7 +31,8 @@ three questions without a terminal:
 | **Engines** | Docker Desktop, dockerd, Colima, Lima, Podman machine, rootless and rootful Podman — discovered by probing, not guessing |
 | **Protocol** | HTTP/1.1 over a Unix socket, chunked bodies, API version negotiated from `/version` |
 | **Views** | Overview, Containers, Images, Volumes, Networks, Stacks (Compose), Disk, Runtimes, Settings |
-| **Tables** | sortable headers, text search, clickable rows, fixed columns and a compact layout when an inspector is open |
+| **Tables** | sortable headers, search in every page header, clickable rows, and a column set that scales with the window |
+| **Layout** | the rail folds to icons below 1120 points; the inspector is 430 or 360; tables choose one of five densities |
 | **Live figures** | per-container CPU and memory (two-sample deltas, matching `docker stats`), network and disk I/O, PIDs, uptime and restarts, container history graphs, host CPU and memory |
 | **Inspectors** | container facts and logs; image, volume and network details; the engine's raw JSON behind an Inspect tab |
 | **Actions** | start, stop, pause, resume, restart, delete; open a published port in the browser; copy the `docker run` command; remove an image, volume or network |
@@ -103,6 +104,9 @@ BERTH_TAB=containers BERTH_ACT=stop:my-container zig-out/bin/berth --nanoui-snap
 
 # a filter
 BERTH_FILTER=running ...
+
+# a particular window size and a search query
+BERTH_SIZE=960x600 BERTH_TAB=containers BERTH_SEARCH=web ...
 ```
 
 `--nanoui-wait` matters: it runs the event loop for that many seconds first, so

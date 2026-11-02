@@ -14,9 +14,11 @@ const refresh_mod = @import("refresh.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
 const widgets = @import("ui/widgets.zig");
+const layout = @import("ui/layout.zig");
 const History = @import("ui/history.zig").History;
 const host = @import("host/host.zig");
 const tabs = @import("tabs.zig");
+const runtimes_mod = @import("runtimes.zig");
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -79,6 +81,9 @@ pub const State = struct {
     tab: Tab = .overview,
     filter: Filter = .all,
     search: tabs.Search = .{},
+    /// Recomputed once per frame from the window's width; views read it
+    /// instead of guessing how much room the rail and inspector took.
+    layout: layout.Widths = .{},
     sort_containers: widgets.Sort = .{ .key = 1 },
     sort_images: widgets.Sort = .{ .key = 1 },
     sort_volumes: widgets.Sort = .{ .key = 1 },
@@ -298,7 +303,9 @@ pub const State = struct {
     /// state, cleared with the selection it describes.
     pub fn reloadInspect(s: *State) void {
         const id = s.selected orelse return;
-        s.clearInspect();
+        // Only the JSON is being replaced; the lifetime facts belong to the
+        // selection and must survive a glance at the raw document.
+        s.clearInspectJson();
         var client = s.client orelse return;
         const kind: inspect.Kind = switch (s.detail_kind) {
             .container => .container,
@@ -344,14 +351,7 @@ pub const State = struct {
     }
 
     fn dropRuntimes(s: *State) void {
-        if (s.runtimes.len == 0) return;
-        for (s.runtimes) |r| {
-            s.gpa.free(r.name);
-            s.gpa.free(r.socket);
-            if (r.error_text.len > 0) s.gpa.free(r.error_text);
-        }
-        s.gpa.free(s.runtimes);
-        s.runtimes = &.{};
+        runtimes_mod.drop(s);
     }
 
     /// Free the log copy that belongs to the current selection.
@@ -363,9 +363,13 @@ pub const State = struct {
 
     /// Same lifetime as the logs: the pane's JSON must survive snapshot swaps
     /// and belong to exactly one selected object.
-    pub fn clearInspect(s: *State) void {
+    pub fn clearInspectJson(s: *State) void {
         if (s.inspect_buf) |buf| s.gpa.free(buf);
         s.inspect_buf = null;
+    }
+
+    pub fn clearInspect(s: *State) void {
+        s.clearInspectJson();
         if (s.detail_lifetime) |*life| {
             if (life.run_cmd) |cmd| s.gpa.free(cmd);
         }
@@ -384,6 +388,9 @@ pub const State = struct {
         s.networks = &.{};
         s.df = null;
         s.error_text = "";
+        // Nothing from the old engine is on screen any more: the views show
+        // their skeletons until the new engine's first snapshot lands.
+        s.last_update = 0;
         s.selected = null;
         s.selected_name = "";
         s.clearLogs();

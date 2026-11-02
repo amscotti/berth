@@ -147,7 +147,8 @@ test "a container with nothing published fills nothing" {
 }
 
 test "a paused container is up but not running" {
-    const json = \\{"Id":"p1","Names":["/frozen"],"State":"paused"}
+    const json =
+        \\{"Id":"p1","Names":["/frozen"],"State":"paused"}
     ;
     var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
@@ -180,4 +181,17 @@ test "health is read from the status suffix and nowhere else" {
     try std.testing.expect((api.Container{ .State = "exited", .Status = "Exited (0) 5 seconds ago" }).health() == null);
     try std.testing.expect((api.Container{ .State = "restarting", .Status = "Restarting (1) 2 seconds ago" }).health() == null);
     try std.testing.expect((api.Container{ .State = "running", .Status = "Up 2 hours" }).health() == null);
+}
+
+test "published ports come out in host-port order" {
+    const json =
+        \\{"Ports":[{"PrivatePort":443,"PublicPort":8443,"Type":"tcp"},
+        \\          {"PrivatePort":80,"PublicPort":8080,"Type":"tcp"}]}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.publishedPorts(&out));
+    try std.testing.expectEqual(@as(u16, 8080), out[0].port);
+    try std.testing.expectEqual(@as(u16, 8443), out[1].port);
 }

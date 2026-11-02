@@ -11,7 +11,11 @@ test {
     _ = @import("tabs.zig");
     _ = @import("settings.zig");
     _ = @import("ui/views/lists.zig");
+    _ = @import("ui/views/columns.zig");
+    _ = @import("ui/views/sorting.zig");
     _ = @import("ui/views/search.zig");
+    _ = @import("ui/layout.zig");
+    _ = @import("ui/detail.zig");
     _ = @import("ui/views/stacks.zig");
     _ = @import("ui/format.zig");
     _ = @import("ui/widgets.zig");

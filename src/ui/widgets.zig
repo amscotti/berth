@@ -15,13 +15,40 @@ pub fn count(c: *ui.Context, n: usize, one: []const u8, many: []const u8) []cons
 }
 
 /// Title, count and the one primary action, in the same order on every page.
+/// The search field belongs in this row, on the right: it is part of the
+/// page's chrome, not a second toolbar below it.
 pub fn pageHeader(c: *ui.Context, heading: []const u8, subtitle: []const u8) void {
-    const h = ui.div(c).row().wFull().itemsCenter().gap(10).pb(12);
+    _ = pageHeaderSearch(c, heading, subtitle, null);
+}
+
+/// A list view's header with its search field. Returns true when the field's
+/// clear button was pressed, so the view can redraw with the filter gone.
+pub fn pageHeaderSearch(c: *ui.Context, heading: []const u8, subtitle: []const u8, box: ?SearchBox) bool {
+    const h = ui.div(c).row().wFull().itemsCenter().gap(10).pb(10);
     defer h.end();
     ui.text(c, heading, .{ .size = title, .weight = .semibold });
     if (subtitle.len > 0) ui.text(c, subtitle, .{ .size = muted, .color = c.theme.muted });
     ui.spacer(c);
+    const search = box orelse return false;
+    _ = ui.textField(c, search.buffer, .{
+        .placeholder = search.placeholder,
+        .width = .{ .px = search.width },
+        .size = 12.5,
+    });
+    if (search.buffer.text().len == 0) return false;
+    const clear = ui.div(c).row().w(22).h(22).center().rounded(11).bg(c.theme.surface_hover).control();
+    ui.icon(c, "xmark", .{ .size = 10, .color = c.theme.muted });
+    const clicked = clear.clicked();
+    clear.end();
+    if (clicked) search.buffer.clear();
+    return clicked;
 }
+
+pub const SearchBox = struct {
+    buffer: *ui.TextBuffer,
+    placeholder: []const u8,
+    width: f32 = 190,
+};
 
 /// The column strip above a list. Widths are fixed so numbers line up; the
 /// last column takes the rest.
@@ -33,6 +60,12 @@ pub const Col = struct {
     key: u8 = 0,
     /// A column that exists in the layout but is not drawn this frame.
     skip: bool = false,
+    /// Push this column and everything after it to the right edge, so the
+    /// actions stay where the mouse expects them on a wide window.
+    flex_before: bool = false,
+    /// Extra air before this column, to group related figures (the I/O pair,
+    /// the process count) without drawing a divider.
+    gap_before: f32 = 0,
 };
 
 /// Which column a table is ordered by, and which way.
@@ -52,9 +85,14 @@ pub const Sort = struct {
 };
 
 pub fn tableHeader(c: *ui.Context, cols: []const Col, sort: ?*Sort) void {
-    const row = ui.div(c).row().wFull().itemsCenter().px(12).pb(6).gap(8);
+    const row = ui.div(c).row().wFull().itemsCenter().px(12).pb(6).gap(10);
     for (cols) |col| {
         if (col.skip) continue;
+        if (col.flex_before) ui.spacer(c);
+        if (col.gap_before > 0) {
+            const gap = ui.div(c).w(col.gap_before);
+            gap.end();
+        }
         var head_cell = ui.div(c).row().w(col.width).h(18).itemsCenter().gap(3).control();
         if (col.align_end) head_cell = head_cell.justifyEnd();
         defer head_cell.end();
@@ -138,11 +176,23 @@ pub fn statusColor(c: *ui.Context, state: []const u8) ui.Color {
 
 /// The four states every view implements, in one place.
 pub fn emptyState(c: *ui.Context, icon: []const u8, heading: []const u8, detail: []const u8) void {
+    _ = emptyStateAction(c, icon, heading, detail, null);
+}
+
+/// The same empty state with a way out of it: "Clear search", "Show all".
+/// Returns true when that button was clicked.
+pub fn emptyStateAction(c: *ui.Context, icon: []const u8, heading: []const u8, detail: []const u8, action_label: ?[]const u8) bool {
     const box = ui.div(c).column().wFull().itemsCenter().gap(6).py(40);
     defer box.end();
     ui.icon(c, icon, .{ .size = 28, .color = c.theme.muted });
     ui.text(c, heading, .{ .size = body, .weight = .semibold });
     if (detail.len > 0) ui.text(c, detail, .{ .size = muted, .color = c.theme.muted });
+    const label = action_label orelse return false;
+    const button = ui.div(c).row().h(26).px(11).itemsCenter().rounded(13).bg(c.theme.surface_hover);
+    ui.text(c, label, .{ .size = 11.5, .weight = .medium, .color = c.theme.text });
+    const clicked = button.clicked();
+    button.end();
+    return clicked;
 }
 
 pub fn loadingRows(c: *ui.Context, rows: usize) void {
@@ -163,48 +213,12 @@ pub fn errorBanner(c: *ui.Context, text: []const u8) void {
     ui.text(c, text, .{ .size = body, .color = c.theme.danger });
 }
 
-/// Published ports as `8080→80, 8443→443`, then `+n` when there are more.
-/// Built in the frame's arena because the row is painted after the view returns.
-pub fn portsText(c: *ui.Context, ct: *const @import("../engine/api.zig").Container, max: usize) []const u8 {
-    // Docker lists the same binding once per address family, so "8080→80"
-    // appears twice for a container published on both IPv4 and IPv6. Show it
-    // once: the duplicate is an artifact of the API, not a second port.
-    var total: usize = 0;
-    {
-        var last: ?u32 = null;
-        for (ct.Ports) |p| {
-            if (p.PublicPort == null) continue;
-            const key = (@as(u32, p.PublicPort.?) << 16) | p.PrivatePort;
-            if (last != null and last.? == key) continue;
-            last = key;
-            total += 1;
-        }
-    }
-
-    var shown: usize = 0;
-    var out: []const u8 = "";
-    var last: ?u32 = null;
-    for (ct.Ports) |p| {
-        if (p.PublicPort == null) continue;
-        const key = (@as(u32, p.PublicPort.?) << 16) | p.PrivatePort;
-        if (last != null and last.? == key) continue;
-        last = key;
-        if (shown == max) {
-            out = c.print("{s} +{d}", .{ out, total - shown });
-            break;
-        }
-        const piece = c.print("{d}→{d}", .{ p.PublicPort.?, p.PrivatePort });
-        out = if (shown == 0) piece else c.print("{s}, {s}", .{ out, piece });
-        shown += 1;
-    }
-    return out;
-}
-
 /// Published ports as clickable pills: the host port, opening it in the
 /// browser when clicked. Fixed total width so the column never shifts, and the
 /// pills are bounded by that width however wide the digits are; at most `max`
-/// pills, then a muted "+k". Returns the binding whose pill was clicked.
-pub fn portPills(c: *ui.Context, ct: *const @import("../engine/api.zig").Container, max: usize, width: f32) ?@import("../engine/api.zig").HostBinding {
+/// pills, then a muted "+k". `show_target` adds the container-side port, as
+/// `8080→80`, which the inspector has room for. Returns the binding clicked.
+pub fn portPills(c: *ui.Context, ct: *const @import("../engine/api.zig").Container, max: usize, width: f32, show_target: bool) ?@import("../engine/api.zig").HostBinding {
     var ports: [16]@import("../engine/api.zig").HostBinding = undefined;
     const total = ct.publishedPorts(&ports);
     const filled = @min(total, ports.len);
@@ -217,7 +231,13 @@ pub fn portPills(c: *ui.Context, ct: *const @import("../engine/api.zig").Contain
         var digits: usize = 1;
         var port = ports[shown].port;
         while (port >= 10) : (port = @divTrunc(port, 10)) digits += 1;
-        const pill_w = 14 + @as(f32, @floatFromInt(digits)) * 6.6;
+        var label_len = digits;
+        if (show_target) {
+            var inner = ports[shown].private_port;
+            label_len += 1;
+            while (inner >= 10) : (inner = @divTrunc(inner, 10)) label_len += 1;
+        }
+        const pill_w = 14 + @as(f32, @floatFromInt(label_len)) * 6.6;
         if (shown > 0) budget -= 4;
         if (pill_w > budget) break;
         budget -= pill_w;
@@ -230,7 +250,11 @@ pub fn portPills(c: *ui.Context, ct: *const @import("../engine/api.zig").Contain
         const host = ui.div(c).row().h(18).px(7).itemsCenter().rounded(9)
             .bg(c.theme.accent.alpha(0.12)).control();
         if (host.clicked()) clicked = binding;
-        ui.text(c, c.print("{d}", .{binding.port}), .{
+        const label = if (show_target)
+            c.print("{d}\u{2192}{d}", .{ binding.port, binding.private_port })
+        else
+            c.print("{d}", .{binding.port});
+        ui.text(c, label, .{
             .size = 10.5,
             .weight = .medium,
             .color = c.theme.accent,

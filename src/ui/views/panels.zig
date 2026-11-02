@@ -266,13 +266,16 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
     const conts = if (df.ContainerUsage) |u| u.TotalSize else 0;
     const vols = if (df.VolumeUsage) |u| u.TotalSize else 0;
     const cache = if (df.BuildCacheUsage) |u| u.TotalSize else 0;
-    widgets.metric(c, "IMAGES", format.bytes(c, @as(u64, @intCast(@max(0, imgs)))), 160);
-    widgets.metric(c, "CONTAINERS", format.bytes(c, @as(u64, @intCast(@max(0, conts)))), 160);
-    widgets.metric(c, "VOLUMES", format.bytes(c, @as(u64, @intCast(@max(0, vols)))), 160);
-    widgets.metric(c, "BUILD CACHE", format.bytes(c, @as(u64, @intCast(@max(0, cache)))), 160);
-    widgets.metric(c, "RECLAIMABLE", format.bytesSigned(c, df.reclaimable()), 160);
+    // Five figures share the row; fixed 160s need 848pt and clip at the 960
+    // minimum. Let them take an equal share of what the page actually has.
+    const metric_w = @max(120, (s.layout.content - 4 * 12) / 5);
+    widgets.metric(c, "IMAGES", format.bytes(c, @as(u64, @intCast(@max(0, imgs)))), metric_w);
+    widgets.metric(c, "CONTAINERS", format.bytes(c, @as(u64, @intCast(@max(0, conts)))), metric_w);
+    widgets.metric(c, "VOLUMES", format.bytes(c, @as(u64, @intCast(@max(0, vols)))), metric_w);
+    widgets.metric(c, "BUILD CACHE", format.bytes(c, @as(u64, @intCast(@max(0, cache)))), metric_w);
+    widgets.metric(c, "RECLAIMABLE", format.bytesSigned(c, df.reclaimable()), metric_w);
     row.end(); // explicit: with `defer` the note below became a sixth item in
-               // this row and was squeezed to 96pt at the window edge.
+    // this row and was squeezed to 96pt at the window edge.
 
     // The four stores as one strip, so the view answers "how is it split"
     // and not only "how much". Widths are shares of the total, and an empty
@@ -385,10 +388,14 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     // used to run straight out of the old 560pt box.
     const about = ui.div(c).column().wFull().gap(7).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
     ui.text(c, "About berth", .{ .size = 15, .weight = .semibold });
+    // A readable measure: a card this wide should not turn body copy into
+    // 150-character lines just because the window grew.
+    const prose = ui.div(c).column().w(640).gap(6);
     ui.text(c, "berth is a native monitor for Docker, Podman, Colima and Lima. It talks to the engine's HTTP API over its Unix socket directly — no webview, no helper daemon, no telemetry.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
     ui.text(c, "The last complete snapshot stays on screen while a worker refreshes the next one, so the tables and graphs neither blank nor freeze. Container CPU and memory use the same two-sample window as `docker stats`.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
     ui.text(c, "Built in Zig 0.17 on nanoui. On macOS the host figures come from Mach's host statistics; on Linux, from /proc. The warm palette and cell graphs follow nanoui's sibling project, nanomon.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "Not built yet: text search, Events, Compose up/down, pulling images or running new containers.", .{ .size = 11.5, .color = c.theme.muted.alpha(0.8), .wrap = true });
+    ui.text(c, "Every list has live search, containers pause and resume, and the inspector carries the engine's own JSON and a copyable `docker run` line. Not built yet: Events, Compose up/down, pulling images or running new containers.", .{ .size = 11.5, .color = c.theme.muted.alpha(0.8), .wrap = true });
+    prose.end();
     about.end(); // before the row, or the row and everything below nest inside it
 
     // Engine and appearance sit side by side; each card is wide enough for its
