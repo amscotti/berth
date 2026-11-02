@@ -175,6 +175,12 @@ pub const State = struct {
             } else if (std.mem.eql(u8, verb, "start")) {
                 const path = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return false;
                 return s.act("POST", path, "Started");
+            } else if (std.mem.eql(u8, verb, "pause")) {
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/pause", .{ct.Id}) catch return false;
+                return s.act("POST", path, "Paused");
+            } else if (std.mem.eql(u8, verb, "unpause") or std.mem.eql(u8, verb, "resume")) {
+                const path = std.fmt.bufPrint(&buf, "/containers/{s}/unpause", .{ct.Id}) catch return false;
+                return s.act("POST", path, "Resumed");
             } else if (std.mem.eql(u8, verb, "restart")) {
                 const path = std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return false;
                 return s.act("POST", path, "Restarted");
@@ -216,7 +222,7 @@ pub const State = struct {
         var mem: f32 = 0;
         var running: f32 = 0;
         for (s.containers, 0..) |ct, i| {
-            if (!ct.isRunning()) continue;
+            if (!ct.isUp()) continue;
             running += 1;
             if (i < s.stats.len) {
                 cpu += @floatCast(s.stats[i].cpu);
@@ -439,9 +445,9 @@ pub const State = struct {
     }
 
     /// A toast with numbers in it, copied into `toast_buf` for the frame.
-    pub fn notifyFmt(s: *State, comptime fmt: []const u8, args: anytype) void {
-        const text = std.fmt.bufPrint(&s.toast_buf, fmt, args) catch "done";
-        s.notify(text, false);
+    pub fn notifyFmt(s: *State, comptime fmt: []const u8, args: anytype, bad: bool) void {
+        const text = std.fmt.bufPrint(&s.toast_buf, fmt, args) catch "action failed";
+        s.notify(text, bad);
     }
 
     pub fn openPrune(s: *State) void {
@@ -481,7 +487,7 @@ pub const State = struct {
             s.notify("Cleanup finished with errors", true);
         } else {
             var buf: [32]u8 = undefined;
-            s.notifyFmt("Freed {s}", .{format.bytesBuf(&buf, reclaimed)});
+            s.notifyFmt("Freed {s}", .{format.bytesBuf(&buf, reclaimed)}, false);
         }
         s.refresh();
     }
@@ -497,18 +503,33 @@ pub const State = struct {
         if (!nanoui.shell.openUrl(url)) s.notify("could not open the browser", true);
     }
 
-    /// Runs one action against the engine, then refreshes. Returns whether a
+    /// Runs one action against the engine, then refreshes. `path` must already
+    /// carry the container's id — `actFmt` formats it. Returns whether a
     /// refresh was actually started, so a caller that also owns the timer does
     /// not re-arm it over the top of the new pass.
     pub fn act(s: *State, method: []const u8, path: []const u8, verb: []const u8) bool {
         var client = s.client orelse return false;
         client.action(method, path) catch {
-            s.notify("action failed", true);
+            // The engine usually names the problem ("cannot pause a stopped
+            // container"); show its words rather than a generic failure.
+            if (client.err_body.len > 0) {
+                s.notifyFmt("{s}", .{client.err_body}, true);
+            } else {
+                s.notify("action failed", true);
+            }
             return false;
         };
         s.notify(verb, false);
         s.refresh();
         return true;
+    }
+
+    /// `act` with the path formatted at the call site, the way `confirm` does:
+    /// a literal `"{s}"` passed through `act` would reach the engine unexpanded.
+    pub fn actFmt(s: *State, method: []const u8, comptime path_fmt: []const u8, id: []const u8, verb: []const u8) bool {
+        var buf: [160]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, path_fmt, .{id}) catch return false;
+        return s.act(method, path, verb);
     }
 
     pub fn confirm(s: *State, id: []const u8, name: []const u8, verb: []const u8, method: []const u8, comptime path_fmt: []const u8) void {
@@ -548,7 +569,7 @@ pub fn statFor(s: *State, id: []const u8) Stat {
 pub fn runningCount(s: *State) usize {
     var n: usize = 0;
     for (s.containers) |c| {
-        if (c.isRunning()) n += 1;
+        if (c.isUp()) n += 1;
     }
     return n;
 }

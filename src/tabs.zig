@@ -24,8 +24,8 @@ pub const Filter = enum {
     pub fn keeps(self: Filter, ct: *const api.Container) bool {
         return switch (self) {
             .all => true,
-            .running => ct.isRunning(),
-            .stopped => !ct.isRunning(),
+            .running => ct.isUp(),
+            .stopped => !ct.isUp(),
         };
     }
 };
@@ -137,11 +137,15 @@ test "every tab has a label and an icon" {
 
 test "filters keep exactly the containers they name" {
     const running: api.Container = .{ .State = "running" };
+    const paused: api.Container = .{ .State = "paused" };
     const stopped: api.Container = .{ .State = "exited" };
     try std.testing.expect(Filter.all.keeps(&running));
     try std.testing.expect(Filter.all.keeps(&stopped));
     try std.testing.expect(Filter.running.keeps(&running));
+    // A paused container is still up: it holds memory and has real stats.
+    try std.testing.expect(Filter.running.keeps(&paused));
     try std.testing.expect(!Filter.running.keeps(&stopped));
     try std.testing.expect(Filter.stopped.keeps(&stopped));
     try std.testing.expect(!Filter.stopped.keeps(&running));
+    try std.testing.expect(!Filter.stopped.keeps(&paused));
 }

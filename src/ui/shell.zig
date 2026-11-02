@@ -74,6 +74,23 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
             ui.text(c, widgets.portsText(c, &ct, 4), .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
             ports_row.end();
         }
+        // Pause sits here rather than in the row: three buttons fit the row's
+        // fixed slot, and this one is reversible enough not to need a confirm.
+        if (ct.isPaused()) {
+            const verbs = ui.div(c).row().wFull().gap(6).pt(2);
+            const b = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12).bg(c.theme.surface_hover);
+            ui.text(c, "Resume", .{ .size = 11.5, .color = c.theme.text });
+            if (b.clicked()) _ = s.actFmt("POST", "/containers/{s}/unpause", ct.Id, "Resumed");
+            b.end();
+            verbs.end();
+        } else if (ct.isRunning()) {
+            const verbs = ui.div(c).row().wFull().gap(6).pt(2);
+            const b = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12).bg(c.theme.surface_hover);
+            ui.text(c, "Pause", .{ .size = 11.5, .color = c.theme.text });
+            if (b.clicked()) _ = s.actFmt("POST", "/containers/{s}/pause", ct.Id, "Paused");
+            b.end();
+            verbs.end();
+        }
         break;
     }
 

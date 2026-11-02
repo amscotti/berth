@@ -39,7 +39,7 @@ fn work(job: Job) void {
     var i = job.first;
     while (i < job.containers.len) : (i += job.stride) {
         const ct = job.containers[i];
-        if (!ct.isRunning() or i >= job.out.len) continue;
+        if (!ct.isUp() or i >= job.out.len) continue;
         const st = client.stats(ct.Id) catch continue;
         job.out[i] = .{
             .id = ct.Id,
@@ -59,7 +59,7 @@ pub fn sample(
 ) void {
     var running: usize = 0;
     for (containers) |ct| {
-        if (ct.isRunning()) running += 1;
+        if (ct.isUp()) running += 1;
     }
     if (running == 0) return;
 

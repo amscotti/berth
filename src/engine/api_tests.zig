@@ -145,3 +145,25 @@ test "a container with nothing published fills nothing" {
     var out: [16]api.HostBinding = undefined;
     try std.testing.expectEqual(@as(usize, 0), ct.publishedPorts(&out));
 }
+
+test "a paused container is up but not running" {
+    const json = \\{"Id":"p1","Names":["/frozen"],"State":"paused"}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.isRunning());
+    try std.testing.expect(parsed.value.isPaused());
+    try std.testing.expect(parsed.value.isUp());
+
+    const restarting: api.Container = .{ .State = "restarting" };
+    try std.testing.expect(restarting.isUp());
+    const exited: api.Container = .{ .State = "exited" };
+    try std.testing.expect(!exited.isUp());
+}
+
+test "a created container is not up" {
+    const created: api.Container = .{ .State = "created" };
+    try std.testing.expect(!created.isUp());
+    try std.testing.expect(!created.isRunning());
+    try std.testing.expect(!created.isPaused());
+}

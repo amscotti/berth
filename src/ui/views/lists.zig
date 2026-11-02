@@ -224,8 +224,9 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         widgets.pillCell(c, ct.State, if (compact) 70 else 76);
         const st = app.statFor(s, ct.Id);
         // A stopped container has no stats at all: say so with a dash rather
-        // than a zero, which would read as "idle" instead of "unknown".
-        if (ct.isRunning()) {
+        // than a zero, which would read as "idle" instead of "unknown". A
+        // paused one still reports — frozen, but real.
+        if (ct.isUp()) {
             widgets.cell(c, format.percent(c, st.cpu), if (compact) 56 else 62, true);
             widgets.cell(c, format.bytes(c, st.mem), if (compact) 70 else 78, true);
         } else {
@@ -237,20 +238,26 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
             // A pill per published port; clicking one opens it in a browser.
             if (widgets.portPills(c, &ct, if (any_project) 2 else 3, ports_w)) |binding| s.openPort(binding);
         }
-        actions(s, c, &ct);
+        actions(s, c, &ct, if (compact) 150 else 160);
     }
     rows.end();
 }
 
-fn actions(s: *app.State, c: *ui.Context, ct: *const @import("../../engine/api.zig").Container) void {
-    const row = ui.div(c).row().w(160).h(24).itemsCenter().gap(4);
+/// Three verbs fit the slot, whichever state the row is in. Pause and Resume
+/// live in the detail pane: a fourth button here would shift every column.
+fn actions(s: *app.State, c: *ui.Context, ct: *const @import("../../engine/api.zig").Container, width: f32) void {
+    const row = ui.div(c).row().w(width).h(24).itemsCenter().gap(4);
     defer row.end();
-    if (ct.isRunning()) {
+    if (ct.isPaused()) {
+        if (smallButton(c, "Resume", false)) _ = s.actFmt("POST", "/containers/{s}/unpause", ct.Id, "Resumed");
         if (smallButton(c, "Stop", false)) s.confirm(ct.Id, ct.name(), "Stop", "POST", "/containers/{s}/stop");
+    } else if (ct.isUp()) {
+        if (smallButton(c, "Stop", false)) s.confirm(ct.Id, ct.name(), "Stop", "POST", "/containers/{s}/stop");
+        if (smallButton(c, "Restart", false)) _ = s.actFmt("POST", "/containers/{s}/restart", ct.Id, "Restarted");
     } else {
-        if (smallButton(c, "Start", false)) _ = s.act("POST", "/containers/{s}/start", "Started");
+        if (smallButton(c, "Start", false)) _ = s.actFmt("POST", "/containers/{s}/start", ct.Id, "Started");
+        if (smallButton(c, "Restart", false)) _ = s.actFmt("POST", "/containers/{s}/restart", ct.Id, "Restarted");
     }
-    if (smallButton(c, "Restart", false)) _ = s.act("POST", "/containers/{s}/restart", "Restarted");
     if (smallButton(c, "Delete", true)) s.confirm(ct.Id, ct.name(), "Delete", "DELETE", "/containers/{s}?force=1");
 }
 

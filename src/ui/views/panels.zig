@@ -23,7 +23,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     var cpu_sum: f32 = 0;
     var mem_sum: u64 = 0;
     for (s.containers, 0..) |ct, i| {
-        if (!ct.isRunning() or i >= s.stats.len) continue;
+        if (!ct.isUp() or i >= s.stats.len) continue;
         cpu_sum += @floatCast(s.stats[i].cpu);
         mem_sum += s.stats[i].mem;
     }

@@ -75,8 +75,15 @@ pub const Client = struct {
         const res = try conn.request(self.gpa, method, full, body, max);
         if (!res.ok()) {
             // Keep what the engine said: it is usually the whole diagnosis
-            // ("client version 1.43 is too old").
-            self.err_body = self.alloc.dupe(u8, res.body) catch "";
+            // ("client version 1.43 is too old"). Engines wrap it as
+            // {"message":"…"}; unwrap when they do so the UI shows words, not
+            // the envelope.
+            const Message = struct { message: []const u8 = "" };
+            if (std.json.parseFromSliceLeaky(Message, self.alloc, res.body, .{ .ignore_unknown_fields = true })) |m| {
+                self.err_body = if (m.message.len > 0) m.message else (self.alloc.dupe(u8, res.body) catch "");
+            } else |_| {
+                self.err_body = self.alloc.dupe(u8, res.body) catch "";
+            }
             res.deinit(self.gpa);
             return error.EngineError;
         }
@@ -278,6 +285,17 @@ pub const Container = struct {
 
     pub fn isRunning(self: Container) bool {
         return std.mem.eql(u8, self.State, "running");
+    }
+
+    pub fn isPaused(self: Container) bool {
+        return std.mem.eql(u8, self.State, "paused");
+    }
+
+    /// "Up" in the `docker ps` sense: running or paused. A paused container
+    /// still holds memory, still has real (frozen) stats, and still counts in
+    /// the running totals; classifying it as stopped hides all of that.
+    pub fn isUp(self: Container) bool {
+        return self.isRunning() or self.isPaused() or std.mem.eql(u8, self.State, "restarting");
     }
 
     /// The host-side TCP ports a container publishes, deduplicated by public

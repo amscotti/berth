@@ -148,6 +148,14 @@ fn done(ctx: ?*anyopaque) callconv(.c) void {
 
     commit(s, job);
     cleanup(job); // the snapshot arena was moved into the state
+    // A `BERTH_ACT` verb runs after the commit, through the same path a click
+    // uses, with a fresh list to resolve the name against.
+    if (s.pending_act.len > 0) {
+        const spec = s.pending_act;
+        s.pending_act = "";
+        s.pending_act_saved = spec;
+        if (s.runPendingAct()) return; // it started its own refresh
+    }
     scheduleNext(s);
     s.redraw();
 }
