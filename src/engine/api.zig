@@ -54,7 +54,7 @@ pub const Client = struct {
         return self.callOptsTimeout(method, p, body, max, raw, http.Conn.io_timeout_sec);
     }
 
-    fn callOptsTimeout(
+    pub fn callOptsTimeout(
         self: *Client,
         method: []const u8,
         p: []const u8,
@@ -75,8 +75,15 @@ pub const Client = struct {
         const res = try conn.request(self.gpa, method, full, body, max);
         if (!res.ok()) {
             // Keep what the engine said: it is usually the whole diagnosis
-            // ("client version 1.43 is too old").
-            self.err_body = self.alloc.dupe(u8, res.body) catch "";
+            // ("client version 1.43 is too old"). Engines wrap it as
+            // {"message":"…"}; unwrap when they do so the UI shows words, not
+            // the envelope.
+            const Message = struct { message: []const u8 = "" };
+            if (std.json.parseFromSliceLeaky(Message, self.alloc, res.body, .{ .ignore_unknown_fields = true })) |m| {
+                self.err_body = if (m.message.len > 0) m.message else (self.alloc.dupe(u8, res.body) catch "");
+            } else |_| {
+                self.err_body = self.alloc.dupe(u8, res.body) catch "";
+            }
             res.deinit(self.gpa);
             return error.EngineError;
         }
@@ -228,6 +235,14 @@ pub const Port = struct {
     Type: []const u8 = "",
 };
 
+/// A host-side binding a browser can be pointed at.
+pub const HostBinding = struct {
+    port: u16 = 0,
+    /// The address the port is bound on, when Docker reports one that is not
+    /// the wildcard; empty means "any", which is `localhost` to a browser.
+    ip: []const u8 = "",
+};
+
 pub const Container = struct {
     Id: []const u8 = "",
     Names: []const []const u8 = &.{},
@@ -270,6 +285,66 @@ pub const Container = struct {
 
     pub fn isRunning(self: Container) bool {
         return std.mem.eql(u8, self.State, "running");
+    }
+
+    pub fn isPaused(self: Container) bool {
+        return std.mem.eql(u8, self.State, "paused");
+    }
+
+    /// "Up" in the `docker ps` sense: running or paused. A paused container
+    /// still holds memory, still has real (frozen) stats, and still counts in
+    /// the running totals; classifying it as stopped hides all of that.
+    pub fn isUp(self: Container) bool {
+        return self.isRunning() or self.isPaused() or std.mem.eql(u8, self.State, "restarting");
+    }
+
+    /// The healthcheck verdict, when the container has one. It rides at the end
+    /// of the human `Status` string; `State` never carries it. Only these three
+    /// literal suffixes count — the parentheses in "Exited (0) 2 seconds ago"
+    /// and "Restarting (1) …" are exit codes, not health.
+    pub fn health(self: Container) ?[]const u8 {
+        if (std.mem.endsWith(u8, self.Status, "(healthy)")) return "healthy";
+        if (std.mem.endsWith(u8, self.Status, "(unhealthy)")) return "unhealthy";
+        if (std.mem.endsWith(u8, self.Status, "(health: starting)")) return "starting";
+        return null;
+    }
+
+    /// The host-side TCP ports a container publishes, deduplicated by public
+    /// port (Docker lists one binding per address family). Returns the total,
+    /// which can exceed `out.len`: the buffer fills, the count stays honest,
+    /// and the caller can still say "+k more". UDP and SCTP bindings are not
+    /// browseable and are left out.
+    pub fn publishedPorts(self: Container, out: []HostBinding) usize {
+        var n: usize = 0;
+        var extra: usize = 0;
+        var last_extra: ?u16 = null;
+        for (self.Ports) |p| {
+            const public = p.PublicPort orelse continue;
+            if (std.mem.eql(u8, p.Type, "udp") or std.mem.eql(u8, p.Type, "sctp")) continue;
+            var seen = false;
+            for (out[0..n]) |q| {
+                if (q.port == public) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+            if (n == out.len) {
+                // Past the buffer: count, deduplicating the neighbouring
+                // address-family twin the way the in-buffer scan does.
+                if (last_extra == public) continue;
+                last_extra = public;
+                extra += 1;
+                continue;
+            }
+            const ip = p.IP orelse "";
+            out[n] = .{
+                .port = public,
+                .ip = if (std.mem.eql(u8, ip, "0.0.0.0") or std.mem.eql(u8, ip, "::")) "" else ip,
+            };
+            n += 1;
+        }
+        return n + extra;
     }
 
     /// Published ports as `8080→80/tcp`; at most `max` then `+n`.
@@ -365,6 +440,11 @@ pub const Image = struct {
     pub fn dangling(self: Image) bool {
         const tags = self.RepoTags orelse return true;
         return tags.len == 0 or std.mem.startsWith(u8, tags[0], "<none>");
+    }
+
+    /// What a table row shows: the first tag, or "untagged".
+    pub fn label(self: Image) []const u8 {
+        return if (self.dangling()) "untagged" else self.tag();
     }
 };
 

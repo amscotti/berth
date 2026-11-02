@@ -148,6 +148,14 @@ fn done(ctx: ?*anyopaque) callconv(.c) void {
 
     commit(s, job);
     cleanup(job); // the snapshot arena was moved into the state
+    // A `BERTH_ACT` verb runs after the commit, through the same path a click
+    // uses, with a fresh list to resolve the name against.
+    if (s.pending_act.len > 0) {
+        const spec = s.pending_act;
+        s.pending_act = "";
+        s.pending_act_saved = spec;
+        if (s.runPendingAct()) return; // it started its own refresh
+    }
     scheduleNext(s);
     s.redraw();
 }
@@ -245,6 +253,7 @@ fn resolveSelection(s: *app.State) void {
             s.selected = null;
             s.selected_name = "";
             s.clearLogs();
+            s.clearInspect();
         }
     }
     if (s.pending_select.len > 0) selectPending(s);
@@ -290,6 +299,43 @@ fn selectPending(s: *app.State) void {
             }
         }
     }
+}
+
+/// Resolves the container named in `pending_act` and runs the verb against it
+/// through the same path the buttons use. `BERTH_ACT=pause:web` is how the
+/// action paths are exercised without a mouse.
+pub fn pendingAct(s: *app.State) bool {
+    const spec = s.pending_act_saved;
+    const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return false;
+    const verb = spec[0..colon];
+    const name = spec[colon + 1 ..];
+    for (s.containers) |ct| {
+        if (!std.mem.eql(u8, ct.name(), name)) continue;
+        var buf: [256]u8 = undefined;
+        const Word = enum { stop, start, pause, unpause, resume_, restart, delete };
+        const word_raw = if (std.mem.eql(u8, verb, "resume")) "resume_" else verb;
+        const word = std.meta.stringToEnum(Word, word_raw) orelse return false;
+        const method: []const u8 = if (word == .delete) "DELETE" else "POST";
+        const toast: []const u8 = switch (word) {
+            .stop => "Stopped",
+            .start => "Started",
+            .pause => "Paused",
+            .unpause, .resume_ => "Resumed",
+            .restart => "Restarted",
+            .delete => "Deleted",
+        };
+        // Each branch has a comptime-known format, which bufPrint requires.
+        const path: []const u8 = switch (word) {
+            .stop => std.fmt.bufPrint(&buf, "/containers/{s}/stop", .{ct.Id}) catch return false,
+            .start => std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return false,
+            .pause => std.fmt.bufPrint(&buf, "/containers/{s}/pause", .{ct.Id}) catch return false,
+            .unpause, .resume_ => std.fmt.bufPrint(&buf, "/containers/{s}/unpause", .{ct.Id}) catch return false,
+            .restart => std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return false,
+            .delete => std.fmt.bufPrint(&buf, "/containers/{s}?force=1", .{ct.Id}) catch return false,
+        };
+        return s.act(method, path, toast);
+    }
+    return false;
 }
 
 /// One refresh, then one timer: scheduled from the end of a pass, never on top

@@ -6,9 +6,12 @@ test {
     _ = @import("engine/stats.zig");
     _ = @import("engine/discovery.zig");
     _ = @import("engine/prune.zig");
+    _ = @import("engine/inspect.zig");
+    _ = @import("engine/lifetime.zig");
     _ = @import("tabs.zig");
     _ = @import("settings.zig");
     _ = @import("ui/views/lists.zig");
+    _ = @import("ui/views/search.zig");
     _ = @import("ui/views/stacks.zig");
     _ = @import("ui/format.zig");
     _ = @import("ui/widgets.zig");

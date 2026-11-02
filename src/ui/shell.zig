@@ -5,6 +5,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../app.zig");
 const api = @import("../engine/api.zig");
+const lifetime = @import("../engine/lifetime.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
 const theme = @import("theme.zig");
@@ -44,17 +45,75 @@ fn detailPane(s: *app.State, c: *ui.Context) void {
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
     ui.text(c, s.selected_name, .{ .size = 15, .weight = .semibold, .truncate = .ellipsis });
     ui.spacer(c);
+    // Facts or the engine's own JSON, as Docker Desktop's Inspect tab does.
+    const facts_tab = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11)
+        .bg(if (!s.pane_inspect) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+    ui.text(c, "Facts", .{
+        .size = 11,
+        .weight = if (!s.pane_inspect) .medium else .regular,
+        .color = if (!s.pane_inspect) c.theme.accent else c.theme.muted,
+    });
+    if (facts_tab.clicked()) {
+        s.pane_inspect = false;
+        s.redraw();
+    }
+    facts_tab.end();
+    const json_tab = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11)
+        .bg(if (s.pane_inspect) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+    ui.text(c, "Inspect", .{
+        .size = 11,
+        .weight = if (s.pane_inspect) .medium else .regular,
+        .color = if (s.pane_inspect) c.theme.accent else c.theme.muted,
+    });
+    if (json_tab.clicked()) {
+        s.pane_inspect = true;
+        if (s.inspect_buf == null) s.reloadInspect();
+        s.redraw();
+    }
+    json_tab.end();
     const close = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11).bg(c.theme.surface_hover);
     ui.text(c, "Close", .{ .size = 11, .color = c.theme.muted });
     if (close.clicked()) s.clearSelection();
     close.end();
     head.end();
 
+    if (s.pane_inspect) {
+        inspectView(s, c);
+        return;
+    }
+
     switch (s.detail_kind) {
         .container => containerDetail(s, c),
         .image => imageDetail(s, c),
         .volume => volumeDetail(s, c),
         .network => networkDetail(s, c),
+    }
+}
+
+/// The engine's own JSON for the selected object, fetched on demand and owned
+/// by the state so a snapshot swap cannot pull it out from under the pane.
+fn inspectView(s: *app.State, c: *ui.Context) void {
+    const head = ui.div(c).row().wFull().itemsCenter().gap(8);
+    ui.text(c, "Inspect · as the engine sees it", .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+    ui.spacer(c);
+    const again = ui.div(c).row().h(20).px(7).itemsCenter().rounded(10).bg(c.theme.surface_hover);
+    ui.text(c, "Refresh", .{ .size = 10.5, .color = c.theme.muted });
+    if (again.clicked()) s.reloadInspect();
+    again.end();
+    head.end();
+
+    ui.scroll(c, .{ .width = .fill, .height = .fill, .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 }, .radius = 8, .background = c.theme.background });
+    defer ui.end(c);
+    if (s.inspect_buf) |text| {
+        ui.text(c, text, .{
+            .size = 10.5,
+            .mono = true,
+            .wrap = true,
+            .leading = 1.35,
+            .color = c.theme.text,
+        });
+    } else {
+        ui.text(c, "No inspect JSON yet. Refresh fetches it from the engine.", .{ .size = 11.5, .color = c.theme.muted });
     }
 }
 
@@ -65,9 +124,61 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         facts(c, "Image", ct.Image);
         facts(c, "State", ct.State);
         facts(c, "Status", ct.Status);
+        if (ct.health()) |h| facts(c, "Health", h);
         if (ct.project()) |project| facts(c, "Project", project);
         if (ct.service()) |service| facts(c, "Service", service);
-        if (widgets.portsText(c, &ct, 4).len > 0) facts(c, "Ports", widgets.portsText(c, &ct, 4));
+        if (lifetime.upSeconds(ct.Status)) |secs| {
+            facts(c, "Up", format.duration(c, secs));
+        }
+        const st = app.statFor(s, ct.Id);
+        if (ct.isUp()) {
+            facts(c, "Network", c.print("↓ {s} · ↑ {s}", .{
+                format.bytes(c, st.net_rx),
+                format.bytes(c, st.net_tx),
+            }));
+            facts(c, "Disk", c.print("read {s} · wrote {s}", .{
+                format.bytes(c, st.blk_read),
+                format.bytes(c, st.blk_write),
+            }));
+            if (st.pids) |n| facts(c, "PIDs", c.print("{d}", .{n}));
+        }
+        if (s.detail_lifetime) |life| {
+            if (life.restarts > 0) facts(c, "Restarts", c.print("{d}", .{life.restarts}));
+        }
+        if (widgets.portsText(c, &ct, 4).len > 0) {
+            const ports_row = ui.div(c).row().wFull().itemsCenter().gap(8);
+            ui.text(c, "Ports", .{ .size = 11, .color = c.theme.muted });
+            if (widgets.portPills(c, &ct, 4, 200)) |binding| s.openPort(binding);
+            ui.text(c, widgets.portsText(c, &ct, 4), .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
+            ports_row.end();
+        }
+        // Pause and the run command sit here rather than in the row: three
+        // buttons fit the row's fixed slot. Pause is reversible enough not to
+        // need a confirm; the command goes straight to the clipboard.
+        const verbs = ui.div(c).row().wFull().gap(6).pt(2);
+        if (ct.isPaused()) {
+            const b = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12).bg(c.theme.surface_hover);
+            ui.text(c, "Resume", .{ .size = 11.5, .color = c.theme.text });
+            if (b.clicked()) _ = s.actFmt("POST", "/containers/{s}/unpause", ct.Id, "Resumed");
+            b.end();
+        } else if (ct.isRunning()) {
+            const b = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12).bg(c.theme.surface_hover);
+            ui.text(c, "Pause", .{ .size = 11.5, .color = c.theme.text });
+            if (b.clicked()) _ = s.actFmt("POST", "/containers/{s}/pause", ct.Id, "Paused");
+            b.end();
+        }
+        if (s.detail_lifetime) |life| {
+            if (life.run_cmd) |cmd| {
+                const b = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12).bg(c.theme.surface_hover);
+                ui.text(c, "Copy run command", .{ .size = 11.5, .color = c.theme.text });
+                if (b.clicked()) {
+                    nanoui.clipboard.writeText(cmd);
+                    s.notify("Run command copied", false);
+                }
+                b.end();
+            }
+        }
+        verbs.end();
         break;
     }
 

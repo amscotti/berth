@@ -6,6 +6,9 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 const prune = @import("engine/prune.zig");
+const cleanup_mod = @import("cleanup.zig");
+const inspect = @import("engine/inspect.zig");
+const lifetime = @import("engine/lifetime.zig");
 const stats_pool = @import("stats_pool.zig");
 const refresh_mod = @import("refresh.zig");
 const discovery = @import("engine/discovery.zig");
@@ -75,6 +78,7 @@ pub const State = struct {
 
     tab: Tab = .overview,
     filter: Filter = .all,
+    search: tabs.Search = .{},
     sort_containers: widgets.Sort = .{ .key = 1 },
     sort_images: widgets.Sort = .{ .key = 1 },
     sort_volumes: widgets.Sort = .{ .key = 1 },
@@ -117,6 +121,12 @@ pub const State = struct {
     /// Logs are owned by the state, not an arena: they must survive a snapshot
     /// swap, and are refreshed only when the selection changes or on request.
     log_buf: ?[]u8 = null,
+    /// The detail pane's mode: curated facts, or the engine's own JSON.
+    pane_inspect: bool = false,
+    inspect_buf: ?[]u8 = null,
+    /// Restarts and the exact start time for the selected container, read from
+    /// one inspect on selection — not per refresh, which would double requests.
+    detail_lifetime: ?lifetime.Lifetime = null,
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
@@ -159,31 +169,10 @@ pub const State = struct {
     }
 
     /// Resolves the container named in `pending_act` and runs the verb against
-    /// it through the same path the buttons use.
+    /// it through the same path the buttons use. Lives in `refresh.zig`, where
+    /// its caller is, so this file stays inside the line rule.
     pub fn runPendingAct(s: *State) bool {
-        const spec = s.pending_act_saved;
-        const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return false;
-        const verb = spec[0..colon];
-        const name = spec[colon + 1 ..];
-        for (s.containers) |ct| {
-            if (!std.mem.eql(u8, ct.name(), name)) continue;
-            var buf: [256]u8 = undefined;
-            if (std.mem.eql(u8, verb, "stop")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/stop", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Stopped");
-            } else if (std.mem.eql(u8, verb, "start")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/start", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Started");
-            } else if (std.mem.eql(u8, verb, "restart")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}/restart", .{ct.Id}) catch return false;
-                return s.act("POST", path, "Restarted");
-            } else if (std.mem.eql(u8, verb, "delete")) {
-                const path = std.fmt.bufPrint(&buf, "/containers/{s}?force=1", .{ct.Id}) catch return false;
-                return s.act("DELETE", path, "Deleted");
-            }
-            return false;
-        }
-        return false;
+        return refresh_mod.pendingAct(s);
     }
 
     /// Saves the choice, then opens the window again with it — after this
@@ -215,7 +204,7 @@ pub const State = struct {
         var mem: f32 = 0;
         var running: f32 = 0;
         for (s.containers, 0..) |ct, i| {
-            if (!ct.isRunning()) continue;
+            if (!ct.isUp()) continue;
             running += 1;
             if (i < s.stats.len) {
                 cpu += @floatCast(s.stats[i].cpu);
@@ -240,7 +229,21 @@ pub const State = struct {
         s.detail_kind = .container;
         s.selected = ct.Id;
         s.selected_name = ct.name();
+        s.clearInspect();
+        s.pane_inspect = false;
+        // The cheap, always-shown fact first: an engine that answers nothing
+        // still opens the pane with what the list already knows.
+        s.loadLifetime(ct.Id);
         s.loadLogs(ct.Id);
+    }
+
+    /// One inspect per selection: the restart count and the exact start time
+    /// live there, and asking per refresh would double the request count.
+    fn loadLifetime(s: *State, id: []const u8) void {
+        var client = s.client orelse return;
+        const raw = inspect.fetch(&client, .container, id, s.gpa) catch return;
+        defer s.gpa.free(raw);
+        s.detail_lifetime = lifetime.fromInspect(s.gpa, raw);
     }
 
     pub fn selectImage(s: *State, im: *const api.Image) void {
@@ -248,6 +251,8 @@ pub const State = struct {
         s.selected = im.Id;
         s.selected_name = if (im.dangling()) "untagged" else im.tag();
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -256,6 +261,8 @@ pub const State = struct {
         s.selected = v.Name;
         s.selected_name = v.Name;
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -264,6 +271,8 @@ pub const State = struct {
         s.selected = if (n.Id.len > 0) n.Id else n.Name;
         s.selected_name = n.Name;
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -272,6 +281,8 @@ pub const State = struct {
         s.selected = null;
         s.selected_name = "";
         s.clearLogs();
+        s.clearInspect();
+        s.pane_inspect = false;
         s.redraw();
     }
 
@@ -281,6 +292,32 @@ pub const State = struct {
         if (s.detail_kind != .container) return;
         const id = s.selected orelse return;
         s.loadLogs(id);
+    }
+
+    /// The pane's raw JSON, on the same terms: read on demand, owned by the
+    /// state, cleared with the selection it describes.
+    pub fn reloadInspect(s: *State) void {
+        const id = s.selected orelse return;
+        s.clearInspect();
+        var client = s.client orelse return;
+        const kind: inspect.Kind = switch (s.detail_kind) {
+            .container => .container,
+            .image => .image,
+            .volume => .volume,
+            .network => .network,
+        };
+        const raw = inspect.fetch(&client, kind, id, s.gpa) catch {
+            if (client.err_body.len > 0) {
+                s.notifyFmt("{s}", .{client.err_body}, true);
+            } else {
+                s.notify("could not read the inspect JSON", true);
+            }
+            s.redraw();
+            return;
+        };
+        defer s.gpa.free(raw);
+        s.inspect_buf = inspect.pretty(s.gpa, raw, 256 * 1024) catch null;
+        s.redraw();
     }
 
     fn loadLogs(s: *State, id: []const u8) void {
@@ -324,6 +361,17 @@ pub const State = struct {
         s.log_text = "";
     }
 
+    /// Same lifetime as the logs: the pane's JSON must survive snapshot swaps
+    /// and belong to exactly one selected object.
+    pub fn clearInspect(s: *State) void {
+        if (s.inspect_buf) |buf| s.gpa.free(buf);
+        s.inspect_buf = null;
+        if (s.detail_lifetime) |*life| {
+            if (life.run_cmd) |cmd| s.gpa.free(cmd);
+        }
+        s.detail_lifetime = null;
+    }
+
     /// Drop the visible snapshot; only for switching engines.
     fn clearData(s: *State) void {
         if (s.retired) |*old| old.deinit();
@@ -339,6 +387,7 @@ pub const State = struct {
         s.selected = null;
         s.selected_name = "";
         s.clearLogs();
+        s.clearInspect();
         if (s.client) |*c| c.alloc = s.arena.allocator();
     }
 
@@ -438,9 +487,9 @@ pub const State = struct {
     }
 
     /// A toast with numbers in it, copied into `toast_buf` for the frame.
-    pub fn notifyFmt(s: *State, comptime fmt: []const u8, args: anytype) void {
-        const text = std.fmt.bufPrint(&s.toast_buf, fmt, args) catch "done";
-        s.notify(text, false);
+    pub fn notifyFmt(s: *State, comptime fmt: []const u8, args: anytype, bad: bool) void {
+        const text = std.fmt.bufPrint(&s.toast_buf, fmt, args) catch "action failed";
+        s.notify(text, bad);
     }
 
     pub fn openPrune(s: *State) void {
@@ -454,49 +503,50 @@ pub const State = struct {
     }
 
     /// Runs the selected prune endpoints; containers first, then their leavings.
+    /// Lives in `cleanup.zig` beside its dialog; this indirection keeps the
+    /// state machine inside the 600-line rule.
     pub fn runPrune(s: *State) void {
-        var client = s.client orelse {
-            s.closePrune();
-            return;
-        };
-        var reclaimed: u64 = 0;
-        var failed = false;
-        const steps = [_]struct { on: bool, kind: prune.Kind }{
-            .{ .on = s.prune_opts.containers, .kind = .containers },
-            .{ .on = s.prune_opts.images, .kind = .images },
-            .{ .on = s.prune_opts.volumes, .kind = .volumes },
-            .{ .on = s.prune_opts.networks, .kind = .networks },
-            .{ .on = s.prune_opts.build_cache, .kind = .build_cache },
-        };
-        for (steps) |step| {
-            if (!step.on) continue;
-            reclaimed += prune.run(&client, step.kind) catch blk: {
-                failed = true;
-                break :blk 0;
-            };
-        }
-        s.prune_open = false;
-        if (failed) {
-            s.notify("Cleanup finished with errors", true);
-        } else {
-            var buf: [32]u8 = undefined;
-            s.notifyFmt("Freed {s}", .{format.bytesBuf(&buf, reclaimed)});
-        }
-        s.refresh();
+        cleanup_mod.runPrune(s);
     }
 
-    /// Runs one action against the engine, then refreshes. Returns whether a
+    /// Opens a container's published port in the default browser. A binding on
+    /// a specific address goes there; the wildcard is localhost. The engine has
+    /// no scheme hint, so 443 is https and everything else is http.
+    pub fn openPort(s: *State, binding: api.HostBinding) void {
+        const where = if (binding.ip.len > 0) binding.ip else "localhost";
+        var buf: [80]u8 = undefined;
+        const scheme: []const u8 = if (binding.port == 443 or binding.port == 8443) "https" else "http";
+        const url = std.fmt.bufPrint(&buf, "{s}://{s}:{d}", .{ scheme, where, binding.port }) catch return;
+        if (!nanoui.shell.openUrl(url)) s.notify("could not open the browser", true);
+    }
+
+    /// Runs one action against the engine, then refreshes. `path` must already
+    /// carry the container's id — `actFmt` formats it. Returns whether a
     /// refresh was actually started, so a caller that also owns the timer does
     /// not re-arm it over the top of the new pass.
     pub fn act(s: *State, method: []const u8, path: []const u8, verb: []const u8) bool {
         var client = s.client orelse return false;
         client.action(method, path) catch {
-            s.notify("action failed", true);
+            // The engine usually names the problem ("cannot pause a stopped
+            // container"); show its words rather than a generic failure.
+            if (client.err_body.len > 0) {
+                s.notifyFmt("{s}", .{client.err_body}, true);
+            } else {
+                s.notify("action failed", true);
+            }
             return false;
         };
         s.notify(verb, false);
         s.refresh();
         return true;
+    }
+
+    /// `act` with the path formatted at the call site, the way `confirm` does:
+    /// a literal `"{s}"` passed through `act` would reach the engine unexpanded.
+    pub fn actFmt(s: *State, method: []const u8, comptime path_fmt: []const u8, id: []const u8, verb: []const u8) bool {
+        var buf: [160]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, path_fmt, .{id}) catch return false;
+        return s.act(method, path, verb);
     }
 
     pub fn confirm(s: *State, id: []const u8, name: []const u8, verb: []const u8, method: []const u8, comptime path_fmt: []const u8) void {
@@ -536,7 +586,7 @@ pub fn statFor(s: *State, id: []const u8) Stat {
 pub fn runningCount(s: *State) usize {
     var n: usize = 0;
     for (s.containers) |c| {
-        if (c.isRunning()) n += 1;
+        if (c.isUp()) n += 1;
     }
     return n;
 }

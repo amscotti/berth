@@ -1,6 +1,8 @@
 //! The views a window can show, and the filters within one. Kept out of
 //! `app.zig` so that file stays inside the 600-line rule.
 const std = @import("std");
+const nanoui = @import("nanoui");
+const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 
 /// What the container list shows. Filters are per view and stay where the
@@ -22,8 +24,8 @@ pub const Filter = enum {
     pub fn keeps(self: Filter, ct: *const api.Container) bool {
         return switch (self) {
             .all => true,
-            .running => ct.isRunning(),
-            .stopped => !ct.isRunning(),
+            .running => ct.isUp(),
+            .stopped => !ct.isUp(),
         };
     }
 };
@@ -71,6 +73,36 @@ pub const Tab = enum {
 };
 
 
+/// One search buffer per list view. They are separate so that focus, caret
+/// and undo belong to the field on screen, and so switching tabs keeps each
+/// view's query where the user left it. `TextBuffer` allocates on the C heap,
+/// so `deinit` is called from the state's teardown.
+pub const Search = struct {
+    containers: ui.TextBuffer = .{},
+    images: ui.TextBuffer = .{},
+    volumes: ui.TextBuffer = .{},
+    networks: ui.TextBuffer = .{},
+
+    pub fn deinit(self: *Search) void {
+        self.containers.deinit();
+        self.images.deinit();
+        self.volumes.deinit();
+        self.networks.deinit();
+    }
+
+    /// The buffer of the view on screen, or null for the views that have no
+    /// table to search.
+    pub fn forTab(self: *Search, tab: Tab) ?*ui.TextBuffer {
+        return switch (tab) {
+            .containers => &self.containers,
+            .images => &self.images,
+            .volumes => &self.volumes,
+            .networks => &self.networks,
+            else => null,
+        };
+    }
+};
+
 /// A tab by its name, for `BERTH_TAB`. A plain table: reflection over an
 /// enum's field names changed shape in 0.17 and buys nothing here.
 pub fn tabFromName(name: []const u8) ?Tab {
@@ -105,11 +137,15 @@ test "every tab has a label and an icon" {
 
 test "filters keep exactly the containers they name" {
     const running: api.Container = .{ .State = "running" };
+    const paused: api.Container = .{ .State = "paused" };
     const stopped: api.Container = .{ .State = "exited" };
     try std.testing.expect(Filter.all.keeps(&running));
     try std.testing.expect(Filter.all.keeps(&stopped));
     try std.testing.expect(Filter.running.keeps(&running));
+    // A paused container is still up: it holds memory and has real stats.
+    try std.testing.expect(Filter.running.keeps(&paused));
     try std.testing.expect(!Filter.running.keeps(&stopped));
     try std.testing.expect(Filter.stopped.keeps(&stopped));
     try std.testing.expect(!Filter.stopped.keeps(&running));
+    try std.testing.expect(!Filter.stopped.keeps(&paused));
 }

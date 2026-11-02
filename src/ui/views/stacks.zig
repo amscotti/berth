@@ -53,7 +53,7 @@ fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: @impor
         const p = ct.project() orelse continue;
         if (!std.mem.eql(u8, p, project)) continue;
         total += 1;
-        if (ct.isRunning()) running += 1;
+        if (ct.isUp()) running += 1;
     }
 
     const head = ui.div(c).row().wFull().itemsCenter().gap(10);

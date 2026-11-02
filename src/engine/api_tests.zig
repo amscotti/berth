@@ -111,3 +111,73 @@ test "only the three default networks are built in" {
     try std.testing.expect((api.Network{ .Name = "none" }).builtin());
     try std.testing.expect(!(api.Network{ .Name = "shop" }).builtin());
 }
+
+test "published ports dedup by host port across address families" {
+    const json =
+        \\{"Ports":[{"PrivatePort":80,"PublicPort":8080,"Type":"tcp"},
+        \\          {"PrivatePort":80,"PublicPort":8080,"Type":"tcp","IP":"::"},
+        \\          {"PrivatePort":443,"PublicPort":8443,"Type":"tcp","IP":"192.168.1.5"},
+        \\          {"PrivatePort":1900,"PublicPort":1900,"Type":"udp"},
+        \\          {"PrivatePort":9000,"Type":"tcp"}]}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.publishedPorts(&out));
+    try std.testing.expectEqual(@as(u16, 8080), out[0].port);
+    try std.testing.expectEqualStrings("", out[0].ip); // the wildcard is "any", not an address
+    try std.testing.expectEqual(@as(u16, 8443), out[1].port);
+    try std.testing.expectEqualStrings("192.168.1.5", out[1].ip); // a specific binding is kept
+}
+
+test "published ports cap at the buffer and keep counting past it" {
+    var ports: [24]api.Port = undefined;
+    for (&ports, 0..) |*p, i| {
+        p.* = .{ .PrivatePort = @intCast(1000 + i), .PublicPort = @intCast(30000 + i), .Type = "tcp" };
+    }
+    const ct: api.Container = .{ .Ports = &ports };
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 24), ct.publishedPorts(&out));
+}
+
+test "a container with nothing published fills nothing" {
+    const ct: api.Container = .{ .Ports = &.{.{ .PrivatePort = 9000, .Type = "tcp" }} };
+    var out: [16]api.HostBinding = undefined;
+    try std.testing.expectEqual(@as(usize, 0), ct.publishedPorts(&out));
+}
+
+test "a paused container is up but not running" {
+    const json = \\{"Id":"p1","Names":["/frozen"],"State":"paused"}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.isRunning());
+    try std.testing.expect(parsed.value.isPaused());
+    try std.testing.expect(parsed.value.isUp());
+
+    const restarting: api.Container = .{ .State = "restarting" };
+    try std.testing.expect(restarting.isUp());
+    const exited: api.Container = .{ .State = "exited" };
+    try std.testing.expect(!exited.isUp());
+}
+
+test "a created container is not up" {
+    const created: api.Container = .{ .State = "created" };
+    try std.testing.expect(!created.isUp());
+    try std.testing.expect(!created.isRunning());
+    try std.testing.expect(!created.isPaused());
+}
+
+test "health is read from the status suffix and nowhere else" {
+    const healthy: api.Container = .{ .State = "running", .Status = "Up 2 hours (healthy)" };
+    try std.testing.expectEqualStrings("healthy", healthy.health().?);
+    const starting: api.Container = .{ .State = "running", .Status = "Up 4 seconds (health: starting)" };
+    try std.testing.expectEqualStrings("starting", starting.health().?);
+    const unhealthy: api.Container = .{ .State = "running", .Status = "Up 5 minutes (unhealthy)" };
+    try std.testing.expectEqualStrings("unhealthy", unhealthy.health().?);
+
+    // Parentheses that are exit codes, not health, and no parentheses at all.
+    try std.testing.expect((api.Container{ .State = "exited", .Status = "Exited (0) 5 seconds ago" }).health() == null);
+    try std.testing.expect((api.Container{ .State = "restarting", .Status = "Restarting (1) 2 seconds ago" }).health() == null);
+    try std.testing.expect((api.Container{ .State = "running", .Status = "Up 2 hours" }).health() == null);
+}

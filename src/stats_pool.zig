@@ -13,6 +13,11 @@ pub const Sample = struct {
     cpu: f64 = 0,
     mem: u64 = 0,
     limit: u64 = 0,
+    net_rx: u64 = 0,
+    net_tx: u64 = 0,
+    blk_read: u64 = 0,
+    blk_write: u64 = 0,
+    pids: ?u32 = null,
 };
 
 const workers_max = 8;
@@ -39,13 +44,20 @@ fn work(job: Job) void {
     var i = job.first;
     while (i < job.containers.len) : (i += job.stride) {
         const ct = job.containers[i];
-        if (!ct.isRunning() or i >= job.out.len) continue;
+        if (!ct.isUp() or i >= job.out.len) continue;
         const st = client.stats(ct.Id) catch continue;
+        const net = st.netTotals();
+        const disk = st.diskTotals();
         job.out[i] = .{
             .id = ct.Id,
             .cpu = st.cpuPercent(),
             .mem = st.memUsed(),
             .limit = st.memLimit(),
+            .net_rx = net.rx,
+            .net_tx = net.tx,
+            .blk_read = disk.read,
+            .blk_write = disk.write,
+            .pids = st.pidsCurrent(),
         };
     }
 }
@@ -59,7 +71,7 @@ pub fn sample(
 ) void {
     var running: usize = 0;
     for (containers) |ct| {
-        if (ct.isRunning()) running += 1;
+        if (ct.isUp()) running += 1;
     }
     if (running == 0) return;
 
