@@ -34,6 +34,12 @@ start/stop/delete parity is already done.
 
 ## Tier 1 — do next (high value, small)
 
+**Status: shipped** — all eight Tier-1 items landed on the `tier-one` branch
+and were merged to main: table search, open-port-in-browser, pause/resume
+(paused now counts as up), health pills, the JSON inspect tab, the net/disk/
+PIDs/uptime columns with restarts in the pane, and copy-`docker run`. Each item
+was reviewed by a sub-agent before and after implementation.
+
 | # | Feature | Seen in | Use | Diff | Why / how |
 |---|---|---|---|---|---|
 | 1 | **Text search** in Containers, Images, Volumes, Networks | DD all views; PD "enhanced search" | 5 | S | The most-missed item already named in berth's README. Case-insensitive substring over the fields each table already shows; a search field beside the filter chips, `⌘F`/`Ctrl+F` to focus. No protocol work. |
