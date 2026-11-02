@@ -6,6 +6,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
+const volumes_mod = @import("engine/volumes.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
 const stats_pool = @import("stats_pool.zig");
@@ -163,6 +164,18 @@ fn cleanup(job: *Job) void {
 /// A click that asked for a refresh during this pass gets one immediately;
 /// otherwise the next pass is five seconds after this one finished.
 fn scheduleNext(s: *app.State) void {
+    if (s.select_wanted) |index| {
+        s.select_wanted = null;
+        s.refresh_wanted = false;
+        s.selectRuntime(index);
+        return;
+    }
+    if (s.discover_wanted) {
+        s.discover_wanted = false;
+        s.refresh_wanted = false;
+        s.discover();
+        return;
+    }
     if (s.refresh_wanted and s.client != null) {
         s.refresh_wanted = false;
         s.refresh();
@@ -182,6 +195,20 @@ pub fn discard(job: *Job) void {
 
 fn commit(s: *app.State, job: *Job) void {
     const snap = &job.snapshot;
+    // Decide the df before the old arena dies. A df may survive exactly one
+    // rotation (pointing into the then-retired arena); a second timed-out pass
+    // must drop it before freeing that arena, or the views read freed memory.
+    var next_df: ?api.Df = null;
+    if (snap.df) |df| {
+        next_df = df;
+        s.df_stale = false;
+    } else if (s.df != null and !s.df_stale) {
+        next_df = s.df;
+        s.df_stale = true;
+    } else {
+        s.df_stale = false;
+    }
+
     if (s.retired) |*old| old.deinit();
     s.retired = s.arena;
     s.arena = snap.arena;
@@ -192,8 +219,10 @@ fn commit(s: *app.State, job: *Job) void {
     s.images = snap.images;
     s.volumes = snap.volumes;
     s.networks = snap.networks;
-    // A timed-out df must not erase figures that were valid a moment ago.
-    if (snap.df) |df| s.df = df;
+    s.df = next_df;
+    // `/volumes` does not carry size; the df does. Use the last good df even
+    // when this pass timed out, or every volume row loses its size again.
+    if (s.df) |df| volumes_mod.mergeVolumeUsage(s.volumes, df);
     // Engine version/info come from discovery and stay in runtime memory;
     // copying them out of this arena on every pass is how a failed /info used
     // to leave a string pointing into the retired snapshot.

@@ -4,6 +4,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const refresh = @import("refresh.zig");
+const runtimes = @import("runtimes.zig");
 
 pub fn create(gpa: std.mem.Allocator, io: std.Io, nanoapp: *nanoui.App) !*app.State {
     const s = try gpa.create(app.State);
@@ -12,13 +13,14 @@ pub fn create(gpa: std.mem.Allocator, io: std.Io, nanoapp: *nanoui.App) !*app.St
 }
 
 pub fn destroy(s: *app.State) void {
-    for (s.runtimes) |r| {
-        s.gpa.free(r.name);
-        s.gpa.free(r.socket);
-        if (r.error_text.len > 0) s.gpa.free(r.error_text);
-    }
-    if (s.runtimes.len > 0) s.gpa.free(s.runtimes);
+    runtimes.drop(s);
+    if (s.preferred_socket) |p| s.gpa.free(p);
+    if (s.last_engine_id) |p| s.gpa.free(p);
+    if (s.last_engine_socket) |p| s.gpa.free(p);
+    s.socket_input.deinit();
     if (s.job) |job| refresh.discard(job);
+    s.clearPending();
+    s.prune_open = false;
     s.clearLogs();
     s.clearInspect();
     s.search.deinit();

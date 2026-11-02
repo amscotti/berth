@@ -11,6 +11,7 @@ const layout = @import("layout.zig");
 const detail = @import("detail.zig");
 const lists = @import("views/lists.zig");
 const panels = @import("views/panels.zig");
+const config = @import("views/config.zig");
 const stacks = @import("views/stacks.zig");
 
 const TABS = [_]app.Tab{
@@ -134,7 +135,7 @@ fn railFigure(s: *app.State, c: *ui.Context, tab: app.Tab) []const u8 {
         .networks => c.print("{d}", .{s.networks.len}),
         .stacks => c.print("{d}", .{projectCount(s)}),
         .disk => if (storeBytes(s)) |n| format.bytes(c, n) else "—",
-        .runtimes => c.print("{d}/{d}", .{ reachableCount(s), s.runtimes.len }),
+        .runtimes => c.print("{d}", .{reachableCount(s)}),
         .settings => "",
     };
 }
@@ -191,20 +192,21 @@ fn tabKind(tab: app.Tab) theme.Kind {
 fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
     const rt = s.activeRuntime();
     const live = rt != null and rt.?.reachable;
-    const busy = s.job != null;
-    // A partial refresh (engine info, one store) leaves usable data on screen;
-    // it belongs here as a warning, not as a banner over the table.
-    const warn = s.error_text.len > 0 and !busy;
+    // A partial refresh leaves usable data on screen; it belongs here as a
+    // warning, not as a banner over the table. The busy state deliberately
+    // does not change the line: the updated clock is the refresh indicator,
+    // and a status that changes width every five seconds makes the rail twitch.
+    const warn = s.error_text.len > 0;
     var status = ui.div(c).column().wFull().gap(3).pb(6);
     status = if (narrow) status.itemsCenter() else status.px(8);
     defer status.end();
 
     const line = ui.div(c).row().itemsCenter().gap(if (narrow) 5 else 7);
-    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (busy) c.theme.accent else if (warn) .hex(0xff9f0a) else if (live) c.theme.success else c.theme.danger);
+    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (live) .hex(0xff9f0a) else c.theme.danger);
     dot.end();
-    ui.text(c, if (busy) "Refreshing…" else if (warn) (if (narrow) "Warning" else "Engine warning") else if (live) "Live · every 5 s" else "Engine not answering", .{
+    ui.text(c, if (warn) (if (narrow) "Warning" else "Engine warning") else if (live) (if (narrow) "Refresh" else "Refresh · every 5 s") else "Engine not answering", .{
         .size = if (narrow) 9.5 else 11,
-        .color = if (busy) c.theme.accent else if (warn) .hex(0xff9f0a) else if (live) c.theme.muted else c.theme.danger,
+        .color = if (warn) .hex(0xff9f0a) else if (live) c.theme.muted else c.theme.danger,
     });
     line.end();
 
@@ -219,7 +221,10 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         return;
     }
 
-    ui.text(c, if (warn) s.error_text else if (rt) |r| r.name else "no engine found", .{
+    // Frame-owned copy: a Rescan/Connect later in this frame frees the
+    // runtime strings, and the rail is painted after the page.
+    const engine_line = if (warn) s.error_text else if (rt) |r| c.print("{s}", .{r.name}) else "no engine found";
+    ui.text(c, engine_line, .{
         .size = 10.5,
         .color = if (warn) .hex(0xff9f0a) else c.theme.muted,
         .truncate = .middle,
@@ -232,20 +237,11 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         });
     }
 
-    // The timestamp and the rescan live together, under the engine they
-    // describe; the bottom bar is left to the actions that apply to the page.
-    const meta = ui.div(c).row().wFull().itemsCenter().gap(6);
+    // The timestamp is the refresh indicator; the rescan lives with the
+    // sockets it rescans, under Runtimes.
     ui.text(c, c.print("updated {s}", .{
         if (s.last_update == 0) "not yet" else format.clock(c, s.last_update),
     }), .{ .size = 10, .color = c.theme.muted, .mono = true });
-    ui.spacer(c);
-    if (s.runtimes.len > 1 and !busy) {
-        const again = ui.div(c).row().h(18).px(6).itemsCenter().rounded(9).bg(c.theme.surface_hover);
-        ui.text(c, "Rediscover", .{ .size = 10, .color = c.theme.muted });
-        if (again.clicked()) s.discover();
-        again.end();
-    }
-    meta.end();
 }
 
 fn header(s: *app.State, c: *ui.Context) void {
@@ -270,8 +266,8 @@ fn body(s: *app.State, c: *ui.Context) void {
                 .overview => panels.overview(s, c),
                 .stacks => stacks.view(s, c),
                 .disk => panels.disk(s, c),
-                .runtimes => panels.runtimes(s, c),
-                .settings => panels.settings(s, c),
+                .runtimes => config.runtimes(s, c),
+                .settings => config.settings(s, c),
                 else => unreachable,
             }
         },
@@ -285,16 +281,10 @@ pub fn confirmDialog(s: *app.State, c: *ui.Context, verb: []const u8, target: []
     ui.text(c, verb, .{ .size = 13, .weight = .semibold, .color = c.theme.danger });
     const line = c.print("{s} — {s}", .{ target, verb });
     ui.text(c, line, .{ .size = 12, .color = c.theme.muted });
-    const row = ui.div(c).row().gap(8);
-    defer row.end();
-    const yes = ui.div(c).row().h(26).px(10).itemsCenter().rounded(13).bg(c.theme.danger);
-    defer yes.end();
-    ui.text(c, "Confirm", .{ .size = 12, .weight = .medium, .color = c.theme.accent_text });
-    if (yes.clicked()) s.resolvePending(true);
-    const no = ui.div(c).row().h(26).px(10).itemsCenter().rounded(13).bg(c.theme.surface_hover);
-    defer no.end();
-    ui.text(c, "Cancel", .{ .size = 12, .color = c.theme.text });
-    if (no.clicked()) s.resolvePending(false);
+    const row = ui.div(c).row().wFull().justifyEnd().gap(8);
+    if (dialogButton(c, "Cancel", false, false)) s.resolvePending(false);
+    if (dialogButton(c, "Confirm", true, true)) s.resolvePending(true);
+    row.end();
 }
 
 /// The cleanup sheet: what Docker Desktop calls "Clean / Purge data". The
@@ -322,7 +312,7 @@ fn pruneDialog(s: *app.State, c: *ui.Context) void {
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
     ui.text(c, "Clean up unused data", .{ .size = 13, .weight = .semibold });
     ui.spacer(c);
-    ui.text(c, c.print("{s} reclaimable", .{format.bytesSigned(c, @max(0, total))}), .{ .size = 11, .color = c.theme.muted });
+    ui.text(c, c.print("{s} selected", .{format.bytesSigned(c, @max(0, total))}), .{ .size = 11, .color = c.theme.muted });
     head.end();
     ui.text(c, "Stopped containers, unused images and build cache. Volumes and networks are opt-in; this cannot be undone.", .{ .size = 11.5, .color = c.theme.muted });
 
@@ -333,15 +323,21 @@ fn pruneDialog(s: *app.State, c: *ui.Context) void {
     pruneOption(c, "Build cache", cache, &s.prune_opts.build_cache);
 
     const buttons = ui.div(c).row().wFull().justifyEnd().gap(8).pt(2);
-    defer buttons.end();
-    const cancel = ui.div(c).row().h(26).px(10).itemsCenter().rounded(13).bg(c.theme.surface_hover);
-    defer cancel.end();
-    ui.text(c, "Cancel", .{ .size = 12, .color = c.theme.text });
-    if (cancel.clicked()) s.closePrune();
-    const go = ui.div(c).row().h(26).px(10).itemsCenter().rounded(13).bg(c.theme.danger);
-    defer go.end();
-    ui.text(c, "Clean up", .{ .size = 12, .weight = .medium, .color = c.theme.accent_text });
-    if (go.clicked()) s.runPrune();
+    if (dialogButton(c, "Cancel", false, false)) s.closePrune();
+    if (dialogButton(c, "Clean up", true, true)) s.runPrune();
+    buttons.end();
+}
+
+/// One shape for every dialog action: same width, same height, so Cancel and
+/// Confirm sit on one baseline instead of one sizing itself to its word.
+fn dialogButton(c: *ui.Context, label: []const u8, danger: bool, primary: bool) bool {
+    const bg = if (!primary) c.theme.surface_hover else if (danger) c.theme.danger else c.theme.accent;
+    const fg = if (primary) c.theme.accent_text else c.theme.text;
+    const box = ui.div(c).row().w(92).h(28).center().rounded(14).bg(bg).control();
+    ui.text(c, label, .{ .size = 12, .weight = if (primary) .medium else .regular, .color = fg });
+    const clicked = box.clicked();
+    box.end();
+    return clicked;
 }
 
 fn pruneOption(c: *ui.Context, label: []const u8, amount: i64, on: *bool) void {

@@ -19,6 +19,7 @@ const History = @import("ui/history.zig").History;
 const host = @import("host/host.zig");
 const tabs = @import("tabs.zig");
 const runtimes_mod = @import("runtimes.zig");
+const session = @import("session.zig");
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -90,6 +91,17 @@ pub const State = struct {
     sort_networks: widgets.Sort = .{ .key = 1 },
     runtimes: []discovery.Runtime = &.{},
     active: usize = 0,
+    /// The socket last chosen or typed; probed before the built-in candidates.
+    preferred_socket: ?[]u8 = null,
+    /// Identity of the engine currently on screen, kept across failed scans so
+    /// a later scan can tell a real engine change from another alias.
+    last_engine_id: ?[]u8 = null,
+    last_engine_socket: ?[]u8 = null,
+    /// The custom-socket field and the settings engine menu.
+    socket_input: ui.TextBuffer = .{},
+    engine_menu_open: bool = false,
+    /// The runtime kind whose sockets are expanded on the Runtimes page.
+    expanded_kind: ?discovery.Kind = null,
 
     client: ?api.Client = null,
     arena: std.heap.ArenaAllocator,
@@ -104,6 +116,12 @@ pub const State = struct {
     generation: u64 = 0,
     /// A refresh was asked for while a pass was in flight.
     refresh_wanted: bool = false,
+    /// A rescan was asked for while a pass was in flight.
+    discover_wanted: bool = false,
+    /// An engine chosen while a pass was in flight.
+    select_wanted: ?usize = null,
+    /// One discovery retry timer, not one per failed scan.
+    retry_pending: bool = false,
 
     containers: []api.Container = &.{},
     stats: []Stat = &.{},
@@ -111,6 +129,8 @@ pub const State = struct {
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
     df: ?api.Df = null,
+    /// A df may survive one arena rotation; drop it on the next failed pass.
+    df_stale: bool = false,
 
     /// Light, dark, or whatever the desktop says.
     appearance: settings.Appearance = .system,
@@ -185,7 +205,7 @@ pub const State = struct {
     /// trouble.
     pub fn setAppearance(s: *State, appearance: settings.Appearance) void {
         s.appearance = appearance;
-        settings.save(s.gpa, s.io, .{ .appearance = appearance }) catch {};
+        settings.save(s.gpa, s.io, .{ .appearance = appearance, .socket = s.preferred_socket orelse "" }) catch {};
         nanoui.App.after(0, s, applyAppearance);
     }
 
@@ -197,7 +217,7 @@ pub const State = struct {
     /// The machine's own figures do not depend on an engine answering. Sampling
     /// them on the failure paths keeps the HOST card on screen while the
     /// engine is down, which is exactly when a monitor is being looked at.
-    fn sampleHost(s: *State) void {
+    pub fn sampleHost(s: *State) void {
         s.host_sample = s.host.sample(s.io, s.gpa);
         s.redraw();
     }
@@ -211,16 +231,20 @@ pub const State = struct {
         for (s.containers, 0..) |ct, i| {
             if (!ct.isUp()) continue;
             running += 1;
-            if (i < s.stats.len) {
+            if (i < s.stats.len and s.stats[i].sampled) {
                 cpu += @floatCast(s.stats[i].cpu);
                 mem += @floatFromInt(s.stats[i].mem);
             }
         }
         var disk: f32 = 0;
         if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.totalBytes()));
+        // The table's CPU column is per core (docker stats style). The
+        // overview says "of N cores", so its history must be the share of the
+        // whole machine or the dots and the percentage disagree by N.
+        const cores: f32 = if (s.activeRuntime()) |rt| @floatFromInt(@max(rt.info.NCPU, 1)) else 1;
         s.host_sample = s.host.sample(s.io, s.gpa);
         s.history.push(.{
-            .cpu = cpu,
+            .cpu = cpu / cores,
             .mem = mem,
             .running = running,
             .disk = disk,
@@ -350,7 +374,7 @@ pub const State = struct {
         shell.view(s, c);
     }
 
-    fn dropRuntimes(s: *State) void {
+    pub fn dropRuntimes(s: *State) void {
         runtimes_mod.drop(s);
     }
 
@@ -377,7 +401,7 @@ pub const State = struct {
     }
 
     /// Drop the visible snapshot; only for switching engines.
-    fn clearData(s: *State) void {
+    pub fn clearData(s: *State) void {
         if (s.retired) |*old| old.deinit();
         s.retired = s.arena;
         s.arena = .init(s.gpa);
@@ -387,6 +411,10 @@ pub const State = struct {
         s.volumes = &.{};
         s.networks = &.{};
         s.df = null;
+        s.df_stale = false;
+        s.history.clearEngine();
+        s.clearPending();
+        s.prune_open = false;
         s.error_text = "";
         // Nothing from the old engine is on screen any more: the views show
         // their skeletons until the new engine's first snapshot lands.
@@ -405,68 +433,23 @@ pub const State = struct {
     }
 
     pub fn selectRuntime(s: *State, index: usize) void {
-        if (index >= s.runtimes.len or s.job != null) return;
-        s.active = index;
-        s.generation += 1;
-        const rt = &s.runtimes[index];
-        s.client = api.Client.init(s.io, s.gpa, rt.socket);
-        s.clearData();
-        s.refresh();
+        session.selectRuntime(s, index);
     }
 
-    /// Rescans for engines, picks the first that answers, and loads it.
     pub fn discover(s: *State) void {
-        if (s.job != null) return;
-        s.generation += 1;
-        // The old client points at a socket owned by `runtimes`; stop using it
-        // before those strings are freed.
-        s.client = null;
-        s.dropRuntimes();
-        const found = discovery.scan(s.gpa, s.io) catch {
-            s.error_text = "could not scan for container engines";
-            s.sampleHost();
-            s.retryDiscover();
-            return;
-        };
-        s.runtimes = found.runtimes;
-        s.active = 0;
-        for (s.runtimes, 0..) |r, i| {
-            if (r.reachable) {
-                s.active = i;
-                break;
-            }
-        }
-        if (s.runtimes.len == 0) {
-            s.error_text = "no container engine found";
-            s.sampleHost();
-            s.retryDiscover();
-            return;
-        }
-        const rt = &s.runtimes[s.active];
-        if (!rt.reachable) {
-            s.error_text = "no container engine is answering";
-            s.sampleHost();
-            s.retryDiscover();
-            return;
-        }
-        s.client = api.Client.init(s.io, s.gpa, rt.socket);
-        s.client.?.alloc = s.arena.allocator();
-        s.refresh();
-    }
-
-    /// Re-probe after a failed scan. Fifteen seconds, not five: probing every
-    /// candidate is only cheap when one of them answers.
-    fn retryDiscover(s: *State) void {
-        if (s.auto_refresh) nanoui.App.after(15_000, s, refresh_mod.autoTick);
+        session.discover(s);
     }
 
     pub fn refresh(s: *State) void {
-        if (s.client == null) return;
-        if (s.job != null) {
-            s.refresh_wanted = true;
-            return;
-        }
-        refresh_mod.start(s);
+        session.refresh(s);
+    }
+
+    pub fn useSocket(s: *State, path: []const u8) bool {
+        return session.useSocket(s, path);
+    }
+
+    pub fn forgetSocket(s: *State) void {
+        session.forgetSocket(s);
     }
 
     pub fn redraw(s: *State) void {
@@ -558,14 +541,32 @@ pub const State = struct {
 
     pub fn confirm(s: *State, id: []const u8, name: []const u8, verb: []const u8, method: []const u8, comptime path_fmt: []const u8) void {
         const path = std.fmt.allocPrint(s.gpa, path_fmt, .{id}) catch return;
+        const id_copy = s.gpa.dupe(u8, id) catch {
+            s.gpa.free(path);
+            return;
+        };
+        const name_copy = s.gpa.dupe(u8, name) catch {
+            s.gpa.free(path);
+            s.gpa.free(id_copy);
+            return;
+        };
+        s.clearPending();
         s.pending = .{
-            .id = s.gpa.dupe(u8, id) catch return,
-            .name = s.gpa.dupe(u8, name) catch return,
+            .id = id_copy,
+            .name = name_copy,
             .method = method,
             .path = path,
             .verb = verb,
         };
         s.redraw();
+    }
+
+    pub fn clearPending(s: *State) void {
+        const p = s.pending orelse return;
+        s.pending = null;
+        s.gpa.free(p.id);
+        s.gpa.free(p.name);
+        s.gpa.free(p.path);
     }
 
     pub fn resolvePending(s: *State, ok: bool) void {

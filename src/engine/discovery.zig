@@ -20,6 +20,8 @@ fn env(name: [*:0]const u8) ?[]const u8 {
 
 pub const Kind = enum {
     docker_desktop,
+    orbstack,
+    rancher,
     dockerd,
     colima,
     lima,
@@ -29,7 +31,9 @@ pub const Kind = enum {
     pub fn label(self: Kind) []const u8 {
         return switch (self) {
             .docker_desktop => "Docker Desktop",
-            .dockerd => "dockerd",
+            .orbstack => "OrbStack",
+            .rancher => "Rancher Desktop",
+            .dockerd => "Dockerd",
             .colima => "Colima",
             .lima => "Lima",
             .podman_machine => "Podman machine",
@@ -39,9 +43,12 @@ pub const Kind = enum {
 };
 
 pub const Runtime = struct {
-    name: []const u8,
-    kind: Kind,
-    socket: []const u8,
+    name: []const u8 = "",
+    kind: Kind = .dockerd,
+    socket: []const u8 = "",
+    /// The versioned prefix (`v1.56`) for this engine, owned here so the UI
+    /// client can use it after discovery's client is gone.
+    api: []const u8 = "",
     reachable: bool = false,
     /// Why it is not reachable, when it is not.
     error_text: []const u8 = "",
@@ -49,22 +56,44 @@ pub const Runtime = struct {
     info: api.Info = .{},
 };
 
+/// Free every string a runtime owns. A runtime's version/info come from the
+/// discovery client's gpa, not from a snapshot arena, so they are freed here.
+pub fn freeRuntime(gpa: std.mem.Allocator, rt: *Runtime) void {
+    gpa.free(rt.name);
+    gpa.free(rt.socket);
+    gpa.free(rt.error_text);
+    gpa.free(rt.api);
+    gpa.free(rt.version.Version);
+    gpa.free(rt.version.ApiVersion);
+    gpa.free(rt.version.MinAPIVersion);
+    gpa.free(rt.version.Os);
+    gpa.free(rt.version.Arch);
+    gpa.free(rt.version.GoVersion);
+    gpa.free(rt.info.ID);
+    gpa.free(rt.info.Name);
+    gpa.free(rt.info.ServerVersion);
+    gpa.free(rt.info.OperatingSystem);
+    gpa.free(rt.info.OSType);
+    gpa.free(rt.info.Architecture);
+    gpa.free(rt.info.DockerRootDir);
+    gpa.free(rt.info.Driver);
+    gpa.free(rt.info.LoggingDriver);
+    gpa.free(rt.info.CgroupVersion);
+    rt.* = .{};
+}
+
 pub const Found = struct {
     runtimes: []Runtime,
 
     pub fn deinit(self: Found, gpa: std.mem.Allocator) void {
-        for (self.runtimes) |r| {
-            gpa.free(r.name);
-            gpa.free(r.socket);
-            gpa.free(r.error_text);
-        }
+        for (self.runtimes) |*r| freeRuntime(gpa, r);
         gpa.free(self.runtimes);
     }
 };
 
 /// Every candidate socket, deduplicated, in the order a user would expect:
 /// Docker Desktop first, then Colima, then Podman, then plain dockerd.
-pub fn candidates(io: std.Io, gpa: std.mem.Allocator) ![][]const u8 {
+pub fn candidates(io: std.Io, gpa: std.mem.Allocator, preferred: []const u8) ![][]const u8 {
     var list: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (list.items) |s| gpa.free(s);
@@ -74,34 +103,43 @@ pub fn candidates(io: std.Io, gpa: std.mem.Allocator) ![][]const u8 {
     const xdg = env("XDG_RUNTIME_DIR");
     const uid = getuid();
 
+    // The socket the user chose last time comes first: it wins ties, and it
+    // is probed even when it is not one of the paths berth knows by heart.
+    if (preferred.len > 0) try add(gpa, &list, preferred);
+
     if (env("DOCKER_HOST")) |host| {
         if (std.mem.startsWith(u8, host, "unix://")) try add(gpa, &list, host["unix://".len..]);
     }
 
-    const fixed = [_][]const u8{
-        "/var/run/docker.sock",
-        "/run/podman/podman.sock",
-        "/var/run/podman/podman.sock",
-    };
-    for (fixed) |p| try add(gpa, &list, p);
-
     if (home.len > 0) {
-        try addJoin(gpa, &list, home, "/.docker/run/docker.sock");
-        try addJoin(gpa, &list, home, "/.docker/desktop/docker.sock");
-        try addJoin(gpa, &list, home, "/.colima/default/docker.sock");
-        try addJoin(gpa, &list, home, "/.colima/docker.sock");
-        try addJoin(gpa, &list, home, "/.lima/default/sock/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.docker/run/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.docker/desktop/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.orbstack/run/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.rd/docker.sock");
+        try addJoin(io, gpa, &list, home, "/Library/Containers/com.docker.docker/Data/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.colima/default/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.colima/docker.sock");
+        try addJoin(io, gpa, &list, home, "/.lima/default/sock/docker.sock");
+        try addPodmanMachines(io, gpa, &list, home);
         // Lima names the socket after the instance, so a VM called `docker`
         // lives under `~/.lima/docker/` and would otherwise be invisible.
         try addLimaInstances(io, gpa, &list, home);
     }
     if (xdg) |d| {
-        try addJoin(gpa, &list, d, "/podman/podman.sock");
+        try addJoin(io, gpa, &list, d, "/podman/podman.sock");
     } else {
         var buf: [64]u8 = undefined;
         const p = std.fmt.bufPrint(&buf, "/run/user/{d}/podman/podman.sock", .{uid}) catch "/run/user/0/podman/podman.sock";
-        try add(gpa, &list, p);
+        try addIfExists(io, gpa, &list, p);
     }
+    // Fixed system paths come last: a Docker Desktop symlink at /var/run
+    // should not win the label over the app that actually owns the socket.
+    const fixed = [_][]const u8{
+        "/var/run/docker.sock",
+        "/run/podman/podman.sock",
+        "/var/run/podman/podman.sock",
+    };
+    for (fixed) |p| try addIfExists(io, gpa, &list, p);
     return list.toOwnedSlice(gpa);
 }
 
@@ -113,10 +151,34 @@ fn add(gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), path: []const u
     try list.append(gpa, try gpa.dupe(u8, path));
 }
 
-fn addJoin(gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), base: []const u8, rest: []const u8) !void {
+fn addJoin(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), base: []const u8, rest: []const u8) !void {
     const joined = try std.fmt.allocPrint(gpa, "{s}{s}", .{ base, rest });
     defer gpa.free(joined);
-    try add(gpa, list, joined);
+    try addIfExists(io, gpa, list, joined);
+}
+
+/// A path that is not there is not a runtime. Filtering keeps stopped
+/// engines from filling the chooser with sockets that can never answer.
+fn addIfExists(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), path: []const u8) !void {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return;
+    try add(gpa, list, path);
+}
+
+/// Podman machine moved from qemu to applehv to libkrun and lets people name
+/// machines; enumerate the provider directories rather than guessing one.
+fn addPodmanMachines(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), home: []const u8) !void {
+    const root = try std.fmt.allocPrint(gpa, "{s}/.local/share/containers/podman/machine", .{home});
+    defer gpa.free(root);
+    try addJoin(io, gpa, list, root, "/podman.sock");
+    const dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind != .directory) continue;
+        const rest = try std.fmt.allocPrint(gpa, "/{s}/podman.sock", .{entry.name});
+        defer gpa.free(rest);
+        try addJoin(io, gpa, list, root, rest);
+    }
 }
 
 /// Every Lima instance, not just `default`: `limactl start docker` produces
@@ -133,7 +195,7 @@ fn addLimaInstances(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]c
         if (!isLimaInstance(entry.name)) continue;
         const sock = try std.fmt.allocPrint(gpa, "{s}/{s}/sock/docker.sock", .{ root, entry.name });
         defer gpa.free(sock);
-        try add(gpa, list, sock);
+        try addIfExists(io, gpa, list, sock);
     }
 }
 
@@ -146,12 +208,15 @@ pub fn isLimaInstance(name: []const u8) bool {
 /// Guesses the runtime from its socket path. Only used for the label; the
 /// protocol is the same either way.
 pub fn kindOf(path: []const u8) Kind {
+    if (std.mem.indexOf(u8, path, ".orbstack") != null) return .orbstack;
+    if (std.mem.indexOf(u8, path, "/.rd/") != null) return .rancher;
     if (std.mem.indexOf(u8, path, ".colima") != null) return .colima;
     if (std.mem.indexOf(u8, path, ".lima") != null) return .lima;
     if (std.mem.indexOf(u8, path, "podman/machine") != null) return .podman_machine;
     if (std.mem.indexOf(u8, path, "podman") != null) return .podman;
     if (std.mem.indexOf(u8, path, ".docker/run") != null or
-        std.mem.indexOf(u8, path, ".docker/desktop") != null) return .docker_desktop;
+        std.mem.indexOf(u8, path, ".docker/desktop") != null or
+        std.mem.indexOf(u8, path, "com.docker.docker") != null) return .docker_desktop;
     return .dockerd;
 }
 
@@ -163,8 +228,8 @@ pub fn kindOf(path: []const u8) Kind {
 /// dozen sockets, and waiting two seconds on each before the first snapshot is
 /// a twenty-second launch. Only the reachable ones then pay for version/info,
 /// on this thread, because their strings outlive the probe.
-pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
-    const paths = try candidates(io, gpa);
+pub fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !Found {
+    const paths = try candidates(io, gpa, preferred);
     defer {
         for (paths) |p| gpa.free(p);
         gpa.free(paths);
@@ -173,11 +238,7 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
     const runtimes = try gpa.alloc(Runtime, paths.len);
     for (runtimes) |*rt| rt.* = .{ .name = "", .kind = .dockerd, .socket = "" };
     errdefer {
-        for (runtimes) |rt| {
-            gpa.free(rt.name);
-            gpa.free(rt.socket);
-            gpa.free(rt.error_text);
-        }
+        for (runtimes) |*rt| freeRuntime(gpa, rt);
         gpa.free(runtimes);
     }
 
@@ -204,7 +265,15 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
         }
         var client = api.Client.init(io, gpa, rt.socket);
         rt.version = client.version() catch api.Version{};
+        if (rt.version.ApiVersion.len > 0) {
+            rt.api = std.fmt.allocPrint(gpa, "v{s}", .{rt.version.ApiVersion}) catch "";
+            if (rt.api.len > 0) client.api = rt.api;
+        }
         rt.info = client.info() catch api.Info{};
+        if (client.err_body.len > 0) {
+            gpa.free(client.err_body);
+            client.err_body = "";
+        }
         if (rt.info.Name.len > 0) {
             // Allocate before freeing: an OOM here must not leave `rt.name`
             // pointing at memory the error path frees again.
@@ -213,7 +282,37 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io) !Found {
             rt.name = name;
         }
     }
-    return .{ .runtimes = runtimes };
+
+    // Docker Desktop commonly exposes the same engine through /var/run and
+    // ~/.docker/run. They are one engine: keep the first, drop the alias, so
+    // the count and the chooser do not claim two.
+    var unique: usize = 0;
+    for (runtimes, 0..) |rt, i| {
+        if (isDuplicate(runtimes[0..i], rt)) continue;
+        unique += 1;
+    }
+    if (unique == runtimes.len) return .{ .runtimes = runtimes };
+
+    const kept = try gpa.alloc(Runtime, unique);
+    var n: usize = 0;
+    for (runtimes, 0..) |*rt, i| {
+        if (isDuplicate(runtimes[0..i], rt.*)) {
+            freeRuntime(gpa, rt);
+            continue;
+        }
+        kept[n] = rt.*;
+        n += 1;
+    }
+    gpa.free(runtimes);
+    return .{ .runtimes = kept };
+}
+
+fn isDuplicate(earlier: []const Runtime, rt: Runtime) bool {
+    if (!rt.reachable or rt.info.ID.len == 0) return false;
+    for (earlier) |prev| {
+        if (prev.reachable and prev.info.ID.len > 0 and std.mem.eql(u8, prev.info.ID, rt.info.ID)) return true;
+    }
+    return false;
 }
 
 fn runtimeFor(gpa: std.mem.Allocator, path: []const u8) !Runtime {
@@ -233,9 +332,10 @@ fn probeOne(io: std.Io, rt: *Runtime) void {
 
 /// `GET /_ping` — the one call every Docker-compatible engine answers.
 pub fn probe(client: *api.Client) bool {
-    // Two seconds: a healthy engine answers /_ping at once, and a stale
-    // forwarder must not make discovery take eight seconds per candidate.
-    var conn = http.Conn.openTimeout(client.io, client.socket, 2) catch return false;
+    // Three seconds: a healthy engine answers /_ping at once, but a Docker
+    // Desktop socket that is still waking up can miss a two-second window.
+    // The probes run together, so a slow candidate delays the scan only once.
+    var conn = http.Conn.openTimeout(client.io, client.socket, 3) catch return false;
     defer conn.close();
     const res = conn.request(client.gpa, "GET", "/_ping", "", 4096) catch return false;
     defer res.deinit(client.gpa);
@@ -248,6 +348,8 @@ test "a socket path names its runtime" {
     try std.testing.expectEqual(Kind.podman_machine, kindOf("/Users/x/.local/share/containers/podman/machine/applehv/podman.sock"));
     try std.testing.expectEqual(Kind.podman, kindOf("/run/user/1000/podman/podman.sock"));
     try std.testing.expectEqual(Kind.docker_desktop, kindOf("/Users/x/.docker/run/docker.sock"));
+    try std.testing.expectEqual(Kind.orbstack, kindOf("/Users/x/.orbstack/run/docker.sock"));
+    try std.testing.expectEqual(Kind.rancher, kindOf("/Users/x/.rd/docker.sock"));
     try std.testing.expectEqual(Kind.dockerd, kindOf("/var/run/docker.sock"));
 }
 

@@ -65,6 +65,13 @@ pub const History = struct {
         return if (v.len == 0) 0 else v[v.len - 1];
     }
 
+    /// Forget the series when the engine changes. The host card reads its
+    /// current sample, not this ring, so resetting the count is honest and
+    /// stops the new engine's graph from starting with ten minutes of zeros.
+    pub fn clearEngine(h: *History) void {
+        h.count = 0;
+    }
+
     /// The busiest value in the series, for scaling a graph.
     pub fn peak(h: *const History, which: Which) f32 {
         var most: f32 = 0;

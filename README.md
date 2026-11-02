@@ -28,7 +28,7 @@ three questions without a terminal:
 
 | | |
 |---|---|
-| **Engines** | Docker Desktop, dockerd, Colima, Lima, Podman machine, rootless and rootful Podman — discovered by probing, not guessing |
+| **Engines** | Docker Desktop, OrbStack, Rancher Desktop, dockerd, Colima, Lima, Podman machine, rootless and rootful Podman — discovered by probing, grouped by kind, with a custom socket path |
 | **Protocol** | HTTP/1.1 over a Unix socket, chunked bodies, API version negotiated from `/version` |
 | **Views** | Overview, Containers, Images, Volumes, Networks, Stacks (Compose), Disk, Runtimes, Settings |
 | **Tables** | sortable headers, search in every page header, clickable rows, and a column set that scales with the window |
