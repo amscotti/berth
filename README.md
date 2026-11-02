@@ -135,6 +135,15 @@ Rules this codebase holds itself to: **600 lines per file**, **no C shims**,
 **no phase names in code**, **UI on the main thread**, and **one snapshot swap**
 — the engine is read on a worker, never on the thread that paints.
 
+The worker/snapshot model, ownership rules, test strategy and open risks are
+written up in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Releases
+
+Tagged builds are produced by GitHub Actions: a Linux x86_64 tarball, a macOS
+arm64 `.app` zip, and `SHA256SUMS`. See the
+[releases page](https://github.com/amscotti/berth/releases) for `v0.1.0`.
+
 ## Testing notes
 
 - `zig build test` covers the protocol (chunked decoding, short bodies, frame
