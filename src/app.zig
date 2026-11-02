@@ -366,6 +366,9 @@ pub const State = struct {
     pub fn clearInspect(s: *State) void {
         if (s.inspect_buf) |buf| s.gpa.free(buf);
         s.inspect_buf = null;
+        if (s.detail_lifetime) |*life| {
+            if (life.run_cmd) |cmd| s.gpa.free(cmd);
+        }
         s.detail_lifetime = null;
     }
 
