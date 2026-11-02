@@ -36,6 +36,7 @@ pub const Tab = enum {
     images,
     volumes,
     networks,
+    events,
     stacks,
     disk,
     runtimes,
@@ -48,6 +49,7 @@ pub const Tab = enum {
             .images => "Images",
             .volumes => "Volumes",
             .networks => "Networks",
+            .events => "Events",
             .stacks => "Stacks",
             .disk => "Disk",
             .runtimes => "Runtimes",
@@ -64,6 +66,7 @@ pub const Tab = enum {
             .images => "doc",
             .volumes => "folder",
             .networks => "network",
+            .events => "list.bullet",
             .stacks => "rectangle.on.rectangle",
             .disk => "internaldrive",
             .runtimes => "desktopcomputer",
@@ -81,12 +84,14 @@ pub const Search = struct {
     images: ui.TextBuffer = .{},
     volumes: ui.TextBuffer = .{},
     networks: ui.TextBuffer = .{},
+    events: ui.TextBuffer = .{},
 
     pub fn deinit(self: *Search) void {
         self.containers.deinit();
         self.images.deinit();
         self.volumes.deinit();
         self.networks.deinit();
+        self.events.deinit();
     }
 
     /// The buffer of the view on screen, or null for the views that have no
@@ -108,9 +113,9 @@ pub fn tabFromName(name: []const u8) ?Tab {
     const pairs = [_]struct { n: []const u8, t: Tab }{
         .{ .n = "overview", .t = .overview }, .{ .n = "containers", .t = .containers },
         .{ .n = "images", .t = .images },     .{ .n = "volumes", .t = .volumes },
-        .{ .n = "networks", .t = .networks }, .{ .n = "stacks", .t = .stacks },
-        .{ .n = "disk", .t = .disk },         .{ .n = "runtimes", .t = .runtimes },
-        .{ .n = "settings", .t = .settings },
+        .{ .n = "networks", .t = .networks }, .{ .n = "events", .t = .events },
+        .{ .n = "stacks", .t = .stacks },     .{ .n = "disk", .t = .disk },
+        .{ .n = "runtimes", .t = .runtimes }, .{ .n = "settings", .t = .settings },
     };
     for (pairs) |pair| {
         if (std.ascii.eqlIgnoreCase(name, pair.n)) return pair.t;
@@ -122,7 +127,7 @@ test "tab names parse case-insensitively and reject unknown ones" {
     try std.testing.expectEqual(Tab.containers, tabFromName("containers").?);
     try std.testing.expectEqual(Tab.containers, tabFromName("Containers").?);
     try std.testing.expectEqual(Tab.settings, tabFromName("SETTINGS").?);
-    try std.testing.expect(tabFromName("events") == null);
+    try std.testing.expectEqual(Tab.events, tabFromName("Events").?);
     try std.testing.expect(tabFromName("") == null);
 }
 

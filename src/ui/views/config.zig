@@ -4,6 +4,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../../app.zig");
 const discovery = @import("../../engine/discovery.zig");
+const ops = @import("../../ops.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const prefs = @import("../../settings.zig");
@@ -27,9 +28,14 @@ pub fn runtimes(s: *app.State, c: *ui.Context) void {
     widgets.pageHeader(c, "Runtimes", c.print("{d} {s}", .{ live, if (live == 1) "engine" else "engines" }));
 
     const bar = ui.div(c).row().wFull().itemsCenter().gap(8).pb(8);
-    ui.text(c, "Sockets are probed in parallel. Choose one, or add a path below.", .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
-    ui.spacer(c);
-    if (settingButton(c, "Rescan sockets", false)) s.discover();
+    if (s.ops.running()) {
+        ui.text(c, s.ops.label(), .{ .size = 11.5, .weight = .medium, .color = .hex(0xff9f0a), .truncate = .ellipsis });
+        ui.spacer(c);
+    } else {
+        ui.text(c, "Sockets are probed in parallel. Choose one, or add a path below.", .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
+        ui.spacer(c);
+        if (settingButton(c, "Rescan sockets", false)) s.discover();
+    }
     bar.end();
 
     customSocket(s, c);
@@ -130,12 +136,22 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
     ui.text(c, rt.socket, .{ .size = 10, .mono = true, .color = c.theme.muted, .truncate = .middle });
     text.end();
 
-    if (active) {
-        ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = c.theme.accent });
-    } else if (rt.reachable) {
-        if (settingButton(c, "Use", false)) s.selectRuntime(index);
-    } else {
+    if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = c.theme.accent });
+    if (ops.supported(rt.kind) and !s.ops.running()) {
+        if (!rt.reachable) {
+            if (settingButton(c, "Start", false)) ops.start(s, .start, rt.kind, rt.socket);
+        } else if (active) {
+            if (settingButton(c, "Restart", false)) ops.start(s, .restart, rt.kind, rt.socket);
+        }
+    }
+    if (!rt.reachable and !ops.supported(rt.kind)) {
         ui.text(c, "not answering", .{ .size = 10.5, .color = c.theme.muted });
+    }
+    if (!active and rt.reachable and !s.ops.running()) {
+        if (settingButton(c, "Use", false)) s.selectRuntime(index);
+    }
+    if (rt.reachable and ops.supported(rt.kind) and !s.ops.running()) {
+        if (settingButton(c, "Stop", false)) ops.start(s, .stop, rt.kind, rt.socket);
     }
     row.end();
 }
@@ -155,7 +171,7 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     ui.text(c, "berth is a native monitor for Docker, Podman, Colima and Lima. It talks to the engine's HTTP API over its Unix socket directly — no webview, no helper daemon, no telemetry.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
     ui.text(c, "The last complete snapshot stays on screen while a worker refreshes the next one, so the tables and graphs neither blank nor freeze. Container CPU and memory use the same two-sample window as `docker stats`.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
     ui.text(c, "Built in Zig 0.17 on nanoui. On macOS the host figures come from Mach's host statistics; on Linux, from /proc. The warm palette and cell graphs follow nanoui's sibling project, nanomon.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "Every list has live search, containers pause and resume, and the inspector carries the engine's own JSON and a copyable `docker run` line. Not built yet: Events, Compose up/down, pulling images or running new containers.", .{ .size = 11.5, .color = c.theme.muted.alpha(0.8), .wrap = true });
+    ui.text(c, "Every list has live search, containers pause and resume, the inspector carries the engine's own JSON and a copyable `docker run` line, and the Events view remembers what the engine did. Not built yet: Compose up/down, pulling images or running new containers.", .{ .size = 11.5, .color = c.theme.muted.alpha(0.8), .wrap = true });
     prose.end();
     about.end(); // before the row, or the row and everything below nest inside it
 

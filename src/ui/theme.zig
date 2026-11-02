@@ -51,7 +51,7 @@ pub fn tint(t: ui.Theme, kind: Kind) Color {
     if (t.dark) return switch (kind) {
         .overview, .containers => t.accent,
         .images, .volumes => .hex(0xd9a441),
-        .networks => .hex(0x6fb0a8),
+        .networks, .events => .hex(0x6fb0a8),
         .stacks => .hex(0xbd80e4),
         .disk, .runtimes => .hex(0x8a9bb0),
         .settings => t.muted,
@@ -59,7 +59,7 @@ pub fn tint(t: ui.Theme, kind: Kind) Color {
     return switch (kind) {
         .overview, .containers => t.accent,
         .images, .volumes => .hex(0x9a6e1b),
-        .networks => .hex(0x2f8f9d),
+        .networks, .events => .hex(0x2f8f9d),
         .stacks => .hex(0x7a4ea3),
         .disk, .runtimes => .hex(0x3f6079),
         .settings => t.muted,
@@ -72,6 +72,7 @@ pub const Kind = enum {
     images,
     volumes,
     networks,
+    events,
     stacks,
     disk,
     runtimes,

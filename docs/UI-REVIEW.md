@@ -203,3 +203,26 @@ intent. They are fixed, and the evidence is in `runtimes-light.png`,
   failed stats stay `—`; pending confirmations are closed when the engine
   changes; the UI client adopts the engine's API version, so actions and
   Inspect work on current Docker releases.
+## Tier 2, Wave 2
+
+The monitor gained a memory and the engine gained controls, without giving up
+the no-flicker contract:
+
+- **Events.** `/events` is polled as an interval on the refresh worker, deduped
+  into a 300-row ring keyed by the engine's own timestamps, and shown in a new
+  Events view with search and density-scaled columns. Exits, OOMs and restarts
+  toast once; the first backfill never replays as news. A failed interval is
+  retried, not skipped.
+- **Engine lifecycle.** Colima, Lima and Podman machines can be started,
+  stopped and restarted from Runtimes. Commands run as background jobs with
+  captured output, a timeout, and a single retry-safe callback; Lima and Podman
+  restarts are stop-then-start against the instance that was clicked.
+- **Bulk actions.** Container checkboxes borrow the name column's width, and
+  start/stop/delete run on a worker with one confirmation naming the count and
+  an honest "N of M" result.
+- **Logs.** Follow now fetches the tail on the refresh worker, timestamps are
+  local, the pane has search and copy, and a stalled engine costs one pass
+  rather than a frozen window.
+
+Evidence: `events-light.png`, `events-960.png`, `bulk-light.png`,
+`logs-follow-light.png`, and `runtimes-open-light.png`.

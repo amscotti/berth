@@ -10,6 +10,9 @@ const volumes_mod = @import("engine/volumes.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
 const stats_pool = @import("stats_pool.zig");
+const engine_events = @import("engine/events.zig");
+const events_feed = @import("events_feed.zig");
+const logs = @import("logs.zig");
 const Snapshot = @import("snapshot.zig").Snapshot;
 const Stat = stats_pool.Sample;
 
@@ -20,6 +23,10 @@ pub const Job = struct {
     socket: []u8,
     generation: u64,
     snapshot: Snapshot,
+    follow: bool = false,
+    follow_id: [64]u8 = undefined,
+    follow_len: usize = 0,
+    logs_timestamps: bool = false,
     error_text: []const u8 = "",
     engine_dead: bool = false,
     canceled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -47,7 +54,13 @@ pub fn start(s: *app.State) void {
         .socket = socket,
         .generation = s.generation,
         .snapshot = Snapshot.init(s.gpa),
+        .follow = s.log_opts.follow and s.detail_kind == .container,
+        .logs_timestamps = s.log_opts.timestamps,
     };
+    if (s.selected) |id| {
+        job.follow_len = @min(id.len, job.follow_id.len);
+        @memcpy(job.follow_id[0..job.follow_len], id[0..job.follow_len]);
+    }
     job.thread = std.Thread.spawn(.{}, work, .{job}) catch {
         job.snapshot.deinit();
         s.gpa.free(socket);
@@ -110,7 +123,32 @@ fn load(job: *Job) void {
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not list networks";
         return;
     };
+    if (job.follow_len > 0) {
+        const id = job.follow_id[0..job.follow_len];
+        if (client.logs(id, 500, job.logs_timestamps)) |text| {
+            job.snapshot.logs = text;
+            job.snapshot.logs_id = job.snapshot.arena.allocator().dupe(u8, id) catch "";
+            job.snapshot.logs_timestamps = job.logs_timestamps;
+        } else |_| {}
+    }
+
     job.snapshot.df = client.df() catch null;
+
+    // Events are an interval, not a store: a failed call must not abort the
+    // snapshot, and the cursor only moves when the interval actually arrived.
+    const until_events = format.now();
+    var since = job.state.events.since;
+    if (since == 0) since = until_events - 600;
+    if (client.events(since, until_events)) |body| {
+        defer job.gpa.free(body);
+        var fresh = engine_events.parse(job.snapshot.arena.allocator(), body);
+        // A first load can cover thousands of events; keep the newest Cap so
+        // the merge on the main thread stays small.
+        if (fresh.len > engine_events.Cap) fresh = fresh[fresh.len - engine_events.Cap ..];
+        job.snapshot.events = fresh;
+        job.snapshot.events_since = since;
+        job.snapshot.events_until = until_events;
+    } else |_| {}
 }
 
 fn done(ctx: ?*anyopaque) callconv(.c) void {
@@ -149,7 +187,7 @@ fn done(ctx: ?*anyopaque) callconv(.c) void {
         const spec = s.pending_act;
         s.pending_act = "";
         s.pending_act_saved = spec;
-        if (s.runPendingAct()) return; // it started its own refresh
+        if (pendingAct(s)) return; // it started its own refresh
     }
     scheduleNext(s);
     s.redraw();
@@ -229,6 +267,8 @@ fn commit(s: *app.State, job: *Job) void {
     if (s.client) |*client| client.alloc = s.arena.allocator();
 
     resolveSelection(s);
+    events_feed.commit(s, snap.events_since, snap.events_until, snap.events);
+    logs.commitSnapshot(s, snap.logs, snap.logs_id, snap.logs_timestamps);
     s.error_text = "";
     s.last_update = format.now();
     s.sample();
@@ -274,7 +314,7 @@ fn resolveSelection(s: *app.State) void {
         if (!kept) {
             s.selected = null;
             s.selected_name = "";
-            s.clearLogs();
+            logs.clear(s);
             s.clearInspect();
         }
     }

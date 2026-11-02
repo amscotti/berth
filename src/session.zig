@@ -12,6 +12,10 @@ const settings = @import("settings.zig");
 
 pub fn selectRuntime(s: *app.State, index: usize) void {
     if (index >= s.runtimes.len) return;
+    if (s.ops.running()) {
+        s.notify("Wait for the engine command to finish", true);
+        return;
+    }
     if (s.job != null) {
         // The pass already running belongs to the old engine; switch after it
         // finishes rather than dropping the click or starting a second job.
@@ -109,6 +113,10 @@ pub fn useSocket(s: *app.State, path: []const u8) bool {
         s.notify("Wait for the current refresh to finish", true);
         return false;
     }
+    if (s.ops.running()) {
+        s.notify("Wait for the engine command to finish", true);
+        return false;
+    }
     // Probe before remembering: a typo must not become the preferred socket
     // that every later launch pays three seconds to reject.
     var probe_client = api.Client.init(s.io, s.gpa, clean);
@@ -138,6 +146,10 @@ pub fn useSocket(s: *app.State, path: []const u8) bool {
 
 /// Drop the remembered socket and go back to automatic discovery.
 pub fn forgetSocket(s: *app.State) void {
+    if (s.ops.running()) {
+        s.notify("Wait for the engine command to finish", true);
+        return;
+    }
     // Forget is the last action: a queued engine choice must not restore the
     // socket the user just dismissed.
     s.select_wanted = null;

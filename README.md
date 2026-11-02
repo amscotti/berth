@@ -28,13 +28,13 @@ three questions without a terminal:
 
 | | |
 |---|---|
-| **Engines** | Docker Desktop, OrbStack, Rancher Desktop, dockerd, Colima, Lima, Podman machine, rootless and rootful Podman — discovered by probing, grouped by kind, with a custom socket path |
+| **Engines** | Docker Desktop, OrbStack, Rancher Desktop, dockerd, Colima, Lima, Podman machine, rootless and rootful Podman — discovered, grouped, with a custom socket path and start/stop/restart for Colima, Lima and Podman machines |
 | **Protocol** | HTTP/1.1 over a Unix socket, chunked bodies, API version negotiated from `/version` |
-| **Views** | Overview, Containers, Images, Volumes, Networks, Stacks (Compose), Disk, Runtimes, Settings |
-| **Tables** | sortable headers, search in every page header, clickable rows, and a column set that scales with the window |
+| **Views** | Overview, Containers, Images, Volumes, Networks, Events, Stacks (Compose), Disk, Runtimes, Settings |
+| **Tables** | sortable headers, search in every page header, checkbox bulk start/stop/delete, clickable rows, and a column set that scales with the window |
 | **Layout** | the rail folds to icons below 1120 points; the inspector is 430 or 360; tables choose one of five densities |
 | **Live figures** | per-container CPU and memory (two-sample deltas, matching `docker stats`), network and disk I/O, PIDs, uptime and restarts, container history graphs, host CPU and memory |
-| **Inspectors** | container facts and logs; image, volume and network details; the engine's raw JSON behind an Inspect tab |
+| **Inspectors** | container facts and logs (follow, local timestamps, search, copy); image, volume and network details; raw JSON behind an Inspect tab |
 | **Actions** | start, stop, pause, resume, restart, delete; open a published port in the browser; copy the `docker run` command; remove an image, volume or network |
 | **Cleanup** | prune stopped containers, unused images/volumes/networks and build cache, with reclaimable sizes first |
 | **Refresh** | a worker thread builds the next snapshot; the last complete one stays on screen, so tables never blink or stall |
@@ -42,10 +42,13 @@ three questions without a terminal:
 
 ## What is not there yet
 
-- **Events.** The `/events` stream is not read yet, so there is no Events view.
+- **System notifications.** Exits, OOMs and restarts toast inside berth; the
+  macOS notification centre is not used yet.
 - **Compose actions.** Stacks are grouped and shown; `up`/`down` are not wired.
-- **Run and pull.** berth watches and cleans engines; it does not pull images
-  or create containers.
+- **Run and pull.** berth watches, cleans and controls engines; it does not
+  pull images or create containers yet.
+- **Streaming logs.** Follow polls a 500-line tail on the refresh worker;
+  a true `docker logs --follow` stream is not wired.
 - **Packaging.** `macos/build.sh` makes an ad-hoc-signed `.app`; there is no DMG,
   Developer ID signature or notarization.
 - **Accessibility** beyond what the framework gives on Apple platforms.

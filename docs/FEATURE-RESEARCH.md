@@ -53,6 +53,13 @@ was reviewed by a sub-agent before and after implementation.
 
 ## Tier 2 — soon (high value, medium)
 
+**Status: Wave 2 shipped** — the events feed (#10), bulk container actions
+(#11), log-pane follow/timestamps/search/copy (#12), in-app exit/OOM/restart
+toasts (#13), and start/stop/restart for Colima, Lima and Podman machines
+(#9's core). Still open in this tier: creating machines and editing their
+CPU/memory/disk (#9's second half), system notification centre (#13), and
+true streaming log follow (#12's L-sized follow-up).
+
 | # | Feature | Seen in | Use | Diff | Why / how |
 |---|---|---|---|---|---|
 | 9 | **Engine/VM lifecycle controls** — start/stop/restart Colima, Lima, Podman machine; create with CPU/memory/disk presets | PD tray + Resources page ("create new machine… start or stop Podman machines", allocated CPU/memory/storage) | 5 | M | The feature berth's own development history argues for: the user's Lima VM sat wedged and the app could only watch. berth already knows which engine kind owns each socket; spawn `colima start/stop`, `limactl start/stop`, `podman machine start/stop` as background jobs and keep the Runtimes view honest while the engine is down. Resource *editing* (CPU/RAM/disk) is the L-sized second half. |

@@ -7,6 +7,7 @@ const ui = nanoui.ui;
 const app = @import("../app.zig");
 const api = @import("../engine/api.zig");
 const lifetime = @import("../engine/lifetime.zig");
+const logs = @import("../logs.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
 
@@ -185,17 +186,35 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
     }
 
     const logs_head = ui.div(c).row().wFull().itemsCenter().gap(8);
-    ui.text(c, "Logs · last 200 lines", .{ .size = 11, .weight = .medium, .color = c.theme.muted });
+    ui.text(c, "Logs · last 500 lines", .{ .size = 11, .weight = .medium, .color = c.theme.muted });
     ui.spacer(c);
-    if (smallAction(c, "Refresh", "arrow.clockwise")) s.reloadLogs();
+    if (smallAction(c, "Refresh", "arrow.clockwise")) logs.reload(s);
     logs_head.end();
+
+    const log_tools = ui.div(c).row().wFull().itemsCenter().gap(6).pb(2);
+    if (logToggle(c, "Follow", s.log_opts.follow)) {
+        s.log_opts.follow = !s.log_opts.follow;
+        s.redraw();
+    }
+    if (logToggle(c, "Times", s.log_opts.timestamps)) {
+        s.log_opts.timestamps = !s.log_opts.timestamps;
+        logs.reload(s);
+    }
+    if (smallAction(c, "Copy", "doc.on.doc")) logs.copy(s);
+    ui.spacer(c);
+    _ = ui.textField(c, &s.log_opts.search, .{
+        .placeholder = "Search logs",
+        .width = .{ .px = if (s.layout.pane < 400) 104 else 130 },
+        .size = 11.5,
+    });
+    log_tools.end();
 
     ui.scroll(c, .{ .width = .fill, .height = .fill, .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 }, .radius = 8, .background = c.theme.background });
     defer ui.end(c);
     if (s.log_text.len == 0) {
         ui.text(c, "No output yet. A container that has said nothing says nothing.", .{ .size = 11.5, .color = c.theme.muted });
     } else {
-        ui.text(c, s.log_text, .{
+        ui.text(c, logs.visible(s, c), .{
             .size = 11.5,
             .mono = true,
             .wrap = true,
@@ -203,6 +222,19 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
             .color = c.theme.text,
         });
     }
+}
+
+fn logToggle(c: *ui.Context, label: []const u8, on: bool) bool {
+    const pill = ui.div(c).row().h(22).px(8).itemsCenter().rounded(11)
+        .bg(if (on) c.theme.accent.alpha(0.16) else c.theme.surface_hover).control();
+    ui.text(c, label, .{
+        .size = 10.5,
+        .weight = if (on) .medium else .regular,
+        .color = if (on) c.theme.accent else c.theme.muted,
+    });
+    const clicked = pill.clicked();
+    pill.end();
+    return clicked;
 }
 
 fn imageDetail(s: *app.State, c: *ui.Context) void {
