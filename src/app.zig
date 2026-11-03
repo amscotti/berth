@@ -12,14 +12,18 @@ const lifetime = @import("engine/lifetime.zig");
 const stats_pool = @import("stats_pool.zig");
 const refresh_mod = @import("refresh.zig");
 const discovery = @import("engine/discovery.zig");
+const events = @import("engine/events.zig");
 const format = @import("ui/format.zig");
 const widgets = @import("ui/widgets.zig");
 const layout = @import("ui/layout.zig");
 const History = @import("ui/history.zig").History;
 const host = @import("host/host.zig");
 const tabs = @import("tabs.zig");
-const runtimes_mod = @import("runtimes.zig");
 const session = @import("session.zig");
+const ops = @import("ops.zig");
+const bulk = @import("bulk.zig");
+const logs = @import("logs.zig");
+const image_tasks = @import("image_tasks.zig");
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -85,6 +89,20 @@ pub const State = struct {
     /// Recomputed once per frame from the window's width; views read it
     /// instead of guessing how much room the rail and inspector took.
     layout: layout.Widths = .{},
+    /// Engine lifecycle commands, one at a time.
+    ops: ops.State = .{},
+    /// Container checkbox mode and its pending bulk action.
+    bulk: bulk.State = .{},
+    /// The menu-bar mini-monitor, where the platform has one.
+    tray: ?*nanoui.Tray = null,
+    /// Pull and run image jobs and their dialog text.
+    image_tasks: image_tasks.State = .{},
+    /// A headless harness action (`BERTH_PULL`, `BERTH_RUN_IMAGE`) waiting for
+    /// the first snapshot, when a client exists to run it against.
+    pending_image: image_tasks.Pending = .none,
+    /// Set first in teardown: AppKit closes the window after the state is
+    /// gone, and that close callback must not touch freed memory.
+    closing: bool = false,
     sort_containers: widgets.Sort = .{ .key = 1 },
     sort_images: widgets.Sort = .{ .key = 1 },
     sort_volumes: widgets.Sort = .{ .key = 1 },
@@ -128,6 +146,7 @@ pub const State = struct {
     images: []api.Image = &.{},
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
+    events: events.Feed = .{},
     df: ?api.Df = null,
     /// A df may survive one arena rotation; drop it on the next failed pass.
     df_stale: bool = false,
@@ -137,12 +156,16 @@ pub const State = struct {
     /// Set by main: rebuilds the window when the appearance changes, because
     /// the theme is a window-creation option, not something to mutate.
     recreate: ?*const fn (*State) void = null,
+    /// The content size the closed window had, so the tray's reopen puts it
+    /// back where the user arranged it.
+    last_size: ?[2]f64 = null,
 
     /// The row whose detail pane is open; the meaning depends on `detail_kind`.
     detail_kind: DetailKind = .container,
     selected: ?[]const u8 = null,
     selected_name: []const u8 = "",
     log_text: []const u8 = "",
+    log_opts: logs.State = .{},
     /// Logs are owned by the state, not an arena: they must survive a snapshot
     /// swap, and are refreshed only when the selection changes or on request.
     log_buf: ?[]u8 = null,
@@ -191,13 +214,6 @@ pub const State = struct {
             .light => ui.Theme.light,
             .dark => ui.Theme.dark_theme,
         };
-    }
-
-    /// Resolves the container named in `pending_act` and runs the verb against
-    /// it through the same path the buttons use. Lives in `refresh.zig`, where
-    /// its caller is, so this file stays inside the line rule.
-    pub fn runPendingAct(s: *State) bool {
-        return refresh_mod.pendingAct(s);
     }
 
     /// Saves the choice, then opens the window again with it — after this
@@ -263,7 +279,7 @@ pub const State = struct {
         // The cheap, always-shown fact first: an engine that answers nothing
         // still opens the pane with what the list already knows.
         s.loadLifetime(ct.Id);
-        s.loadLogs(ct.Id);
+        logs.load(s, ct.Id);
     }
 
     /// One inspect per selection: the restart count and the exact start time
@@ -279,7 +295,7 @@ pub const State = struct {
         s.detail_kind = .image;
         s.selected = im.Id;
         s.selected_name = if (im.dangling()) "untagged" else im.tag();
-        s.clearLogs();
+        logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
         s.redraw();
@@ -289,7 +305,7 @@ pub const State = struct {
         s.detail_kind = .volume;
         s.selected = v.Name;
         s.selected_name = v.Name;
-        s.clearLogs();
+        logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
         s.redraw();
@@ -299,7 +315,7 @@ pub const State = struct {
         s.detail_kind = .network;
         s.selected = if (n.Id.len > 0) n.Id else n.Name;
         s.selected_name = n.Name;
-        s.clearLogs();
+        logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
         s.redraw();
@@ -309,18 +325,10 @@ pub const State = struct {
         s.detail_kind = .container;
         s.selected = null;
         s.selected_name = "";
-        s.clearLogs();
+        logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
         s.redraw();
-    }
-
-    /// Logs are read on demand, not on every refresh: the copy belongs to the
-    /// state so a snapshot swap cannot invalidate it.
-    pub fn reloadLogs(s: *State) void {
-        if (s.detail_kind != .container) return;
-        const id = s.selected orelse return;
-        s.loadLogs(id);
     }
 
     /// The pane's raw JSON, on the same terms: read on demand, owned by the
@@ -351,38 +359,9 @@ pub const State = struct {
         s.redraw();
     }
 
-    fn loadLogs(s: *State, id: []const u8) void {
-        s.clearLogs();
-        var client = s.client orelse return;
-        const text = client.logs(id, 200) catch {
-            s.log_text = "could not read this container's logs";
-            s.redraw();
-            return;
-        };
-        const copy = s.gpa.dupe(u8, text) catch {
-            s.log_text = "could not read this container's logs";
-            s.redraw();
-            return;
-        };
-        s.log_buf = copy;
-        s.log_text = copy;
-        s.redraw();
-    }
-
     /// The view the window calls every frame.
     pub fn view(s: *State, c: *ui.Context) void {
         shell.view(s, c);
-    }
-
-    pub fn dropRuntimes(s: *State) void {
-        runtimes_mod.drop(s);
-    }
-
-    /// Free the log copy that belongs to the current selection.
-    pub fn clearLogs(s: *State) void {
-        if (s.log_buf) |buf| s.gpa.free(buf);
-        s.log_buf = null;
-        s.log_text = "";
     }
 
     /// Same lifetime as the logs: the pane's JSON must survive snapshot swaps
@@ -410,10 +389,12 @@ pub const State = struct {
         s.images = &.{};
         s.volumes = &.{};
         s.networks = &.{};
+        s.events = .{};
         s.df = null;
         s.df_stale = false;
         s.history.clearEngine();
         s.clearPending();
+        s.bulk.clear();
         s.prune_open = false;
         s.error_text = "";
         // Nothing from the old engine is on screen any more: the views show
@@ -421,7 +402,7 @@ pub const State = struct {
         s.last_update = 0;
         s.selected = null;
         s.selected_name = "";
-        s.clearLogs();
+        logs.clear(s);
         s.clearInspect();
         if (s.client) |*c| c.alloc = s.arena.allocator();
     }

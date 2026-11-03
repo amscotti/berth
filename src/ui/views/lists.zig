@@ -10,7 +10,9 @@ const widgets = @import("../widgets.zig");
 const search = @import("search.zig");
 const metrics = @import("metrics.zig");
 const columns = @import("columns.zig");
+const bulk = @import("../../bulk.zig");
 const sorting = @import("sorting.zig");
+const create = @import("create.zig");
 const shell = @import("../shell.zig");
 
 const ROW = 44.0;
@@ -44,6 +46,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     // The rows this filter keeps, chosen once so the count and the list agree.
     // The search query ANDs with the chip: both narrow what is on screen.
     const q = c.alloc().dupe(u8, s.search.containers.text()) catch "";
+    s.bulk.retain(s.containers);
     var shown: [512]*const api.Container = undefined;
     var n: usize = 0;
     for (s.containers) |*ct| {
@@ -87,7 +90,23 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
             s.redraw();
         }
     }
+    const select_chip = ui.div(c).row().h(24).px(10).itemsCenter().rounded(12)
+        .bg(if (s.bulk.enabled) c.theme.accent.alpha(0.16) else c.theme.surface_hover);
+    ui.text(c, "Select", .{
+        .size = 11.5,
+        .weight = if (s.bulk.enabled) .medium else .regular,
+        .color = if (s.bulk.enabled) c.theme.accent else c.theme.text,
+    });
+    if (select_chip.clicked() and !s.bulk.running()) {
+        s.bulk.enabled = !s.bulk.enabled;
+        s.bulk.clear();
+        s.clearPending();
+        s.redraw();
+    }
+    select_chip.end();
     chips.end();
+
+    if (s.bulk.enabled or s.bulk.running()) bulkBar(s, c);
 
     if (s.error_text.len > 0 and s.containers.len == 0) widgets.errorBanner(c, s.error_text);
 
@@ -124,8 +143,8 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         .desc = s.sort_containers.desc,
     }, sorting.ContainerSort.lessThan);
 
-    var col_buf: [10]widgets.Col = undefined;
-    const cols = columns.containers(width, any_project, &col_buf);
+    var col_buf: [11]widgets.Col = undefined;
+    const cols = columns.containers(width, any_project, s.bulk.enabled, &col_buf);
     widgets.tableHeader(c, cols.header, &s.sort_containers);
 
     var rows = ui.list(c, .{ .count = n, .row_height = ROW });
@@ -137,8 +156,14 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
             .control();
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
-        if (row.clicked()) s.select(&ct);
+        if (row.clicked()) {
+            if (s.bulk.enabled) {
+                s.bulk.toggle(ct.Id);
+                s.redraw();
+            } else s.select(&ct);
+        }
 
+        if (cols.select) checkboxCell(s, c, &ct, cols.check);
         metrics.nameCell(c, &ct, cols.name);
         widgets.pillCell(c, ct.health() orelse ct.State, cols.state);
         const st = app.statFor(s, ct.Id);
@@ -178,6 +203,56 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         actions(s, c, &ct, cols.actions);
     }
     rows.end();
+}
+
+fn bulkBar(s: *app.State, c: *ui.Context) void {
+    const bar = ui.div(c).row().wFull().itemsCenter().gap(6).pb(8);
+    if (s.bulk.running()) {
+        ui.text(c, c.print("{s} containers…", .{bulk.runningLabel(&s.bulk)}), .{
+            .size = 11.5,
+            .weight = .medium,
+            .color = .hex(0xff9f0a),
+        });
+        bar.end();
+        return;
+    }
+    ui.text(c, c.print("{d} selected", .{s.bulk.count}), .{
+        .size = 11.5,
+        .weight = .medium,
+        .color = if (s.bulk.count > 0) c.theme.text else c.theme.muted,
+    });
+    ui.spacer(c);
+    if (s.bulk.count == 0) {
+        ui.text(c, "check rows to start, stop or delete them together", .{
+            .size = 11,
+            .color = c.theme.muted,
+            .truncate = .ellipsis,
+        });
+    } else {
+        if (smallButton(c, "Start", false)) bulk.startSelected(s);
+        if (smallButton(c, "Stop", false)) bulk.stopSelected(s);
+        if (smallButton(c, "Delete", true)) bulk.deleteSelected(s);
+        if (smallButton(c, "Cancel", false)) {
+            s.bulk.clear();
+            s.redraw();
+        }
+    }
+    bar.end();
+}
+
+fn checkboxCell(s: *app.State, c: *ui.Context, ct: *const api.Container, width: f32) void {
+    const slot = ui.div(c).row().w(width).h(24).itemsCenter();
+    const on = s.bulk.has(ct.Id);
+    const box = ui.div(c).row().w(18).h(18).center().rounded(5)
+        .bg(if (on) c.theme.accent else c.theme.surface)
+        .border(if (on) c.theme.accent else c.theme.border).control();
+    if (on) ui.icon(c, "checkmark", .{ .size = 11, .color = c.theme.accent_text });
+    if (box.clicked()) {
+        s.bulk.toggle(ct.Id);
+        s.redraw();
+    }
+    box.end();
+    slot.end();
 }
 
 /// Three verbs fit the slot, whichever state the row is in. Pause and Resume
@@ -238,13 +313,14 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         .placeholder = searchPlaceholder(c, "images", box_w),
         .width = box_w,
     })) s.redraw();
+    create.card(s, c);
 
     if (s.error_text.len > 0 and s.images.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.images.len == 0) {
         if (s.error_text.len > 0) {
             _ = widgets.emptyStateAction(c, "doc", "Engine not answering", "Check the engine, then refresh from the rail", null);
         } else {
-            _ = widgets.emptyStateAction(c, "doc", "No images", "docker pull alpine", null);
+            _ = widgets.emptyStateAction(c, "doc", "No images", "Pull a reference in the card above", null);
         }
         return;
     }

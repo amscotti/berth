@@ -69,10 +69,11 @@ container detail with the last 200 log lines, light and dark themes.
 
 ## What is not built yet
 
-Text search, an Events view (`/events` is unwired), Compose `up`/`down`, a DMG,
-code signing and notarization. `docs/UI-REVIEW.md` also lists the design work
-that is knowingly unfinished — the list is a table rather than a monitor at
-forty containers, actions always visible on every row.
+Compose `up`/`down`, a terminal (embedded or "Open in Terminal"), the macOS
+notification centre, true streaming log follow, a DMG, code signing and
+notarization. `docs/UI-REVIEW.md` also lists the design work that is knowingly
+unfinished — the list is a table rather than a monitor at forty containers,
+actions always visible on every row.
 
 ## Screenshots without a display
 

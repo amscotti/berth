@@ -79,7 +79,12 @@ pub const Client = struct {
             // {"message":"…"}; unwrap when they do so the UI shows words, not
             // the envelope.
             const Message = struct { message: []const u8 = "" };
-            if (std.json.parseFromSliceLeaky(Message, self.alloc, res.body, .{ .ignore_unknown_fields = true })) |m| {
+            if (std.json.parseFromSliceLeaky(Message, self.alloc, res.body, .{
+                .ignore_unknown_fields = true,
+                // Without this the parsed message can point into `res.body`,
+                // which is freed on the next line and takes the diagnosis with it.
+                .allocate = .alloc_always,
+            })) |m| {
                 self.err_body = if (m.message.len > 0) m.message else (self.alloc.dupe(u8, res.body) catch "");
             } else |_| {
                 self.err_body = self.alloc.dupe(u8, res.body) catch "";
@@ -153,6 +158,16 @@ pub const Client = struct {
         return self.get([]Network, "/networks");
     }
 
+    /// The events of an interval, one JSON object per line. `until` is what
+    /// keeps this from turning into the streaming endpoint.
+    pub fn events(self: *Client, since: i64, until: i64) ![]const u8 {
+        const p = try std.fmt.allocPrint(self.gpa, "/events?since={d}&until={d}", .{ since, until });
+        defer self.gpa.free(p);
+        // Short: a VM whose clock trails the host can hold this open until it
+        // catches up, and that must cost one pass, not the whole chain.
+        return self.callOptsTimeout("GET", p, "", 4 << 20, false, 3);
+    }
+
     pub fn df(self: *Client) !Df {
         // Shorter than the default: df walks every store, and on a stalled
         // forwarder it is the call that used to freeze the window. Missing
@@ -171,8 +186,8 @@ pub const Client = struct {
 
     /// The last `tail` lines. Logs go through the arena like everything else,
     /// so the view can hold them for the frame without copying.
-    pub fn logs(self: *Client, id: []const u8, tail: usize) ![]const u8 {
-        const p = try std.fmt.allocPrint(self.gpa, "/containers/{s}/logs?stdout=1&stderr=1&timestamps=0&tail={d}", .{ id, tail });
+    pub fn logs(self: *Client, id: []const u8, tail: usize, timestamps: bool) ![]const u8 {
+        const p = try std.fmt.allocPrint(self.gpa, "/containers/{s}/logs?stdout=1&stderr=1&timestamps={d}&tail={d}", .{ id, @as(u8, if (timestamps) 1 else 0), tail });
         defer self.gpa.free(p);
         const body = try self.call("GET", p, "", 4 * 1024 * 1024);
         defer self.gpa.free(body);

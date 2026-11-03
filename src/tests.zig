@@ -7,6 +7,14 @@ test {
     _ = @import("engine/discovery.zig");
     _ = @import("engine/prune.zig");
     _ = @import("engine/volumes.zig");
+    _ = @import("engine/events.zig");
+    _ = @import("engine/image_ops.zig");
+    _ = @import("image_tasks.zig");
+    _ = @import("image_refs.zig");
+    _ = @import("engine/command.zig");
+    _ = @import("ops.zig");
+    _ = @import("bulk.zig");
+    _ = @import("tray.zig");
     _ = @import("engine/inspect.zig");
     _ = @import("engine/lifetime.zig");
     _ = @import("tabs.zig");
@@ -16,6 +24,8 @@ test {
     _ = @import("ui/views/sorting.zig");
     _ = @import("ui/views/search.zig");
     _ = @import("ui/views/config.zig");
+    _ = @import("ui/views/events.zig");
+    _ = @import("ui/views/create.zig");
     _ = @import("ui/layout.zig");
     _ = @import("ui/detail.zig");
     _ = @import("ui/views/stacks.zig");

@@ -13,10 +13,12 @@ const lists = @import("views/lists.zig");
 const panels = @import("views/panels.zig");
 const config = @import("views/config.zig");
 const stacks = @import("views/stacks.zig");
+const events_view = @import("views/events.zig");
+const bulk = @import("../bulk.zig");
 
 const TABS = [_]app.Tab{
-    .overview, .containers, .images,   .volumes,  .networks,
-    .stacks,   .disk,       .runtimes, .settings,
+    .overview, .containers, .images, .volumes,  .networks,
+    .events,   .stacks,     .disk,   .runtimes, .settings,
 };
 
 pub fn view(s: *app.State, c: *ui.Context) void {
@@ -31,7 +33,11 @@ pub fn view(s: *app.State, c: *ui.Context) void {
     rail(s, c);
     const main = ui.div(c).column().grow().hFull().px(20).pt(16).pb(12).gap(4);
     header(s, c);
-    if (s.pending) |p| confirmDialog(s, c, p.verb, p.name);
+    if (s.bulk.pending != null) {
+        bulk.confirmDialog(s, c);
+    } else if (s.pending) |p| {
+        confirmDialog(s, c, p.verb, p.name);
+    }
     if (s.prune_open) pruneDialog(s, c);
     body(s, c);
     main.end(); // before the detail pane, or the pane becomes a child of it
@@ -133,6 +139,7 @@ fn railFigure(s: *app.State, c: *ui.Context, tab: app.Tab) []const u8 {
         .images => c.print("{d}", .{s.images.len}),
         .volumes => c.print("{d}", .{s.volumes.len}),
         .networks => c.print("{d}", .{s.networks.len}),
+        .events => c.print("{d}", .{s.events.items.len}),
         .stacks => c.print("{d}", .{projectCount(s)}),
         .disk => if (storeBytes(s)) |n| format.bytes(c, n) else "—",
         .runtimes => c.print("{d}", .{reachableCount(s)}),
@@ -182,6 +189,7 @@ fn tabKind(tab: app.Tab) theme.Kind {
         .images => .images,
         .volumes => .volumes,
         .networks => .networks,
+        .events => .events,
         .stacks => .stacks,
         .disk => .disk,
         .runtimes => .runtimes,
@@ -257,6 +265,7 @@ fn body(s: *app.State, c: *ui.Context) void {
         .images => lists.images(s, c),
         .volumes => lists.volumes(s, c),
         .networks => lists.networks(s, c),
+        .events => events_view.view(s, c),
         // The lists scroll themselves; the panel pages are one column that
         // can be taller than a short window, so they get a page scroll.
         .overview, .stacks, .disk, .runtimes, .settings => {

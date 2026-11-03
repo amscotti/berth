@@ -20,6 +20,9 @@ pub fn ofWidth(width: f32) Density {
 
 pub const ContainerCols = struct {
     header: []const widgets.Col,
+    /// True when a checkbox column was prepended for bulk selection.
+    select: bool = false,
+    check: f32 = 0,
     name: f32,
     state: f32,
     cpu: f32,
@@ -105,7 +108,7 @@ const tiny_cols = [_]widgets.Col{
     .{ .name = "ACTIONS", .width = 140, .flex_before = true },
 };
 
-pub fn containers(width: f32, any_project: bool, out: *[10]widgets.Col) ContainerCols {
+pub fn containers(width: f32, any_project: bool, select: bool, out: *[11]widgets.Col) ContainerCols {
     var result: ContainerCols = switch (ofWidth(width)) {
         .full => if (any_project)
             .{ .header = &full_project, .name = 170, .state = 66, .cpu = 50, .mem = 62, .net = 82, .disk = 82, .project = 90, .ports = 140, .actions = 140 }
@@ -127,7 +130,23 @@ pub fn containers(width: f32, any_project: bool, out: *[10]widgets.Col) Containe
     const grow = @min(@max(0, width - tableWidth(src)), 110);
     out[0].width += grow;
     result.name += grow;
-    result.header = out[0..src.len];
+    if (!select) {
+        result.header = out[0..src.len];
+        return result;
+    }
+    // The checkbox borrows the name column's width, so the table still fits
+    // whatever window it was sized for; selection is a mode, not a wider row.
+    var i = src.len;
+    while (i > 0) {
+        out[i] = out[i - 1];
+        i -= 1;
+    }
+    out[1].width -= 44;
+    result.name -= 44;
+    out[0] = .{ .name = "", .width = 34 };
+    result.select = true;
+    result.check = 34;
+    result.header = out[0 .. src.len + 1];
     return result;
 }
 
@@ -261,14 +280,14 @@ test "the default window gets every column; a small one gives up the least-used"
     try std.testing.expectEqual(Density.compact, ofWidth(510));
     try std.testing.expectEqual(Density.tiny, ofWidth(472));
 
-    var full_buf: [10]widgets.Col = undefined;
-    const full = containers(1040, false, &full_buf);
+    var full_buf: [11]widgets.Col = undefined;
+    const full = containers(1040, false, false, &full_buf);
     try std.testing.expectEqual(@as(f32, 140), full.ports);
     try std.testing.expectEqual(@as(f32, 38), full.pids);
     try std.testing.expectEqual(@as(f32, 170), full.name); // no spare at this width
 
-    var tiny_buf: [10]widgets.Col = undefined;
-    const tiny = containers(472, false, &tiny_buf);
+    var tiny_buf: [11]widgets.Col = undefined;
+    const tiny = containers(472, false, false, &tiny_buf);
     try std.testing.expectEqual(@as(f32, 0), tiny.mem);
     try std.testing.expectEqual(@as(f32, 0), tiny.ports);
     try std.testing.expectEqual(@as(f32, 156), tiny.name); // twenty-four spare points, capped at 110
@@ -277,13 +296,22 @@ test "the default window gets every column; a small one gives up the least-used"
 test "every density fits the width that chose it" {
     const widths = [_]f32{ 1040, 832, 770, 510, 472 };
     for (widths) |width| {
-        var buf: [10]widgets.Col = undefined;
-        const cols = containers(width, false, &buf);
+        var buf: [11]widgets.Col = undefined;
+        const cols = containers(width, false, false, &buf);
         try std.testing.expect(tableWidth(cols.header) <= width);
     }
-    var buf: [10]widgets.Col = undefined;
-    const project = containers(1040, true, &buf);
+    var buf: [11]widgets.Col = undefined;
+    const project = containers(1040, true, false, &buf);
     try std.testing.expect(tableWidth(project.header) <= 1040);
+}
+
+test "selection mode borrows the name column's width, not the table's" {
+    var buf: [11]widgets.Col = undefined;
+    const cols = containers(1040, false, true, &buf);
+    try std.testing.expectEqual(@as(usize, 11), cols.header.len);
+    try std.testing.expectEqual(@as(f32, 34), cols.header[0].width);
+    try std.testing.expectEqual(@as(f32, 126), cols.header[1].width); // the name lends 44 to the checkbox
+    try std.testing.expect(tableWidth(cols.header) <= 1040);
 }
 
 test "the other tables fit the smallest pane" {

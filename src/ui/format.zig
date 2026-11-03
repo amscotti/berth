@@ -108,6 +108,16 @@ pub fn clock(c: *ui.Context, unix_seconds: i64) []const u8 {
     return clockFrom(c, localTm(unix_seconds) orelse return "—");
 }
 
+/// The same clock into a caller's buffer, for code without a frame context.
+pub fn clockBuf(buf: []u8, unix_seconds: i64) []const u8 {
+    const tm = localTm(unix_seconds) orelse return "—";
+    return std.fmt.bufPrint(buf, "{d:0>2}:{d:0>2}:{d:0>2}", .{
+        @as(u32, @intCast(tm.tm_hour)),
+        @as(u32, @intCast(tm.tm_min)),
+        @as(u32, @intCast(tm.tm_sec)),
+    }) catch "—";
+}
+
 fn clockFrom(c: *ui.Context, tm: Tm) []const u8 {
     return c.print("{d:0>2}:{d:0>2}:{d:0>2}", .{
         @as(u32, @intCast(tm.tm_hour)),

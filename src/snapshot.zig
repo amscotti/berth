@@ -4,6 +4,7 @@
 const std = @import("std");
 const api = @import("engine/api.zig");
 const stats_pool = @import("stats_pool.zig");
+const events = @import("engine/events.zig");
 
 pub const Snapshot = struct {
     arena: std.heap.ArenaAllocator,
@@ -12,6 +13,12 @@ pub const Snapshot = struct {
     images: []api.Image = &.{},
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
+    events: []events.Event = &.{},
+    events_since: i64 = 0,
+    events_until: i64 = 0,
+    logs: []const u8 = &.{},
+    logs_id: []const u8 = &.{},
+    logs_timestamps: bool = false,
     df: ?api.Df = null,
 
     pub fn init(gpa: std.mem.Allocator) Snapshot {
