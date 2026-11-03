@@ -15,6 +15,7 @@ const events_feed = @import("events_feed.zig");
 const logs = @import("logs.zig");
 const tray = @import("tray.zig");
 const image_tasks = @import("image_tasks.zig");
+const host = @import("host/host.zig");
 const Snapshot = @import("snapshot.zig").Snapshot;
 const Stat = stats_pool.Sample;
 
@@ -135,6 +136,10 @@ fn load(job: *Job) void {
     }
 
     job.snapshot.df = client.df() catch null;
+
+    // Engine helper memory: `ps` on macOS, a /proc walk on Linux. Sampled here
+    // on the worker; it is the one host figure that needs a process spawn.
+    job.snapshot.engine_rss = host.engineRss(job.io, job.gpa);
 
     // Events are an interval, not a store: a failed call must not abort the
     // snapshot, and the cursor only moves when the interval actually arrived.
@@ -263,6 +268,8 @@ fn commit(s: *app.State, job: *Job) void {
     s.volumes = snap.volumes;
     s.networks = snap.networks;
     s.df = next_df;
+    // A failed `ps` leaves the last known figure rather than flashing zero.
+    if (snap.engine_rss) |rss| s.engine_rss = rss;
     // `/volumes` does not carry size; the df does. Use the last good df even
     // when this pass timed out, or every volume row loses its size again.
     if (s.df) |df| volumes_mod.mergeVolumeUsage(s.volumes, df);

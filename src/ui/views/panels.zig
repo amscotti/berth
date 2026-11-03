@@ -143,9 +143,10 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
     });
     head.end();
 
-    // Three segments now: what the containers hold, what the engine itself
-    // holds, and the rest of the machine. On a Mac the engine's share is its
-    // VM; here it is the daemon's own processes.
+    // Three segments: what the containers hold (a working set measured inside
+    // the engine's VM on macOS), the engine's own host processes, and the rest
+    // of the machine. Guest RAM is never counted into the engine segment — it
+    // carries the containers, which are already the first segment.
     const in_containers = @min(containers_mem, used);
     const engine = @min(s.host_sample.engine_rss, used - in_containers);
     const elsewhere = used - in_containers - engine;
@@ -170,7 +171,7 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
     }
     bar.end();
 
-    ui.text(c, c.print("containers {s} · engine {s} · elsewhere {s}", .{
+    ui.text(c, c.print("containers {s} · engine helpers {s} · elsewhere {s}", .{
         format.bytes(c, in_containers),
         format.bytes(c, engine),
         format.bytes(c, elsewhere),

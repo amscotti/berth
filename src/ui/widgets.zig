@@ -21,34 +21,67 @@ pub fn pageHeader(c: *ui.Context, heading: []const u8, subtitle: []const u8) voi
     _ = pageHeaderSearch(c, heading, subtitle, null);
 }
 
-/// A list view's header with its search field. Returns true when the field's
-/// clear button was pressed, so the view can redraw with the filter gone.
-pub fn pageHeaderSearch(c: *ui.Context, heading: []const u8, subtitle: []const u8, box: ?SearchBox) bool {
+/// The page header's controls this frame, so a view can tell a cleared search
+/// from a pressed action button.
+pub const HeaderAction = struct {
+    /// The search field's clear button was pressed (the text now empty).
+    cleared: bool = false,
+    /// The optional action button (New volume, New network) was pressed.
+    action: bool = false,
+};
+
+/// A list view's header with its search field (and an optional action button,
+/// which shares the row rather than adding a second toolbar).
+pub fn pageHeaderSearch(c: *ui.Context, heading: []const u8, subtitle: []const u8, box: ?SearchBox) HeaderAction {
     const h = ui.div(c).row().wFull().itemsCenter().gap(10).pb(10);
     defer h.end();
     ui.text(c, heading, .{ .size = title, .weight = .semibold });
     if (subtitle.len > 0) ui.text(c, subtitle, .{ .size = muted, .color = c.theme.muted });
     ui.spacer(c);
-    const search = box orelse return false;
+    const search = box orelse return .{};
+    var result: HeaderAction = .{};
+    if (search.action_label.len > 0) {
+        const button = ui.div(c).row().h(26).px(10).itemsCenter().gap(5).rounded(13).bg(c.theme.surface_hover).control();
+        if (search.action_icon.len > 0) ui.icon(c, search.action_icon, .{ .size = 10, .color = c.theme.text });
+        ui.text(c, search.action_label, .{ .size = 11.5, .color = c.theme.text });
+        result.action = button.clicked();
+        button.end();
+    }
     _ = ui.textField(c, search.buffer, .{
         .placeholder = search.placeholder,
         .width = .{ .px = search.width },
         .size = 12.5,
     });
-    if (search.buffer.text().len == 0) return false;
+    if (search.buffer.text().len == 0) return result;
     const clear = ui.div(c).row().w(22).h(22).center().rounded(11).bg(c.theme.surface_hover).control();
     ui.icon(c, "xmark", .{ .size = 10, .color = c.theme.muted });
     const clicked = clear.clicked();
     clear.end();
     if (clicked) search.buffer.clear();
-    return clicked;
+    result.cleared = clicked;
+    return result;
 }
 
 pub const SearchBox = struct {
     buffer: *ui.TextBuffer,
     placeholder: []const u8,
     width: f32 = 190,
+    /// A page-level action beside the search box — "New volume".
+    action_label: []const u8 = "",
+    action_icon: []const u8 = "",
 };
+
+/// One shape for every dialog action: same width, same height, so Cancel and
+/// Confirm sit on one baseline instead of sizing themselves to their word.
+pub fn dialogButton(c: *ui.Context, label: []const u8, danger: bool, primary: bool) bool {
+    const bg = if (!primary) c.theme.surface_hover else if (danger) c.theme.danger else c.theme.accent;
+    const fg = if (primary) c.theme.accent_text else c.theme.text;
+    const box = ui.div(c).row().w(92).h(28).center().rounded(14).bg(bg).control();
+    ui.text(c, label, .{ .size = 12, .weight = if (primary) .medium else .regular, .color = fg });
+    const clicked = box.clicked();
+    box.end();
+    return clicked;
+}
 
 /// The column strip above a list. Widths are fixed so numbers line up; the
 /// last column takes the rest.

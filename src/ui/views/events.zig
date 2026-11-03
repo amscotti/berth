@@ -69,7 +69,7 @@ pub fn view(s: *app.State, c: *ui.Context) void {
         .buffer = &s.search.events,
         .placeholder = if (s.layout.content < 760) "Search" else "Search events",
         .width = if (s.layout.content < 760) 132 else 190,
-    })) s.redraw();
+    }).cleared) s.redraw();
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
     if (s.events.items.len == 0) {

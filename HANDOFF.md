@@ -69,9 +69,10 @@ container detail with the last 200 log lines, light and dark themes.
 
 ## What is not built yet
 
-Compose `up`/`down`, a terminal (embedded or "Open in Terminal"), the macOS
-notification centre, true streaming log follow, a DMG, code signing and
-notarization. `docs/UI-REVIEW.md` also lists the design work that is knowingly
+Compose `up`/`down`, embedded terminal output (the Terminal action opens the
+user's own terminal with a socket-pinned `exec`), the macOS notification
+centre, true streaming log follow, a DMG, code signing and notarization.
+`docs/UI-REVIEW.md` also lists the design work that is knowingly
 unfinished — the list is a table rather than a monitor at forty containers,
 actions always visible on every row.
 

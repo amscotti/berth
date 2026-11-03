@@ -36,6 +36,7 @@ pub fn destroy(s: *app.State) void {
     logs.clear(s);
     s.log_opts.deinit();
     s.image_tasks.deinit();
+    s.create_dialog.deinit();
     s.clearInspect();
     s.search.deinit();
     if (s.retired) |*r| r.deinit();

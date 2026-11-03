@@ -104,7 +104,7 @@ A 45% track that reads as a quiet baseline on white reads as noise on
 
 **9. Empty states were inconsistent in tone.**
 Now every one names the state and the next action:
-*No volumes — volumes appear here once a container declares one*,
+*No volumes — create one above, or run a container that declares one*,
 *None match this filter — All shows every container*.
 
 ## What is still wrong, knowingly
@@ -251,3 +251,48 @@ menu-bar chrome, not part of these snapshots.
 
 Evidence: `images-light.png`, `images-dark.png`, `images-960.png`,
 `events-light.png`, `events-dark.png`.
+
+## Tier 3, wave 1
+
+Walked at 1280 in both themes and at 960×600 with the inspector open — the
+472-point content width is the real narrow case, not the window minimum.
+
+- **Volume and network creation.** The page-header action sits beside the
+  search box at 1280 and 960, clear button included; the dialog is one name,
+  a hint line and Cancel/Create on one baseline. Created both resources
+  through the dialog against the live engine; duplicate volumes are refused
+  with the volume's name before any request, since Docker's create is
+  idempotent.
+- **Stacks.** Start all / Stop all appear only when they would do something.
+  Stop all confirms with the project and a live count ("1 container in
+  berth-w4-shop will be stopped" — the plural bug the first pass caught is
+  fixed). At 960 with the inspector the working directory collapses and the
+  project name gets the room; both buttons stay inside the card.
+- **Terminal.** The container inspector's Terminal action opened Terminal.app
+  with `docker -H unix://… exec -it berth-demo-web sh`; verified the window's
+  own title carries the socket-pinned command.
+- **Host bar.** The engine segment now shows the engine's host processes
+  (≈45–93 MiB of `limactl` here) and the caption says "engine helpers". The
+  segment deliberately excludes the VM's guest RAM: the containers are
+  measured inside it, and counting the VM again would double-count them.
+  Values checked against `ps` directly.
+- **Narrow layouts** for Volumes, Networks and Stacks with the inspector open
+  are in `volumes-960.png`, `networks-960.png` and `stacks-960.png`.
+
+Evidence: `volumes-light.png`, `volumes-dialog-light.png`,
+`networks-light.png`, `networks-dialog-dark.png`, `stacks-light.png`,
+`stacks-960.png`, `detail-terminal.png`, `overview.png`, `overview-dark.png`.
+
+## Design review: the creation card, condensed
+
+- **Get and run images is collapsed by default.** One row — sparkles, title,
+  "Pull an image, or run one" and a chevron — so the Images page's job is the
+  list. Run… from an image's inspector opens the card with the reference
+  prefilled; clicking the header toggles it. `images-light.png` is the default
+  view now; the expanded card is in `images-card-open-*.png`.
+- **Expanded, the run options share a real grid.** Image/Name and
+  Ports/Volumes use the same computed column width, so the right edges line
+  up; Env spans the card; the hint sits bottom-left and Run bottom-right,
+  sharing Pull's right edge instead of crowding the Env row.
+- **Stacks:** Start all is the accent primary action, Stop all neutral.
+- **Host bar:** the engine segment is labelled "engine helpers".

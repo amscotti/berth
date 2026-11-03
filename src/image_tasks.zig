@@ -84,6 +84,8 @@ pub fn startPull(s: *app.State) void {
 
 pub fn prepareRun(s: *app.State, image: []const u8) void {
     s.image_tasks.run_image.set(image);
+    // A prefill is only useful if the form is visible: open the card for it.
+    s.creation_card_open = true;
     s.redraw();
 }
 

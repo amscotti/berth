@@ -154,6 +154,58 @@ pub const Sampler = struct {
     }
 };
 
+/// The engine's own host processes, matched by executable name. Guest-RAM
+/// carriers are deliberately absent: on QEMU the VM's memory is the qemu
+/// process, and on Virtualization.framework it is an XPC process no engine
+/// labels. Counting either here would put the containers' guest memory in
+/// "engine" as well, and the host bar subtracts containers separately.
+pub const ENGINE_PROCESSES = [_][]const u8{
+    "limactl",
+    "com.docker.backend",
+    "vpnkit",
+    "gvproxy",
+    "virtiofsd",
+};
+
+/// Null when `ps` cannot run: "unknown" must not render as zero bytes.
+pub fn engineRss(io: std.Io, gpa: std.mem.Allocator) ?u64 {
+    const result = std.process.run(gpa, io, .{
+        .argv = &.{ "/bin/ps", "-axo", "rss=,comm=" },
+    }) catch return null;
+    defer gpa.free(result.stdout);
+    defer gpa.free(result.stderr);
+    if (!result.term.success()) return null;
+    return parseEngineRss(result.stdout);
+}
+
+/// `ps -axo rss=,comm=` rows: KiB, then the executable. The name is the first
+/// word's basename: `comm` is a path for ordinary processes, and some daemons
+/// (the Lima SSH mux, for one) replace it with a title like "ssh: /… [mux]".
+pub fn parseEngineRss(text: []const u8) u64 {
+    var sum: u64 = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \r");
+        if (trimmed.len == 0) continue;
+        const space = std.mem.indexOfScalar(u8, trimmed, ' ') orelse continue;
+        const kb = std.fmt.parseInt(u64, trimmed[0..space], 10) catch continue;
+        const comm = std.mem.trim(u8, trimmed[space..], " ");
+        const name = nameOf(comm);
+        for (ENGINE_PROCESSES) |marker| {
+            if (std.ascii.eqlIgnoreCase(name, marker)) {
+                sum += kb * 1024;
+                break;
+            }
+        }
+    }
+    return sum;
+}
+
+fn nameOf(comm: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, comm, ' ') orelse comm.len;
+    return std.fs.path.basename(comm[0..end]);
+}
+
 test "cpu percent folds user, system and nice into busy" {
     const before = [4]u32{ 100, 50, 800, 50 };
     const after = [4]u32{ 300, 100, 1100, 50 };
@@ -171,4 +223,27 @@ test "cpu percent survives a counter wrap" {
 test "the vm statistics prefix is the REV1 count" {
     try std.testing.expectEqual(@as(mach_msg_type_number_t, 38), vm_info_count);
     try std.testing.expectEqual(@as(usize, 152), @sizeOf(VmStats));
+}
+
+test "engine rss sums the engine's host processes and ignores lookalikes" {
+    const text =
+        "  83008 /opt/homebrew/bin/limactl\n" ++
+        " 264016 /System/Library/Frameworks/Virtualization.framework/com.apple.Virtualization.VirtualMachine\n" ++
+        "   1472 /usr/bin/grep\n" ++
+        " 102400 /usr/local/bin/qemu-system-aarch64\n" ++
+        " 264000 /Applications/OrbStack.app/Contents/MacOS/OrbStack\n" ++
+        "  2048 /Applications/Docker.app/Contents/MacOS/com.docker.backend\n" ++
+        "  1024 /opt/homebrew/bin/vpnkit\n" ++
+        "    12 not-a-number\n";
+    // Guest-RAM carriers (the VZ XPC, qemu, OrbStack's VM) stay out: the host
+    // bar counts container memory separately, so counting the VM's RAM here
+    // would count the same bytes twice. Helpers are matched by name exactly.
+    try std.testing.expectEqual(@as(u64, (83008 + 2048 + 1024) * 1024), parseEngineRss(text));
+    try std.testing.expectEqual(@as(u64, 0), parseEngineRss(""));
+}
+
+test "a titled process is matched by the first word, not its arguments" {
+    const text = "  4096 ssh: /Users/x/.lima/berth/ssh.sock [mux]\n  8192 limactl hostagent berth\n";
+    // The SSH mux is not an engine process; the hostagent's title keeps limactl.
+    try std.testing.expectEqual(@as(u64, 8192 * 1024), parseEngineRss(text));
 }

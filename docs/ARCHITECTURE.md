@@ -32,6 +32,8 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
 | `image_tasks.zig` | pull/create/start as background jobs, the create body |
 | `image_refs.zig` | reference, name and port parsing for the creation card |
+| `create.zig` | the volume/network create dialog and its POSTs |
+| `terminal.zig` | the socket-pinned exec command and terminal launch |
 | `tray.zig` | the menu-bar mini-monitor |
 | `snapshot.zig` | a complete engine snapshot and its arena |
 | `stats_pool.zig` | per-container stats, fetched together |
@@ -40,7 +42,8 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
 | `engine/stats.zig` | stats math, log demux |
 | `engine/discovery.zig` | socket candidates, probing, runtime kinds |
 | `engine/prune.zig` | prune routes and `SpaceReclaimed` parsing |
-| `host/` | host CPU/memory: Linux `/proc`, macOS Mach host statistics |
+| `engine/create.zig` | volume and network creation |
+| `host/` | host CPU/memory and engine-process RSS: Linux `/proc`, macOS Mach + `ps` |
 | `ui/shell.zig` | rail, page frame, inspector, sheets |
 | `ui/views/` | list tables, overview, disk, runtimes, settings, stacks |
 | `ui/` | theme, widgets, format, history, cell graphs |
@@ -128,7 +131,7 @@ by running against a live engine. `docs/ui/` is the visual evidence.
 | 3 | Actions and prune run synchronously on the UI thread | A slow daemon or build-cache prune can stall a frame | Put both behind the job/status pattern |
 | 4 | Stats spawn up to eight threads per pass | Many containers stretch the refresh period; thread churn | Persistent sampler or adaptive concurrency |
 | 5 | No pixel-regression test in CI | Visual regressions still need a human to look | Snapshot every view as an artifact; add a diff gate when stable |
-| 6 | macOS engine RSS is always 0 | The host bar's engine segment is empty on macOS | Attribute the Lima/Docker VM process RSS |
+| 6 | macOS guest RAM belongs to no attributable process | The engine segment is helper-only; the VM's RAM (which holds the containers) sits in "elsewhere" | Documented limitation; Virtualization.framework exposes no per-VM accounting |
 
 Fixed during this review: a failed images/volumes/networks fetch used to
 commit an empty list; it now aborts the snapshot and keeps the previous one.

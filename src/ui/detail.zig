@@ -8,6 +8,7 @@ const app = @import("../app.zig");
 const api = @import("../engine/api.zig");
 const lifetime = @import("../engine/lifetime.zig");
 const image_tasks = @import("../image_tasks.zig");
+const terminal = @import("../terminal.zig");
 const logs = @import("../logs.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
@@ -174,6 +175,7 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         } else if (ct.isRunning()) {
             if (verb(c, "Pause", "pause.fill")) _ = s.actFmt("POST", "/containers/{s}/pause", ct.Id, "Paused");
         }
+        if (ct.isRunning() and verb(c, "Terminal", "terminal")) terminal.open(s, &ct);
         if (s.detail_lifetime) |life| {
             if (life.run_cmd) |cmd| {
                 if (verb(c, "Copy run command", "doc.on.doc")) {

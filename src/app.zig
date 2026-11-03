@@ -18,6 +18,7 @@ const widgets = @import("ui/widgets.zig");
 const layout = @import("ui/layout.zig");
 const History = @import("ui/history.zig").History;
 const host = @import("host/host.zig");
+const create_mod = @import("create.zig");
 const tabs = @import("tabs.zig");
 const session = @import("session.zig");
 const ops = @import("ops.zig");
@@ -97,6 +98,14 @@ pub const State = struct {
     tray: ?*nanoui.Tray = null,
     /// Pull and run image jobs and their dialog text.
     image_tasks: image_tasks.State = .{},
+    /// The volume/network creation dialog: which one is open, and its name.
+    create_dialog: create_mod.State = .{},
+    /// The Images page's creation card starts collapsed; Run… from an image
+    /// opens it, as does clicking its header.
+    creation_card_open: bool = false,
+    /// The engine's host-process RSS, committed with each snapshot; the host
+    /// bar reads it back through the last sample.
+    engine_rss: u64 = 0,
     /// A headless harness action (`BERTH_PULL`, `BERTH_RUN_IMAGE`) waiting for
     /// the first snapshot, when a client exists to run it against.
     pending_image: image_tasks.Pending = .none,
@@ -235,6 +244,7 @@ pub const State = struct {
     /// engine is down, which is exactly when a monitor is being looked at.
     pub fn sampleHost(s: *State) void {
         s.host_sample = s.host.sample(s.io, s.gpa);
+        s.host_sample.engine_rss = s.engine_rss;
         s.redraw();
     }
 
@@ -259,6 +269,7 @@ pub const State = struct {
         // whole machine or the dots and the percentage disagree by N.
         const cores: f32 = if (s.activeRuntime()) |rt| @floatFromInt(@max(rt.info.NCPU, 1)) else 1;
         s.host_sample = s.host.sample(s.io, s.gpa);
+        s.host_sample.engine_rss = s.engine_rss;
         s.history.push(.{
             .cpu = cpu / cores,
             .mem = mem,
@@ -396,6 +407,8 @@ pub const State = struct {
         s.clearPending();
         s.bulk.clear();
         s.prune_open = false;
+        s.create_dialog.open = null;
+        s.engine_rss = 0;
         s.error_text = "";
         // Nothing from the old engine is on screen any more: the views show
         // their skeletons until the new engine's first snapshot lands.
