@@ -36,7 +36,7 @@ three questions without a terminal:
 | **Live figures** | per-container CPU and memory (two-sample deltas, matching `docker stats`), network and disk I/O, PIDs, uptime and restarts, container history graphs, host CPU and memory |
 | **Inspectors** | container facts and logs (follow, local timestamps, search, copy); image, volume and network details; raw JSON behind an Inspect tab |
 | **Actions** | start, stop, pause, resume, restart, delete; open a container's shell in Terminal; open a published port in the browser; copy the `docker run` command; remove an image, volume or network |
-| **Creation** | pull an image reference and run one with name, ports, volumes and environment — background jobs, so a slow registry never freezes the window; create volumes and networks |
+| **Creation** | pull an image reference and run one with name, ports, volumes and environment — background jobs, so a slow registry never freezes the window; create volumes and networks. The card stays collapsed until you ask for it |
 | **Compose** | containers grouped by project label; start all or stop all of a project's containers through the bulk worker |
 | **Cleanup** | prune stopped containers, unused images/volumes/networks and build cache, with reclaimable sizes first |
 | **Refresh** | a worker thread builds the next snapshot; the last complete one stays on screen, so tables never blink or stall |

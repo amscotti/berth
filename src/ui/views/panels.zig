@@ -171,7 +171,7 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
     }
     bar.end();
 
-    ui.text(c, c.print("containers {s} · engine procs {s} · elsewhere {s}", .{
+    ui.text(c, c.print("containers {s} · engine helpers {s} · elsewhere {s}", .{
         format.bytes(c, in_containers),
         format.bytes(c, engine),
         format.bytes(c, elsewhere),

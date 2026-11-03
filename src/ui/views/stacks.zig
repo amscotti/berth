@@ -70,8 +70,9 @@ fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: @impor
     }
     // The one action a Compose project needs from a monitor: start everything
     // that is down, or stop everything that is up, through the bulk worker.
-    if (running < total and projectButton(c, "Start all", "play.fill")) bulk.startProject(s, project);
-    if (running > 0 and projectButton(c, "Stop all", "stop.fill")) bulk.stopProject(s, project);
+    // Start all is the accent primary, like the creation card's Pull and Run.
+    if (running < total and projectButton(c, "Start all", "play.fill", true)) bulk.startProject(s, project);
+    if (running > 0 and projectButton(c, "Stop all", "stop.fill", false)) bulk.stopProject(s, project);
     head.end();
 
     for (s.containers) |ct| {
@@ -87,10 +88,11 @@ fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: @impor
     }
 }
 
-fn projectButton(c: *ui.Context, label: []const u8, icon_name: []const u8) bool {
-    const box = ui.div(c).row().h(24).px(10).itemsCenter().gap(5).rounded(12).bg(c.theme.surface_hover).control();
-    ui.icon(c, icon_name, .{ .size = 9, .color = c.theme.text });
-    ui.text(c, label, .{ .size = 11.5, .color = c.theme.text });
+fn projectButton(c: *ui.Context, label: []const u8, icon_name: []const u8, primary: bool) bool {
+    const box = ui.div(c).row().h(24).px(10).itemsCenter().gap(5).rounded(12)
+        .bg(if (primary) c.theme.accent else c.theme.surface_hover).control();
+    ui.icon(c, icon_name, .{ .size = 9, .color = if (primary) c.theme.accent_text else c.theme.text });
+    ui.text(c, label, .{ .size = 11.5, .color = if (primary) c.theme.accent_text else c.theme.text });
     const clicked = box.clicked();
     box.end();
     return clicked;

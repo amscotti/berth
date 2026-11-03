@@ -100,6 +100,9 @@ pub const State = struct {
     image_tasks: image_tasks.State = .{},
     /// The volume/network creation dialog: which one is open, and its name.
     create_dialog: create_mod.State = .{},
+    /// The Images page's creation card starts collapsed; Run… from an image
+    /// opens it, as does clicking its header.
+    creation_card_open: bool = false,
     /// The engine's host-process RSS, committed with each snapshot; the host
     /// bar reads it back through the last sample.
     engine_rss: u64 = 0,

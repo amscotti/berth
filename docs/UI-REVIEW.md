@@ -272,7 +272,7 @@ Walked at 1280 in both themes and at 960×600 with the inspector open — the
   with `docker -H unix://… exec -it berth-demo-web sh`; verified the window's
   own title carries the socket-pinned command.
 - **Host bar.** The engine segment now shows the engine's host processes
-  (≈45–93 MiB of `limactl` here) and the caption says "engine procs". The
+  (≈45–93 MiB of `limactl` here) and the caption says "engine helpers". The
   segment deliberately excludes the VM's guest RAM: the containers are
   measured inside it, and counting the VM again would double-count them.
   Values checked against `ps` directly.
@@ -282,3 +282,17 @@ Walked at 1280 in both themes and at 960×600 with the inspector open — the
 Evidence: `volumes-light.png`, `volumes-dialog-light.png`,
 `networks-light.png`, `networks-dialog-dark.png`, `stacks-light.png`,
 `stacks-960.png`, `detail-terminal.png`, `overview.png`, `overview-dark.png`.
+
+## Design review: the creation card, condensed
+
+- **Get and run images is collapsed by default.** One row — sparkles, title,
+  "Pull an image, or run one" and a chevron — so the Images page's job is the
+  list. Run… from an image's inspector opens the card with the reference
+  prefilled; clicking the header toggles it. `images-light.png` is the default
+  view now; the expanded card is in `images-card-open-*.png`.
+- **Expanded, the run options share a real grid.** Image/Name and
+  Ports/Volumes use the same computed column width, so the right edges line
+  up; Env spans the card; the hint sits bottom-left and Run bottom-right,
+  sharing Pull's right edge instead of crowding the Env row.
+- **Stacks:** Start all is the accent primary action, Stop all neutral.
+- **Host bar:** the engine segment is labelled "engine helpers".
