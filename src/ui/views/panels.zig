@@ -30,6 +30,9 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     const cpu_share = cpu_sum / (cores * 100.0) * 100.0;
     const connected = if (rt) |r| r.reachable else false;
     const unknown = "—";
+    // Two equal columns: `grow` hands out leftover space after each card's
+    // intrinsic content, which made the CPU card narrower than Memory.
+    const col_w = (s.layout.content - 12) / 2;
 
     const top = ui.div(c).row().wFull().gap(12).pb(12);
     graphCard(
@@ -42,6 +45,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         .cpu,
         c.theme.accent,
         100,
+        col_w,
     );
     graphCard(
         s,
@@ -53,6 +57,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         .mem,
         c.theme.success,
         @floatFromInt(@max(info.MemTotal, 1)),
+        col_w,
     );
     top.end();
 
@@ -68,6 +73,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         .running,
         .hex(0xd9a441),
         @max(s.history.peak(.running) * 2, 4),
+        col_w,
     );
     graphCard(
         s,
@@ -79,6 +85,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         .disk,
         c.theme.muted,
         @max(s.history.peak(.disk) * 1.6, 1),
+        col_w,
     );
     bottom.end();
 
@@ -190,8 +197,9 @@ fn graphCard(
     which: history.Which,
     color: ui.Color,
     scale: ?f32,
+    width: f32,
 ) void {
-    const card = ui.div(c).column().grow().gap(9).p(14).rounded(10).bg(c.theme.surface).border(c.theme.border);
+    const card = ui.div(c).column().w(width).gap(9).p(14).rounded(10).bg(c.theme.surface).border(c.theme.border);
     defer card.end();
 
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);

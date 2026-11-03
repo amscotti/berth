@@ -157,7 +157,7 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
 }
 
 pub fn settings(s: *app.State, c: *ui.Context) void {
-    widgets.pageHeader(c, "Settings", "berth 0.1 · a native container monitor");
+    widgets.pageHeader(c, "Settings", "berth 0.2 · a native container monitor");
     const page = ui.div(c).column().wFull().gap(12);
     defer page.end();
 
@@ -170,8 +170,6 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     const prose = ui.div(c).column().w(640).gap(6);
     ui.text(c, "berth is a native monitor for Docker, Podman, Colima and Lima. It talks to the engine's HTTP API over its Unix socket directly — no webview, no helper daemon, no telemetry.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
     ui.text(c, "The last complete snapshot stays on screen while a worker refreshes the next one, so the tables and graphs neither blank nor freeze. Container CPU and memory use the same two-sample window as `docker stats`.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "Built in Zig 0.17 on nanoui. On macOS the host figures come from Mach's host statistics; on Linux, from /proc. The warm palette and cell graphs follow nanoui's sibling project, nanomon.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
-    ui.text(c, "Every list has live search, containers pause and resume, the inspector carries the engine's own JSON and a copyable `docker run` line, the Events view remembers what the engine did, images can be pulled and run from the Images page, volumes and networks can be created, and a Compose project starts or stops whole. A container's Terminal action opens your own terminal attached to the engine berth is showing. Not built yet: Compose up/down.", .{ .size = 11.5, .color = c.theme.muted.alpha(0.8), .wrap = true });
     prose.end();
     about.end(); // before the row, or the row and everything below nest inside it
 

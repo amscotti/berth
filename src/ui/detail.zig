@@ -37,7 +37,7 @@ pub fn pane(s: *app.State, c: *ui.Context) void {
         s.pane_inspect = false;
         s.redraw();
     }
-    if (tab(c, "Inspect", "code", s.pane_inspect)) {
+    if (tab(c, "Inspect", "doc.text", s.pane_inspect)) {
         s.pane_inspect = true;
         if (s.inspect_buf == null) s.reloadInspect();
         s.redraw();
