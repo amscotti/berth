@@ -156,7 +156,7 @@ feature roadmap drawn from Docker Desktop and Podman Desktop lives in
 
 Tagged builds are produced by GitHub Actions: a Linux x86_64 tarball, a macOS
 arm64 `.app` zip, and `SHA256SUMS`. See the
-[releases page](https://github.com/amscotti/berth/releases) for `v0.1.0`.
+[releases page](https://github.com/amscotti/berth/releases) for `v0.2.0`.
 
 ## Testing notes
 
