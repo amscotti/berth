@@ -315,6 +315,9 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         .width = box_w,
     }).cleared) s.redraw();
     create.card(s, c);
+    // Air between the creation card and the table, so the two read as
+    // separate surfaces rather than one continuous block.
+    ui.div(c).h(8).end();
 
     if (s.error_text.len > 0 and s.images.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.images.len == 0) {

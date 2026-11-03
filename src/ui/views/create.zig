@@ -35,7 +35,9 @@ pub fn card(s: *app.State, c: *ui.Context) void {
         return;
     }
 
-    const pull_row = ui.div(c).row().wFull().itemsCenter().gap(8);
+    // Bottom-align Pull with the Reference field, not with label + field:
+    // centre alignment parked the button halfway up the label's height.
+    const pull_row = ui.div(c).row().wFull().itemsEnd().gap(8);
     _ = field(c, "Reference", &s.image_tasks.pull_input, "nginx:alpine", .fill, .grow);
     if (button(c, "Pull", !s.image_tasks.pulling())) image_tasks.startPull(s);
     pull_row.end();
