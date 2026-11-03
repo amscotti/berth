@@ -6,6 +6,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
+const widgets = @import("ui/widgets.zig");
 
 pub const max = 512;
 const id_len = 64;
@@ -51,6 +52,11 @@ pub const State = struct {
     count: usize = 0,
     pending: ?Pending = null,
     job: ?*Job = null,
+    /// The project a pending start/stop-all belongs to, copied so a refresh
+    /// that rotates the label arena cannot make the dialog point at freed
+    /// text before the user confirms.
+    project: [128]u8 = undefined,
+    project_len: usize = 0,
 
     pub fn id(self: *const State, index: usize) []const u8 {
         if (index >= self.count) return "";
@@ -87,6 +93,7 @@ pub const State = struct {
         self.enabled = false;
         self.count = 0;
         self.pending = null;
+        self.project_len = 0;
     }
 
     /// Drop selections that no longer exist, so a refresh cannot leave the
@@ -141,21 +148,49 @@ const Job = struct {
     lens: [max]u8 = undefined,
     count: usize,
     first_error: []const u8 = "",
+    /// The Compose project this batch belongs to, for the completion toast.
+    project: [128]u8 = undefined,
+    project_len: usize = 0,
     thread: ?std.Thread = null,
     canceled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 };
 
 pub fn startSelected(s: *app.State) void {
-    startJob(s, .start);
+    var ids: [max][]const u8 = undefined;
+    const n = selection(s, &ids);
+    if (startBatch(s, .start, ids[0..n], "")) s.bulk.clear();
 }
 
 pub fn stopSelected(s: *app.State) void {
+    s.bulk.project_len = 0;
     s.bulk.pending = .{ .count = s.bulk.count, .route = .stop };
     s.redraw();
 }
 
 pub fn deleteSelected(s: *app.State) void {
+    s.bulk.project_len = 0;
     s.bulk.pending = .{ .count = s.bulk.count, .route = .delete };
+    s.redraw();
+}
+
+/// "Start all" on a Compose project: every stopped container in it, through
+/// the same worker and toast as a checkbox batch.
+pub fn startProject(s: *app.State, project: []const u8) void {
+    var ids: [max][]const u8 = undefined;
+    const n = projectIds(s.containers, project, .start, &ids);
+    _ = startBatch(s, .start, ids[0..n], project);
+}
+
+/// "Stop all" goes through the confirmation: it changes several containers at
+/// once, and the dialog names the project so it is clear what is being stopped.
+pub fn stopProject(s: *app.State, project: []const u8) void {
+    if (project.len == 0 or project.len > s.bulk.project.len) return;
+    var ids: [max][]const u8 = undefined;
+    const n = projectIds(s.containers, project, .stop, &ids);
+    if (n == 0) return;
+    s.bulk.project_len = project.len;
+    @memcpy(s.bulk.project[0..s.bulk.project_len], project);
+    s.bulk.pending = .{ .count = n, .route = .stop };
     s.redraw();
 }
 
@@ -163,46 +198,106 @@ pub fn resolve(s: *app.State, ok: bool) void {
     const pending = s.bulk.pending orelse return;
     s.bulk.pending = null;
     if (!ok) {
+        s.bulk.project_len = 0;
         s.redraw();
+        return;
+    }
+    if (s.bulk.project_len > 0) {
+        const project = s.bulk.project[0..s.bulk.project_len];
+        var ids: [max][]const u8 = undefined;
+        const n = projectIds(s.containers, project, pending.route, &ids);
+        s.bulk.project_len = 0;
+        if (n == 0) {
+            s.notifyFmt("nothing to {s} in {s}", .{ pending.route.word(), project }, true);
+            return;
+        }
+        _ = startBatch(s, pending.route, ids[0..n], project);
         return;
     }
     startJob(s, pending.route);
 }
 
+/// The confirmation re-reads the project each frame it is open, so its count
+/// and the action `resolve` will take cannot disagree.
+pub fn countProject(s: *app.State, project: []const u8, route: Route) usize {
+    var ids: [max][]const u8 = undefined;
+    return projectIds(s.containers, project, route, &ids);
+}
+
+fn selection(s: *app.State, out: *[max][]const u8) usize {
+    const n = @min(s.bulk.count, max);
+    for (0..n) |i| out[i] = s.bulk.id(i);
+    return n;
+}
+
+/// The project's containers that the route would actually change; a stopped
+/// container cannot be stopped again, and one that is up cannot be started.
+/// Paused counts as up, exactly as the engine reports it.
+fn projectIds(containers: []const api.Container, project: []const u8, route: Route, out: *[max][]const u8) usize {
+    var n: usize = 0;
+    for (containers) |ct| {
+        if (ct.Id.len == 0 or ct.Id.len > id_len) continue;
+        const p = ct.project() orelse continue;
+        if (!std.mem.eql(u8, p, project)) continue;
+        const up = ct.isUp();
+        if (route == .start and up) continue;
+        if (route == .stop and !up) continue;
+        out[n] = ct.Id;
+        n += 1;
+        if (n == max) break;
+    }
+    return n;
+}
+
 fn startJob(s: *app.State, route: Route) void {
-    if (s.bulk.running()) return;
+    var ids: [max][]const u8 = undefined;
+    const n = selection(s, &ids);
+    if (startBatch(s, route, ids[0..n], "")) s.bulk.clear();
+}
+
+/// Returns whether the worker started; a failed start leaves the caller's
+/// selection alone so the user can retry.
+fn startBatch(s: *app.State, route: Route, ids: []const []const u8, project: []const u8) bool {
+    // Any queued confirmation is about a set this batch is replacing.
+    s.bulk.pending = null;
+    s.bulk.project_len = 0;
+    if (s.bulk.running()) return false;
+    if (ids.len == 0 or ids.len > max) return false;
     var client = s.client orelse {
         s.notify("no engine is selected", true);
-        return;
+        return false;
     };
-    if (s.bulk.count == 0) return;
 
     const job = s.gpa.create(Job) catch {
         s.notify("could not start the bulk action", true);
-        return;
+        return false;
     };
     job.* = .{
         .gpa = s.gpa,
         .io = s.io,
         .route = route,
-        .total = s.bulk.count,
-        .count = s.bulk.count,
+        .total = ids.len,
+        .count = ids.len,
     };
     job.socket_len = @min(client.socket.len, job.socket.len);
     @memcpy(job.socket[0..job.socket_len], client.socket[0..job.socket_len]);
     job.api_len = @min(client.api.len, job.api_version.len);
     @memcpy(job.api_version[0..job.api_len], client.api[0..job.api_len]);
-    @memcpy(job.ids[0..s.bulk.count], s.bulk.ids[0..s.bulk.count]);
-    @memcpy(job.lens[0..s.bulk.count], s.bulk.lens[0..s.bulk.count]);
+    job.project_len = @min(project.len, job.project.len);
+    @memcpy(job.project[0..job.project_len], project[0..job.project_len]);
+    for (ids, 0..) |id, i| {
+        job.lens[i] = @intCast(@min(id.len, id_len));
+        @memcpy(job.ids[i][0..job.lens[i]], id[0..job.lens[i]]);
+    }
 
     job.thread = std.Thread.spawn(.{}, work, .{ s, job }) catch {
         s.gpa.destroy(job);
         s.notify("could not start the bulk action", true);
-        return;
+        return false;
     };
     s.bulk.job = job;
-    s.bulk.clear();
     s.redraw();
+    return true;
 }
 
 fn work(s: *app.State, job: *Job) void {
@@ -250,13 +345,21 @@ fn finish(s: *app.State) void {
     const route = job.route;
     const done = job.done;
     const total = job.total;
+    var project_buf: [128]u8 = undefined;
+    const project_len = job.project_len;
+    @memcpy(project_buf[0..project_len], job.project[0..project_len]);
+    const project = project_buf[0..project_len];
     const error_text = s.gpa.dupe(u8, job.first_error) catch "";
     const page = std.heap.page_allocator;
     if (job.first_error.len > 0) page.free(job.first_error);
     s.gpa.destroy(job);
 
     if (done == total) {
-        s.notifyFmt("{s} {d} containers", .{ route.verb(), done }, false);
+        if (project.len > 0) {
+            s.notifyFmt("{s} {d} in {s}", .{ route.verb(), done, project }, false);
+        } else {
+            s.notifyFmt("{s} {d} container{s}", .{ route.verb(), done, plural(done) }, false);
+        }
     } else {
         s.notifyFmt("{s} {d} of {d} containers", .{ route.verb(), done, total }, true);
         if (error_text.len > 0) {
@@ -273,6 +376,10 @@ fn firstLine(text: []const u8) []const u8 {
     return text[0..@min(end, 90)];
 }
 
+fn plural(n: usize) []const u8 {
+    return if (n == 1) "" else "s";
+}
+
 pub fn cancel(s: *app.State) void {
     const job = s.bulk.job orelse return;
     job.canceled.store(true, .release);
@@ -282,31 +389,29 @@ pub fn cancel(s: *app.State) void {
 
 pub fn confirmDialog(s: *app.State, c: *ui.Context) void {
     const pending = s.bulk.pending orelse return;
+    const project = s.bulk.project[0..s.bulk.project_len];
+    const count = if (project.len > 0) countProject(s, project, pending.route) else pending.count;
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.danger);
     ui.text(c, pending.route.word(), .{ .size = 13, .weight = .semibold, .color = c.theme.danger });
-    ui.text(c, c.print("{d} containers — this cannot be undone", .{pending.count}), .{
+    const line = if (count == 0)
+        c.print("nothing left to {s} in {s}", .{ pending.route.word(), project })
+    else if (project.len > 0)
+        c.print("{d} container{s} in {s} will be stopped", .{ count, plural(count), project })
+    else if (pending.route == .delete)
+        c.print("{d} container{s} — this cannot be undone", .{ count, plural(count) })
+    else
+        c.print("{d} container{s} will be stopped", .{ count, plural(count) });
+    ui.text(c, line, .{
         .size = 12,
         .color = c.theme.muted,
     });
     const row = ui.div(c).row().wFull().justifyEnd().gap(8);
-    if (bulkButton(c, "Cancel", false, false)) resolve(s, false);
-    if (bulkButton(c, pending.route.word(), true, true)) resolve(s, true);
+    if (widgets.dialogButton(c, "Cancel", false, false)) resolve(s, false);
+    if (widgets.dialogButton(c, pending.route.word(), true, true)) resolve(s, true);
     row.end();
     box.end();
 }
 
-fn bulkButton(c: *ui.Context, label: []const u8, danger: bool, primary: bool) bool {
-    const bg = if (!primary) c.theme.surface_hover else if (danger) c.theme.danger else c.theme.accent;
-    const box = ui.div(c).row().w(92).h(28).center().rounded(14).bg(bg).control();
-    ui.text(c, label, .{
-        .size = 12,
-        .weight = if (primary) .medium else .regular,
-        .color = if (primary) c.theme.accent_text else c.theme.text,
-    });
-    const clicked = box.clicked();
-    box.end();
-    return clicked;
-}
 
 test "selection toggles by id and forgets removed containers" {
     var state: State = .{};
@@ -328,4 +433,26 @@ test "selection toggles by id and forgets removed containers" {
     try std.testing.expectEqualStrings("def", state.id(0));
     state.clear();
     try std.testing.expect(!state.enabled);
+}
+
+test "a project batch takes only the containers the route would change" {
+    var running = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
+    defer running.deinit();
+    var stopped = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
+    defer stopped.deinit();
+    var other = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"other\"}", .{});
+    defer other.deinit();
+    const items = [_]api.Container{
+        .{ .Id = "up", .State = "running", .Labels = running.value },
+        .{ .Id = "down", .State = "exited", .Labels = stopped.value },
+        .{ .Id = "elsewhere", .State = "running", .Labels = other.value },
+    };
+    var out: [max][]const u8 = undefined;
+    // Start takes the stopped container; Stop takes the running one. A
+    // different project is never touched.
+    try std.testing.expectEqual(@as(usize, 1), projectIds(items[0..], "shop", .start, &out));
+    try std.testing.expectEqualStrings("down", out[0]);
+    try std.testing.expectEqual(@as(usize, 1), projectIds(items[0..], "shop", .stop, &out));
+    try std.testing.expectEqualStrings("up", out[0]);
+    try std.testing.expectEqual(@as(usize, 0), projectIds(items[0..], "missing", .stop, &out));
 }

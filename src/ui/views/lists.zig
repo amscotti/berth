@@ -11,8 +11,9 @@ const search = @import("search.zig");
 const metrics = @import("metrics.zig");
 const columns = @import("columns.zig");
 const bulk = @import("../../bulk.zig");
-const sorting = @import("sorting.zig");
 const create = @import("create.zig");
+const create_mod = @import("../../create.zig");
+const sorting = @import("sorting.zig");
 const shell = @import("../shell.zig");
 
 const ROW = 44.0;
@@ -71,7 +72,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         .buffer = &s.search.containers,
         .placeholder = searchPlaceholder(c, "containers", box_w),
         .width = box_w,
-    })) s.redraw();
+    }).cleared) s.redraw();
 
     // Filter chips, in the same place and shape on every view that grows one.
     const chips = ui.div(c).row().wFull().gap(6).pb(8);
@@ -312,7 +313,7 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         .buffer = &s.search.images,
         .placeholder = searchPlaceholder(c, "images", box_w),
         .width = box_w,
-    })) s.redraw();
+    }).cleared) s.redraw();
     create.card(s, c);
 
     if (s.error_text.len > 0 and s.images.len == 0) widgets.errorBanner(c, s.error_text);
@@ -395,18 +396,22 @@ pub fn volumes(s: *app.State, c: *ui.Context) void {
         widgets.count(c, s.volumes.len, "volume", "volumes");
     const width = s.layout.content;
     const box_w = searchWidth(width);
-    if (widgets.pageHeaderSearch(c, "Volumes", subtitle, .{
+    const header = widgets.pageHeaderSearch(c, "Volumes", subtitle, .{
         .buffer = &s.search.volumes,
         .placeholder = searchPlaceholder(c, "volumes", box_w),
         .width = box_w,
-    })) s.redraw();
+        .action_label = "New volume",
+        .action_icon = "plus",
+    });
+    if (header.action) create_mod.open(s, .volume);
+    if (header.cleared) s.redraw();
 
     if (s.error_text.len > 0 and s.volumes.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.volumes.len == 0) {
         if (s.error_text.len > 0) {
             _ = widgets.emptyStateAction(c, "folder", "Engine not answering", "Check the engine, then refresh from the rail", null);
         } else {
-            _ = widgets.emptyStateAction(c, "folder", "No volumes", "Volumes appear here once a container declares one", null);
+            _ = widgets.emptyStateAction(c, "folder", "No volumes", "Create one above, or run a container that declares one", null);
         }
         return;
     }
@@ -484,18 +489,22 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
         widgets.count(c, s.networks.len, "network", "networks");
     const width = s.layout.content;
     const box_w = searchWidth(width);
-    if (widgets.pageHeaderSearch(c, "Networks", subtitle, .{
+    const header = widgets.pageHeaderSearch(c, "Networks", subtitle, .{
         .buffer = &s.search.networks,
         .placeholder = searchPlaceholder(c, "networks", box_w),
         .width = box_w,
-    })) s.redraw();
+        .action_label = "New network",
+        .action_icon = "plus",
+    });
+    if (header.action) create_mod.open(s, .network);
+    if (header.cleared) s.redraw();
 
     if (s.error_text.len > 0 and s.networks.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.networks.len == 0) {
         if (s.error_text.len > 0) {
             _ = widgets.emptyStateAction(c, "network", "Engine not answering", "Check the engine, then refresh from the rail", null);
         } else {
-            _ = widgets.emptyStateAction(c, "network", "No networks", "", null);
+            _ = widgets.emptyStateAction(c, "network", "No networks", "Create one above", null);
         }
         return;
     }

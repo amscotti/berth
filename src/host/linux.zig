@@ -153,7 +153,6 @@ pub const Sampler = struct {
                 self.prev = ticks;
             }
         } else |_| {}
-        out.engine_rss = engineRss(io, gpa, &ENGINE_PROCESSES);
         return out;
     }
 };

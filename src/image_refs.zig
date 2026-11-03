@@ -182,4 +182,3 @@ test "option lists report the first malformed entry" {
     try std.testing.expect(firstInvalid("8080:80", ':') == null);
     try std.testing.expectEqualStrings("MODE", firstInvalid("A=1, MODE", '=').?);
 }
-

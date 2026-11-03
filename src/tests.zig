@@ -9,8 +9,11 @@ test {
     _ = @import("engine/volumes.zig");
     _ = @import("engine/events.zig");
     _ = @import("engine/image_ops.zig");
+    _ = @import("engine/create.zig");
     _ = @import("image_tasks.zig");
     _ = @import("image_refs.zig");
+    _ = @import("create.zig");
+    _ = @import("terminal.zig");
     _ = @import("engine/command.zig");
     _ = @import("ops.zig");
     _ = @import("bulk.zig");

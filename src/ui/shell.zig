@@ -15,6 +15,7 @@ const config = @import("views/config.zig");
 const stacks = @import("views/stacks.zig");
 const events_view = @import("views/events.zig");
 const bulk = @import("../bulk.zig");
+const create_mod = @import("../create.zig");
 
 const TABS = [_]app.Tab{
     .overview, .containers, .images, .volumes,  .networks,
@@ -39,6 +40,7 @@ pub fn view(s: *app.State, c: *ui.Context) void {
         confirmDialog(s, c, p.verb, p.name);
     }
     if (s.prune_open) pruneDialog(s, c);
+    if (s.create_dialog.open != null) create_mod.dialog(s, c);
     body(s, c);
     main.end(); // before the detail pane, or the pane becomes a child of it
 
@@ -101,6 +103,9 @@ fn railItem(s: *app.State, c: *ui.Context, tab: app.Tab, narrow: bool) void {
         // A row from one view has no meaning in another; the inspector closes
         // with the tab rather than following the user around.
         if (s.tab != tab and s.selected != null) s.clearSelection();
+        // The create dialog belongs to Volumes and Networks; leaving the page
+        // must not leave its form floating over another list.
+        if (s.tab != tab) s.create_dialog.open = null;
         s.tab = tab;
         s.redraw();
     }
@@ -291,8 +296,8 @@ pub fn confirmDialog(s: *app.State, c: *ui.Context, verb: []const u8, target: []
     const line = c.print("{s} — {s}", .{ target, verb });
     ui.text(c, line, .{ .size = 12, .color = c.theme.muted });
     const row = ui.div(c).row().wFull().justifyEnd().gap(8);
-    if (dialogButton(c, "Cancel", false, false)) s.resolvePending(false);
-    if (dialogButton(c, "Confirm", true, true)) s.resolvePending(true);
+    if (widgets.dialogButton(c, "Cancel", false, false)) s.resolvePending(false);
+    if (widgets.dialogButton(c, "Confirm", true, true)) s.resolvePending(true);
     row.end();
 }
 
@@ -332,21 +337,9 @@ fn pruneDialog(s: *app.State, c: *ui.Context) void {
     pruneOption(c, "Build cache", cache, &s.prune_opts.build_cache);
 
     const buttons = ui.div(c).row().wFull().justifyEnd().gap(8).pt(2);
-    if (dialogButton(c, "Cancel", false, false)) s.closePrune();
-    if (dialogButton(c, "Clean up", true, true)) s.runPrune();
+    if (widgets.dialogButton(c, "Cancel", false, false)) s.closePrune();
+    if (widgets.dialogButton(c, "Clean up", true, true)) s.runPrune();
     buttons.end();
-}
-
-/// One shape for every dialog action: same width, same height, so Cancel and
-/// Confirm sit on one baseline instead of one sizing itself to its word.
-fn dialogButton(c: *ui.Context, label: []const u8, danger: bool, primary: bool) bool {
-    const bg = if (!primary) c.theme.surface_hover else if (danger) c.theme.danger else c.theme.accent;
-    const fg = if (primary) c.theme.accent_text else c.theme.text;
-    const box = ui.div(c).row().w(92).h(28).center().rounded(14).bg(bg).control();
-    ui.text(c, label, .{ .size = 12, .weight = if (primary) .medium else .regular, .color = fg });
-    const clicked = box.clicked();
-    box.end();
-    return clicked;
 }
 
 fn pruneOption(c: *ui.Context, label: []const u8, amount: i64, on: *bool) void {

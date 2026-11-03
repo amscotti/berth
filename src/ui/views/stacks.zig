@@ -5,6 +5,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../../app.zig");
+const bulk = @import("../../bulk.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 
@@ -58,13 +59,19 @@ fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: @impor
 
     const head = ui.div(c).row().wFull().itemsCenter().gap(10);
     ui.icon(c, "code", .{ .size = 16, .color = c.theme.accent });
-    ui.text(c, project, .{ .size = 14, .weight = .semibold });
+    ui.text(c, project, .{ .size = 14, .weight = .semibold, .truncate = .ellipsis });
     ui.text(c, c.print("{d}/{d} running", .{ running, total }), .{ .size = 12, .color = c.theme.muted });
     ui.spacer(c);
 
-    if (first.label("com.docker.compose.project.working_dir")) |dir| {
-        ui.text(c, dir, .{ .size = 11, .color = c.theme.muted, .truncate = .middle });
+    if (s.layout.content >= 760) {
+        if (first.label("com.docker.compose.project.working_dir")) |dir| {
+            ui.text(c, dir, .{ .size = 11, .color = c.theme.muted, .truncate = .middle });
+        }
     }
+    // The one action a Compose project needs from a monitor: start everything
+    // that is down, or stop everything that is up, through the bulk worker.
+    if (running < total and projectButton(c, "Start all", "play.fill")) bulk.startProject(s, project);
+    if (running > 0 and projectButton(c, "Stop all", "stop.fill")) bulk.stopProject(s, project);
     head.end();
 
     for (s.containers) |ct| {
@@ -78,6 +85,15 @@ fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: @impor
         ui.spacer(c);
         widgets.pill(c, ct.State);
     }
+}
+
+fn projectButton(c: *ui.Context, label: []const u8, icon_name: []const u8) bool {
+    const box = ui.div(c).row().h(24).px(10).itemsCenter().gap(5).rounded(12).bg(c.theme.surface_hover).control();
+    ui.icon(c, icon_name, .{ .size = 9, .color = c.theme.text });
+    ui.text(c, label, .{ .size = 11.5, .color = c.theme.text });
+    const clicked = box.clicked();
+    box.end();
+    return clicked;
 }
 
 test "a compose project is claimed once, by its first container" {

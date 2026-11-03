@@ -20,6 +20,8 @@ pub const Snapshot = struct {
     logs_id: []const u8 = &.{},
     logs_timestamps: bool = false,
     df: ?api.Df = null,
+    /// The engine's host-process RSS, or null when this pass could not read it.
+    engine_rss: ?u64 = null,
 
     pub fn init(gpa: std.mem.Allocator) Snapshot {
         return .{ .arena = .init(gpa) };

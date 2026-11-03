@@ -69,6 +69,16 @@ running count, aggregate container CPU and memory, with Open/Quit, and the
 window reopens at the size it was closed at. Still open from this wave's
 original list: the "Open in Terminal" exec substitute.
 
+**Status: Tier 3, wave 1 shipped** — the "Open in Terminal" substitute
+(#17) opens the user's terminal with a socket-pinned `docker`/`podman exec`,
+so it attaches to the engine the window shows. Compose projects gained
+start all / stop all (#18's honest subset) over the bulk worker, with the
+stop confirmation naming the project and its live count. Volumes and
+networks can be created (#22) from their page headers, with the name
+validated before the POST. On macOS the host bar's engine segment now
+attributes the engine's host processes (#24) — helper RSS, deliberately not
+the VM's guest RAM, which contains the containers and stays in "elsewhere".
+
 | # | Feature | Seen in | Use | Diff | Why / how |
 |---|---|---|---|---|---|
 | 9 | **Engine/VM lifecycle controls** — start/stop/restart Colima, Lima, Podman machine; create with CPU/memory/disk presets | PD tray + Resources page ("create new machine… start or stop Podman machines", allocated CPU/memory/storage) | 5 | M | The feature berth's own development history argues for: the user's Lima VM sat wedged and the app could only watch. berth already knows which engine kind owns each socket; spawn `colima start/stop`, `limactl start/stop`, `podman machine start/stop` as background jobs and keep the Runtimes view honest while the engine is down. Resource *editing* (CPU/RAM/disk) is the L-sized second half. |
@@ -112,8 +122,8 @@ original list: the "Open in Terminal" exec substitute.
 2. **Wave 2 — the monitor gets a memory** (Tier 2): events feed, log
    auto-refresh + search, bulk actions, notifications, engine/VM controls.
 3. **Wave 3 — creation, not just watching** (Tier 2/3): pull, run dialog,
-   tray mini-monitor — shipped; the exec-terminal substitute slipped to
-   Wave 4 unless asked for.
+   tray mini-monitor — shipped; the exec-terminal substitute shipped in
+   Tier 3 wave 1 with volume/network creation and Compose start/stop-all.
 4. **Wave 4 — only if asked**: streaming logs/exec, compose up/down, build,
    volume browsing, registries, pods.
 
