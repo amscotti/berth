@@ -97,7 +97,9 @@ pub const Conn = struct {
         const ww = &w;
         try ww.print("{s} {s} HTTP/1.1\r\nHost: docker\r\nUser-Agent: berth\r\nAccept: application/json\r\nConnection: close\r\n", .{ method, path });
         for (headers) |h| try ww.print("{s}: {s}\r\n", .{ h[0], h[1] });
-        if (body.len > 0) try ww.print("Content-Length: {d}\r\n", .{body.len});
+        // Engines parse the body by its media type: a create without this
+        // header is read as an empty config ("no command specified").
+        if (body.len > 0) try ww.print("Content-Type: application/json\r\nContent-Length: {d}\r\n", .{body.len});
         try ww.writeAll("\r\n");
         if (body.len > 0) try ww.writeAll(body);
         const file = Io.File{ .handle = self.stream.socket.handle, .flags = .{ .nonblocking = false } };

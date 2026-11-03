@@ -30,6 +30,9 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
 | `boot.zig` | state construction and teardown |
 | `app.zig` | `State`, selection, actions, cleanup, host sampling |
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
+| `image_tasks.zig` | pull/create/start as background jobs, the create body |
+| `image_refs.zig` | reference, name and port parsing for the creation card |
+| `tray.zig` | the menu-bar mini-monitor |
 | `snapshot.zig` | a complete engine snapshot and its arena |
 | `stats_pool.zig` | per-container stats, fetched together |
 | `engine/http_uds.zig` | HTTP/1.1 over a Unix socket, timeouts, framing |
@@ -103,8 +106,8 @@ sections of `app.zig`.
 
 Not unit-tested: the worker orchestration, discovery scans, real engine
 actions/prune, and pixel output. Those are exercised by the headless
-`BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT` harness and by running against a live
-engine. `docs/ui/` is the visual evidence.
+`BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT`/`BERTH_PULL`/`BERTH_RUN_*` harness and
+by running against a live engine. `docs/ui/` is the visual evidence.
 
 ## Review findings
 

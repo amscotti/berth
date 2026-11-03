@@ -13,6 +13,8 @@ const stats_pool = @import("stats_pool.zig");
 const engine_events = @import("engine/events.zig");
 const events_feed = @import("events_feed.zig");
 const logs = @import("logs.zig");
+const tray = @import("tray.zig");
+const image_tasks = @import("image_tasks.zig");
 const Snapshot = @import("snapshot.zig").Snapshot;
 const Stat = stats_pool.Sample;
 
@@ -174,6 +176,9 @@ fn done(ctx: ?*anyopaque) callconv(.c) void {
         s.error_text = s.error_buf[0..n];
         if (job.engine_dead) s.client = null;
         cleanup(job);
+        // The tray promised live numbers a moment ago; the pass that just
+        // failed is when that promise breaks.
+        tray.update(s);
         s.redraw();
         scheduleNext(s);
         return;
@@ -272,6 +277,16 @@ fn commit(s: *app.State, job: *Job) void {
     s.error_text = "";
     s.last_update = format.now();
     s.sample();
+    tray.update(s);
+    if (s.pending_image != .none) {
+        const pending = s.pending_image;
+        s.pending_image = .none;
+        switch (pending) {
+            .none => {},
+            .pull => image_tasks.startPull(s),
+            .run => image_tasks.startRun(s),
+        }
+    }
 }
 
 fn resolveSelection(s: *app.State) void {

@@ -79,7 +79,12 @@ pub const Client = struct {
             // {"message":"…"}; unwrap when they do so the UI shows words, not
             // the envelope.
             const Message = struct { message: []const u8 = "" };
-            if (std.json.parseFromSliceLeaky(Message, self.alloc, res.body, .{ .ignore_unknown_fields = true })) |m| {
+            if (std.json.parseFromSliceLeaky(Message, self.alloc, res.body, .{
+                .ignore_unknown_fields = true,
+                // Without this the parsed message can point into `res.body`,
+                // which is freed on the next line and takes the diagnosis with it.
+                .allocate = .alloc_always,
+            })) |m| {
                 self.err_body = if (m.message.len > 0) m.message else (self.alloc.dupe(u8, res.body) catch "");
             } else |_| {
                 self.err_body = self.alloc.dupe(u8, res.body) catch "";

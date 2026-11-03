@@ -23,6 +23,7 @@ const session = @import("session.zig");
 const ops = @import("ops.zig");
 const bulk = @import("bulk.zig");
 const logs = @import("logs.zig");
+const image_tasks = @import("image_tasks.zig");
 const settings = @import("settings.zig");
 const builtin = @import("builtin");
 
@@ -92,6 +93,16 @@ pub const State = struct {
     ops: ops.State = .{},
     /// Container checkbox mode and its pending bulk action.
     bulk: bulk.State = .{},
+    /// The menu-bar mini-monitor, where the platform has one.
+    tray: ?*nanoui.Tray = null,
+    /// Pull and run image jobs and their dialog text.
+    image_tasks: image_tasks.State = .{},
+    /// A headless harness action (`BERTH_PULL`, `BERTH_RUN_IMAGE`) waiting for
+    /// the first snapshot, when a client exists to run it against.
+    pending_image: image_tasks.Pending = .none,
+    /// Set first in teardown: AppKit closes the window after the state is
+    /// gone, and that close callback must not touch freed memory.
+    closing: bool = false,
     sort_containers: widgets.Sort = .{ .key = 1 },
     sort_images: widgets.Sort = .{ .key = 1 },
     sort_volumes: widgets.Sort = .{ .key = 1 },
@@ -145,6 +156,9 @@ pub const State = struct {
     /// Set by main: rebuilds the window when the appearance changes, because
     /// the theme is a window-creation option, not something to mutate.
     recreate: ?*const fn (*State) void = null,
+    /// The content size the closed window had, so the tray's reopen puts it
+    /// back where the user arranged it.
+    last_size: ?[2]f64 = null,
 
     /// The row whose detail pane is open; the meaning depends on `detail_kind`.
     detail_kind: DetailKind = .container,

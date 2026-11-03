@@ -60,6 +60,15 @@ toasts (#13), and start/stop/restart for Colima, Lima and Podman machines
 CPU/memory/disk (#9's second half), system notification centre (#13), and
 true streaming log follow (#12's L-sized follow-up).
 
+**Status: Wave 3 shipped** — pull (#15) and run (#14) as background jobs
+behind the Images page's creation card: reference and name validation, bare
+references pull `latest` (never "every tag"), `ip:host:container` port
+bindings, env/volume lists, Enter submits, headless via `BERTH_PULL` and
+`BERTH_RUN_*`. The macOS tray mini-monitor (#16) reports engine state,
+running count, aggregate container CPU and memory, with Open/Quit, and the
+window reopens at the size it was closed at. Still open from this wave's
+original list: the "Open in Terminal" exec substitute.
+
 | # | Feature | Seen in | Use | Diff | Why / how |
 |---|---|---|---|---|---|
 | 9 | **Engine/VM lifecycle controls** — start/stop/restart Colima, Lima, Podman machine; create with CPU/memory/disk presets | PD tray + Resources page ("create new machine… start or stop Podman machines", allocated CPU/memory/storage) | 5 | M | The feature berth's own development history argues for: the user's Lima VM sat wedged and the app could only watch. berth already knows which engine kind owns each socket; spawn `colima start/stop`, `limactl start/stop`, `podman machine start/stop` as background jobs and keep the Runtimes view honest while the engine is down. Resource *editing* (CPU/RAM/disk) is the L-sized second half. |
@@ -103,7 +112,8 @@ true streaming log follow (#12's L-sized follow-up).
 2. **Wave 2 — the monitor gets a memory** (Tier 2): events feed, log
    auto-refresh + search, bulk actions, notifications, engine/VM controls.
 3. **Wave 3 — creation, not just watching** (Tier 2/3): pull, run dialog,
-   external exec terminal, tray mini-monitor.
+   tray mini-monitor — shipped; the exec-terminal substitute slipped to
+   Wave 4 unless asked for.
 4. **Wave 4 — only if asked**: streaming logs/exec, compose up/down, build,
    volume browsing, registries, pods.
 

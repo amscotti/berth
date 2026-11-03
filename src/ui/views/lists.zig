@@ -12,6 +12,7 @@ const metrics = @import("metrics.zig");
 const columns = @import("columns.zig");
 const bulk = @import("../../bulk.zig");
 const sorting = @import("sorting.zig");
+const create = @import("create.zig");
 const shell = @import("../shell.zig");
 
 const ROW = 44.0;
@@ -312,13 +313,14 @@ pub fn images(s: *app.State, c: *ui.Context) void {
         .placeholder = searchPlaceholder(c, "images", box_w),
         .width = box_w,
     })) s.redraw();
+    create.card(s, c);
 
     if (s.error_text.len > 0 and s.images.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.images.len == 0) {
         if (s.error_text.len > 0) {
             _ = widgets.emptyStateAction(c, "doc", "Engine not answering", "Check the engine, then refresh from the rail", null);
         } else {
-            _ = widgets.emptyStateAction(c, "doc", "No images", "docker pull alpine", null);
+            _ = widgets.emptyStateAction(c, "doc", "No images", "Pull a reference in the card above", null);
         }
         return;
     }

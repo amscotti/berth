@@ -7,6 +7,7 @@ const ui = nanoui.ui;
 const app = @import("../app.zig");
 const api = @import("../engine/api.zig");
 const lifetime = @import("../engine/lifetime.zig");
+const image_tasks = @import("../image_tasks.zig");
 const logs = @import("../logs.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
@@ -245,6 +246,13 @@ fn imageDetail(s: *app.State, c: *ui.Context) void {
         facts(c, "Size", format.bytes(c, im.Size));
         facts(c, "Created", format.ago(c, im.Created, format.now()));
         facts(c, "Status", if (im.dangling()) "dangling" else "ready");
+        if (verb(c, "Run…", "play.fill")) {
+            // A dangling image has no tag to run: its full Id still names it
+            // unambiguously, where its "label" would run a container named
+            // "untagged".
+            image_tasks.prepareRun(s, if (im.dangling()) im.Id else im.label());
+            s.clearSelection();
+        }
         action(s, c, "Delete image", im.Id, if (im.dangling()) "untagged" else im.tag(), "Delete", "DELETE", "/images/{s}?force=1");
         break;
     }

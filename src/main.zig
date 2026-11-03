@@ -5,15 +5,15 @@ const nanoui = @import("nanoui");
 const app_mod = @import("app.zig");
 const boot = @import("boot.zig");
 const settings = @import("settings.zig");
+const tray = @import("tray.zig");
+const builtin = @import("builtin");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
 
-/// Opens the window again with the current theme, at the size it already had:
-/// switching appearance must not also resize the window the user arranged.
-fn reopen(state: *app_mod.State) void {
-    const old = state.window;
-    const size: [2]f64 = if (old) |w| w.contentSize() else .{ 1280, 760 };
-    const next = state.app.newWindow(.{
+/// Every window berth opens shares these options, so the close callback that
+/// keeps `state.window` honest can never be forgotten on one of the paths.
+fn windowOptions(state: *app_mod.State, size: [2]f64) nanoui.WindowOptions {
+    return .{
         .title = "berth",
         .width = size[0],
         .height = size[1],
@@ -21,10 +21,30 @@ fn reopen(state: *app_mod.State) void {
         .min_height = 600,
         .theme = state.themeFor(),
         .content = .{ .view = .init(state, app_mod.State.view) },
-    }) catch return;
+        .on_close = .{ .ctx = state, .func = windowClosed },
+    };
+}
+
+/// Opens the window again with the current theme, at the size it already had:
+/// switching appearance must not also resize the window the user arranged.
+fn reopen(state: *app_mod.State) void {
+    const old = state.window;
+    const size: [2]f64 = if (old) |w| w.contentSize() else state.last_size orelse .{ 1280, 760 };
+    const next = state.app.newWindow(windowOptions(state, size)) catch return;
     if (old) |w| w.close();
     state.window = next;
     next.redraw();
+}
+
+/// The window object is freed on close; the state must stop pointing at it or
+/// the tray's next click would show a freed window.
+fn windowClosed(ctx: ?*anyopaque, window: *nanoui.Window) void {
+    const state: *app_mod.State = @ptrCast(@alignCast(ctx.?));
+    // Remember the arranged size: the tray's next click reopens there, not at
+    // the default, matching what a theme switch already preserves.
+    state.last_size = window.contentSize();
+    if (state.closing) return;
+    state.window = null;
 }
 
 /// `BERTH_SIZE=960x600` opens the window at that content size. It is how the
@@ -44,7 +64,12 @@ fn sizeOverride() ?[2]f64 {
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    const app = try nanoui.App.create(init, .{ .name = "berth" });
+    const app = try nanoui.App.create(init, .{
+        .name = "berth",
+        // With a tray icon, closing the window leaves the monitor running in
+        // the menu bar. Where there is no tray, the last window quits as before.
+        .quit_on_last_window_closed = builtin.os.tag != .macos,
+    });
     defer app.destroy();
 
     const state = try boot.create(gpa, init.io, app);
@@ -69,15 +94,7 @@ pub fn main(init: std.process.Init) !void {
     state.recreate = &reopen;
 
     const size = sizeOverride() orelse .{ 1280, 760 };
-    state.window = try app.newWindow(.{
-        .title = "berth",
-        .width = size[0],
-        .height = size[1],
-        .min_width = 960,
-        .min_height = 600,
-        .theme = state.themeFor(),
-        .content = .{ .view = .init(state, app_mod.State.view) },
-    });
+    state.window = try app.newWindow(windowOptions(state, size));
 
     // `BERTH_TAB=images` opens that view: the headless snapshot per view that
     // the design contract asks for needs a way to reach each one.
@@ -101,6 +118,20 @@ pub fn main(init: std.process.Init) !void {
     if (getenv("BERTH_SEARCH")) |p| {
         if (state.search.forTab(state.tab)) |buffer| buffer.set(std.mem.span(p));
     }
+    // `BERTH_PULL=nginx:alpine` and `BERTH_RUN_IMAGE=…` drive the creation
+    // card without a mouse, through the same jobs a click uses.
+    if (getenv("BERTH_PULL")) |p| {
+        state.image_tasks.pull_input.set(std.mem.span(p));
+        state.pending_image = .pull;
+    }
+    if (getenv("BERTH_RUN_IMAGE")) |p| {
+        state.image_tasks.run_image.set(std.mem.span(p));
+        state.pending_image = .run;
+    }
+    if (getenv("BERTH_RUN_NAME")) |p| state.image_tasks.run_name.set(std.mem.span(p));
+    if (getenv("BERTH_RUN_PORTS")) |p| state.image_tasks.run_ports.set(std.mem.span(p));
+    if (getenv("BERTH_RUN_VOLUMES")) |p| state.image_tasks.run_volumes.set(std.mem.span(p));
+    if (getenv("BERTH_RUN_ENV")) |p| state.image_tasks.run_env.set(std.mem.span(p));
     if (getenv("BERTH_ACT")) |p| {
         state.pending_act = std.mem.span(p);
         state.auto_refresh = false; // one action, then stop refreshing
@@ -108,6 +139,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Find an engine and read it before the first frame, so the window opens
     // with data rather than a skeleton that fills in on its own.
+    tray.create(state);
     state.discover();
     try app.run();
 }
