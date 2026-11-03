@@ -226,3 +226,28 @@ the no-flicker contract:
 
 Evidence: `events-light.png`, `events-960.png`, `bulk-light.png`,
 `logs-follow-light.png`, and `runtimes-open-light.png`.
+
+## Tier 2, Wave 3
+
+The creation card and the tray shipped, then every view was walked again at
+1280×760 in both themes, at 960×600 dark (icon rail), and on Images with the
+inspector open — which forces the card's stacked layout. The tray itself is
+menu-bar chrome, not part of these snapshots.
+
+- **Creation card.** Wide layout (Image/Name, Ports/Volumes, Env+Run) at 1280
+  and 960; stacked full-width fields with a right-aligned Run when the
+  inspector narrows the page. Placeholders, hint line and both buttons line up
+  with the card's edges in both themes. Enter submits like the buttons.
+- **Events.** The pass caught a real one: some rows rendered TYPE as "er".
+  `/events` was parsed with slices aliasing the response body, which the
+  worker frees immediately after parsing — the ring then showed whatever
+  reused the bytes (a 7-byte allocation left the tail of "container").
+  Parsing now allocates its strings (`.allocate = .alloc_always`), with a test
+  that poisons the body before reading the fields. Re-shot: all rows correct.
+- **Inspector.** The image inspector's Run… pill and Delete align, and Run…
+  prefills a dangling image's Id rather than the word "untagged".
+- **Overview, Containers, Disk, Runtimes, Settings.** Unchanged by the wave;
+  both themes, the 960 rail, and the responsive column set still hold.
+
+Evidence: `images-light.png`, `images-dark.png`, `images-960.png`,
+`events-light.png`, `events-dark.png`.

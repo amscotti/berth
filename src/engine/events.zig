@@ -61,6 +61,9 @@ pub fn parse(arena: std.mem.Allocator, body: []const u8) []Event {
         };
         const parsed = std.json.parseFromSliceLeaky(Doc, arena, trimmed, .{
             .ignore_unknown_fields = true,
+            // The caller frees the response body as soon as this returns;
+            // without alloc_always every string above would alias it.
+            .allocate = .alloc_always,
         }) catch continue;
         const attributes = parsed.Actor.Attributes;
         const fallback_ns = parsed.time * std.time.ns_per_s;
@@ -176,6 +179,21 @@ test "events parse one JSON object per line" {
     try std.testing.expectEqualStrings("137", parsed[1].exit_code);
     try std.testing.expectEqual(@as(i64, 1790000000), parsed[0].seconds());
     try std.testing.expectEqualStrings("die", parsed[1].action);
+}
+
+test "parsed events survive the response body being freed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The refresh worker frees the /events body right after parsing; the
+    // table then showed the bytes that overwrote it ("er" for "container").
+    const body = try std.testing.allocator.dupe(u8, "{\"Type\":\"container\",\"Action\":\"kill\",\"Actor\":{\"ID\":\"abc\",\"Attributes\":{\"name\":\"web\"}},\"time\":1790000000}");
+    defer std.testing.allocator.free(body);
+    const parsed = parse(a, body);
+    @memset(body, 'x');
+    try std.testing.expectEqualStrings("container", parsed[0].kind);
+    try std.testing.expectEqualStrings("kill", parsed[0].action);
+    try std.testing.expectEqualStrings("web", parsed[0].name);
 }
 
 test "the ring keeps newest first and counts duplicates once" {
