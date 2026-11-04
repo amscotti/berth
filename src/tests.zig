@@ -8,6 +8,7 @@ test {
     _ = @import("engine/prune.zig");
     _ = @import("engine/volumes.zig");
     _ = @import("engine/events.zig");
+    _ = @import("events_feed.zig");
     _ = @import("engine/image_ops.zig");
     _ = @import("engine/create.zig");
     _ = @import("image_tasks.zig");

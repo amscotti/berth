@@ -34,29 +34,27 @@ pub fn start(
     const args = try gpa.alloc([]const u8, argv.len);
     errdefer gpa.free(args);
     var copied: usize = 0;
-    errdefer {
-        for (args[0..copied]) |arg| gpa.free(arg);
-        gpa.free(args);
-    }
+    // Only the strings copied so far, so a failure while duping frees neither
+    // uninitialized slots nor the array itself (the errdefer above owns it).
+    errdefer for (args[0..copied]) |arg| gpa.free(arg);
     for (argv, 0..) |arg, i| {
         args[i] = try gpa.dupe(u8, arg);
         copied += 1;
     }
+    // Copy the label before publishing the job so every later failure is
+    // cleaned up by exactly one errdefer chain, including the thread spawn.
+    const label_copy = try gpa.dupe(u8, label);
+    errdefer gpa.free(label_copy);
     job.* = .{
         .gpa = gpa,
         .io = io,
         .argv = args,
-        .label = try gpa.dupe(u8, label),
+        .label = label_copy,
         .timeout_seconds = timeout_seconds,
         .ctx = ctx,
         .done = done,
     };
-    job.thread = std.Thread.spawn(.{}, work, .{job}) catch |err| {
-        // The errdefer above releases the arguments on this return.
-        if (job.label.len > 0) gpa.free(job.label);
-        gpa.destroy(job);
-        return err;
-    };
+    job.thread = try std.Thread.spawn(.{}, work, .{job});
     return job;
 }
 
@@ -126,4 +124,21 @@ pub fn destroy(job: *Job) void {
     job.gpa.free(job.argv);
     job.gpa.free(job.label);
     job.gpa.destroy(job);
+}
+
+fn noopDone(_: ?*anyopaque) callconv(.c) void {}
+
+test "a failed label copy releases every allocation once" {
+    // A path that cannot do anything: if the allocation index ever drifts,
+    // the worst case is a missing binary instead of a real engine command.
+    const argv = [_][]const u8{"/nonexistent/berth-test"};
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 3 });
+    try std.testing.expectError(
+        error.OutOfMemory,
+        start(failing.allocator(), std.testing.io, argv[0..], "berth-test label", 60, null, noopDone),
+    );
+    // Three successful allocations (job, argv, one argument string) pin the
+    // fourth as the label, which fails and is then released with the rest.
+    try std.testing.expectEqual(@as(usize, 3), failing.allocations);
+    try std.testing.expectEqual(failing.allocations, failing.deallocations);
 }

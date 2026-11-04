@@ -198,24 +198,32 @@ pub fn demux(gpa: std.mem.Allocator, raw: []const u8, max: usize) ![]u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     var i: usize = 0;
-    while (i + 8 <= raw.len) {
+    while (raw.len - i >= 8) {
         const stream = raw[i];
         const len = std.mem.readInt(u32, raw[i + 4 ..][0..4], .big);
         i += 8;
-        if ((stream != 1 and stream != 2) or i + len > raw.len) {
+        // Subtract after proving the bounds: the frame length is attacker
+        // controlled, and adding it to `i` or `out.items.len` can wrap on a
+        // 32-bit target.
+        if ((stream != 1 and stream != 2) or i > raw.len or len > raw.len - i) {
             // Not a frame after all: give back everything, raw.
-            out.deinit(gpa);
-            return gpa.dupe(u8, raw);
+            return rawFallback(gpa, raw, &out);
         }
-        if (out.items.len + len > max) return error.TooLarge;
+        if (out.items.len > max or len > max - out.items.len) return error.TooLarge;
         try out.appendSlice(gpa, raw[i .. i + len]);
         i += len;
     }
-    if (out.items.len == 0) {
-        out.deinit(gpa);
-        return gpa.dupe(u8, raw);
-    }
+    if (out.items.len == 0) return rawFallback(gpa, raw, &out);
     return out.toOwnedSlice(gpa);
+}
+
+/// Releases the partial demux before copying the raw bytes. The list is reset
+/// because `demux`'s errdefer still owns it: if the copy fails, deiniting the
+/// freed list again is a double free.
+fn rawFallback(gpa: std.mem.Allocator, raw: []const u8, out: *std.ArrayList(u8)) ![]u8 {
+    out.deinit(gpa);
+    out.* = .empty;
+    return gpa.dupe(u8, raw);
 }
 
 test "frames are stripped when present" {
@@ -238,6 +246,24 @@ test "a truncated frame falls back to raw rather than losing text" {
     const text = try demux(std.testing.allocator, raw, 1 << 20);
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings(raw, text);
+}
+
+test "a truncated frame after a complete one returns the whole raw body" {
+    // The first frame demuxed cleanly; the second is cut short. The caller
+    // still gets every byte rather than only the frames that parsed.
+    const raw = "\x01\x00\x00\x00\x00\x00\x00\x03hi\n" ++ "\x01\x00\x00\x00\x00\x00\x00\x40short";
+    const text = try demux(std.testing.allocator, raw, 1 << 20);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings(raw, text);
+}
+
+test "a failed raw fallback copy does not free the list twice" {
+    // One real frame, then a truncated one: the partial list is released and
+    // the raw copy is attempted. Fail that copy, which used to leave the
+    // errdefer pointing at an already-freed list.
+    const raw = "\x01\x00\x00\x00\x00\x00\x00\x03hi\n" ++ "\x01\x00\x00\x00\x00\x00\x00\x40short";
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    try std.testing.expectError(error.OutOfMemory, demux(failing.allocator(), raw, 1 << 20));
 }
 
 test "cpu falls back to the per-core list when online_cpus is absent" {

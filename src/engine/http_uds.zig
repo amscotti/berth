@@ -199,11 +199,15 @@ pub fn dechunk(gpa: std.mem.Allocator, body: []const u8, max: usize) ![]u8 {
         const size = std.fmt.parseInt(usize, std.mem.trim(u8, size_text, " "), 16) catch return error.BadChunk;
         i = eol + 2;
         if (size == 0) break;
-        if (i + size > body.len) return error.BadChunk;
-        if (out.items.len + size > max) return error.TooLarge;
+        // Subtract after proving the bound: Debug panics if `i + size` wraps
+        // for a header like `ffffffffffffffff`; ReleaseFast can let that wrap
+        // pass the body-bound check, so the check must subtract rather than
+        // add.
+        if (i > body.len or size > body.len - i) return error.BadChunk;
+        if (out.items.len > max or size > max - out.items.len) return error.TooLarge;
         try out.appendSlice(gpa, body[i .. i + size]);
         i += size;
-        if (i + 2 > body.len or !std.mem.eql(u8, body[i .. i + 2], "\r\n")) return error.BadChunk;
+        if (body.len - i < 2 or !std.mem.eql(u8, body[i .. i + 2], "\r\n")) return error.BadChunk;
         i += 2;
     }
     return out.toOwnedSlice(gpa);
@@ -286,9 +290,30 @@ test "a malformed chunk is an error, not silent data loss" {
         error.BadChunk,
         dechunk(std.testing.allocator, "zz\r\nhello\r\n0\r\n\r\n", 1024),
     );
+}
+
+test "a chunk must end with its own CRLF" {
+    // The body ends exactly after the payload.
     try std.testing.expectError(
         error.BadChunk,
         dechunk(std.testing.allocator, "5\r\nhello", 1024),
+    );
+    // The final \r is missing.
+    try std.testing.expectError(
+        error.BadChunk,
+        dechunk(std.testing.allocator, "5\r\nhello\n", 1024),
+    );
+}
+
+test "chunk sizes at the integer limit are refused rather than wrapped" {
+    try std.testing.expectError(
+        error.BadChunk,
+        dechunk(std.testing.allocator, "ffffffffffffffff\r\n", 1 << 20),
+    );
+    // A nonzero offset makes the wrapped `i + size` look in-bounds.
+    try std.testing.expectError(
+        error.BadChunk,
+        dechunk(std.testing.allocator, "1\r\na\r\nffffffffffffffff\r\n", 1 << 20),
     );
 }
 
