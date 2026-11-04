@@ -40,6 +40,8 @@ pub const State = struct {
     /// The engine this job was started for, captured before a minutes-long
     /// stop lets discovery or a click select a different one.
     target_kind: discovery.Kind = .dockerd,
+    /// The original socket, not the derived instance name: the restart must
+    /// re-derive the same name instead of treating it as a path.
     target_socket: [512]u8 = undefined,
     target_socket_len: usize = 0,
     /// Lima and Podman have no `restart` verb; their restart is a stop job
@@ -66,7 +68,7 @@ pub fn start(s: *app.State, verb: Verb, kind: discovery.Kind, socket: []const u8
     }
 
     var target_buf: [96]u8 = undefined;
-    const target = instance(&target_buf, kind, socket);
+    const target = instanceFor(s.io, &target_buf, kind, socket);
     const planned = plan(verb, kind);
     var argv: [6][]const u8 = undefined;
     var argc: usize = 0;
@@ -93,10 +95,7 @@ pub fn start(s: *app.State, verb: Verb, kind: discovery.Kind, socket: []const u8
 
     const described = describe(&s.ops.label_buf, planned.verb, kind, target);
     s.ops.label_len = described.len;
-    s.ops.target_kind = kind;
-    const target_len = @min(target.len, s.ops.target_socket.len);
-    @memcpy(s.ops.target_socket[0..target_len], target[0..target_len]);
-    s.ops.target_socket_len = target_len;
+    rememberTarget(s, kind, socket);
     const job = command.start(
         s.gpa,
         s.io,
@@ -147,8 +146,7 @@ fn finish(ctx: ?*anyopaque) callconv(.c) void {
     if (label.len > 0) s.gpa.free(label);
 
     if (restart_after_stop and ok) {
-        const socket = s.ops.target_socket[0..s.ops.target_socket_len];
-        start(s, .start, s.ops.target_kind, socket);
+        start(s, .start, s.ops.target_kind, restartSocket(s));
         return;
     }
     s.discover();
@@ -166,13 +164,42 @@ pub fn cancel(s: *app.State) void {
     }
 }
 
+/// The original engine address is what survives a stop/start cycle. Keeping
+/// the derived instance name here made the second start look for a socket
+/// named after the machine and fall back to the default machine.
+fn rememberTarget(s: *app.State, kind: discovery.Kind, socket: []const u8) void {
+    s.ops.target_kind = kind;
+    const n = @min(socket.len, s.ops.target_socket.len);
+    // A restart passes this same buffer back in; copyForwards tolerates that
+    // self-copy, where @memcpy would require disjoint regions.
+    std.mem.copyForwards(u8, s.ops.target_socket[0..n], socket[0..n]);
+    s.ops.target_socket_len = n;
+}
+
+fn restartSocket(s: *const app.State) []const u8 {
+    return s.ops.target_socket[0..s.ops.target_socket_len];
+}
+
 /// The instance/profile a socket belongs to, as the tool names it.
+fn instanceFor(io: std.Io, buf: []u8, kind: discovery.Kind, socket: []const u8) []const u8 {
+    const name = instance(buf, kind, socket);
+    if (name.len > 0 or kind != .podman_machine) return name;
+    // Podman 4 has no name in the socket path. Its machine config is the only
+    // place that knows a non-default name, and only when it is unambiguous.
+    return discovery.podman4MachineName(io, socket, buf) orelse "";
+}
+
+/// The name encoded in the socket path alone; Podman 4 needs a config lookup
+/// on top, which `instanceFor` supplies.
 fn instance(buf: []u8, kind: discovery.Kind, socket: []const u8) []const u8 {
     _ = buf;
+    // Podman 5 encodes the name in `<name>-api.sock`. Podman 4's socket sits
+    // in a VM-type directory (`applehv`, `libkrun`), which is not a machine
+    // name: the default machine is addressed without one.
+    if (kind == .podman_machine) return discovery.podmanMachineName(socket) orelse "";
     const marker: []const u8 = switch (kind) {
         .lima => "/.lima/",
         .colima => "/.colima/",
-        .podman_machine => "/podman/machine/",
         else => return "",
     };
     const at = std.mem.indexOf(u8, socket, marker) orelse return "";
@@ -203,7 +230,46 @@ test "the socket names the instance a tool would use" {
     try std.testing.expectEqualStrings("docker", instance(&buf, .lima, "/Users/x/.lima/docker/sock/docker.sock"));
     try std.testing.expectEqualStrings("", instance(&buf, .lima, "/Users/x/.lima/default/sock/docker.sock"));
     try std.testing.expectEqualStrings("work", instance(&buf, .colima, "/Users/x/.colima/work/docker.sock"));
-    try std.testing.expectEqualStrings("libkrun", instance(&buf, .podman_machine, "/Users/x/.local/share/containers/podman/machine/libkrun/podman.sock"));
+    try std.testing.expectEqualStrings("", instance(&buf, .podman_machine, "/Users/x/.local/share/containers/podman/machine/libkrun/podman.sock"));
+}
+
+test "podman 5 machines use their filename and 4.x uses the default" {
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "podman-machine-default",
+        instance(&buf, .podman_machine, "/var/folders/x/T/podman/podman-machine-default-api.sock"),
+    );
+    try std.testing.expectEqualStrings(
+        "work",
+        instance(&buf, .podman_machine, "/var/folders/x/T/podman/work-api.sock"),
+    );
+    // The 4.x directory is the VM type, never the machine name, and the root
+    // socket belongs to the default machine.
+    try std.testing.expectEqualStrings("", instance(&buf, .podman_machine, "/Users/x/.local/share/containers/podman/machine/applehv/podman.sock"));
+    try std.testing.expectEqualStrings("", instance(&buf, .podman_machine, "/Users/x/.local/share/containers/podman/machine/podman.sock"));
+}
+
+test "a named machine survives the stop then start round trip" {
+    var s = app.State{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer s.arena.deinit();
+
+    const podman_socket = "/var/folders/x/T/podman/work-api.sock";
+    rememberTarget(&s, .podman_machine, podman_socket);
+    var buf: [96]u8 = undefined;
+    try std.testing.expectEqualStrings("work", instanceFor(std.testing.io, &buf, s.ops.target_kind, restartSocket(&s)));
+    // The restart stores the same buffer it just read, which must not be an
+    // overlapping @memcpy.
+    rememberTarget(&s, .podman_machine, restartSocket(&s));
+    try std.testing.expectEqualStrings("work", instanceFor(std.testing.io, &buf, s.ops.target_kind, restartSocket(&s)));
+
+    // Lima's socket has always carried the instance; the restart must keep it.
+    rememberTarget(&s, .lima, "/Users/x/.lima/work/sock/docker.sock");
+    try std.testing.expectEqualStrings("work", instanceFor(std.testing.io, &buf, s.ops.target_kind, restartSocket(&s)));
 }
 
 test "restart uses one command where the tool has it" {

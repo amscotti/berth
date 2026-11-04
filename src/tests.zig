@@ -5,6 +5,8 @@ test {
     _ = @import("engine/api_tests.zig");
     _ = @import("engine/stats.zig");
     _ = @import("engine/discovery.zig");
+    _ = @import("engine/socket_path.zig");
+    _ = @import("engine/podman_tests.zig");
     _ = @import("engine/prune.zig");
     _ = @import("engine/volumes.zig");
     _ = @import("engine/events.zig");
@@ -34,6 +36,7 @@ test {
     _ = @import("ui/views/create.zig");
     _ = @import("ui/layout.zig");
     _ = @import("ui/detail.zig");
+    _ = @import("ui/shell.zig");
     _ = @import("ui/views/stacks.zig");
     _ = @import("ui/format.zig");
     _ = @import("ui/widgets.zig");

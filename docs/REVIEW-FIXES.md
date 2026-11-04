@@ -17,13 +17,13 @@ reviewer; findings are fixed before the next item starts.
 - [x] 304 from Docker/Podman treated as success for actions
 - [x] Bulk start/stop stops counting already-in-state containers as failures
 
-## 3. Engine correctness
-- [ ] RestartCount read from the top level of inspect
-- [ ] Image prune sends the `filters` JSON, not `?dangling=false`
-- [ ] Podman: volume-prune filter and build-cache prune
-- [ ] Podman 5 machine sockets and Podman 4 machine names
-- [ ] Podman CPU unknown when `precpu_stats` is absent
-- [ ] Legacy `/system/df` aggregates (containers/volumes/cache/reclaimable)
+## 3. Engine correctness — done
+- [x] RestartCount read from the top level of inspect
+- [x] Image prune sends the `filters` JSON, not `?dangling=false`
+- [x] Podman: volume-prune filter and build-cache prune
+- [x] Podman 5 machine sockets and Podman 4 machine names
+- [x] Podman CPU unknown when `precpu_stats` is absent
+- [x] Legacy `/system/df` aggregates (containers/volumes/cache/reclaimable)
 
 ## 4. UI-thread I/O, refresh cadence and teardown
 - [ ] Actions/prune/create off the UI thread

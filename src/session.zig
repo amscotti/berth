@@ -136,7 +136,9 @@ pub fn useSocket(s: *app.State, path: []const u8) bool {
         return false;
     };
     for (s.runtimes) |rt| {
-        if (!std.mem.eql(u8, rt.socket, wanted)) continue;
+        // Discovery reports canonical sockets; the user may have typed a
+        // symlink to the same place.
+        if (!discovery.sameSocket(s.io, s.gpa, rt.socket, wanted)) continue;
         if (!rt.reachable) s.notify("That socket did not answer", true);
         return rt.reachable;
     }

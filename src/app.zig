@@ -251,16 +251,12 @@ pub const State = struct {
     /// One point for the graphs: what the containers are using, how many are
     /// up, and how much disk the engine holds.
     pub fn sample(s: *State) void {
-        var cpu: f32 = 0;
         var mem: f32 = 0;
         var running: f32 = 0;
         for (s.containers, 0..) |ct, i| {
             if (!ct.isUp()) continue;
             running += 1;
-            if (i < s.stats.len and s.stats[i].sampled) {
-                cpu += @floatCast(s.stats[i].cpu);
-                mem += @floatFromInt(s.stats[i].mem);
-            }
+            if (i < s.stats.len and s.stats[i].sampled) mem += @floatFromInt(s.stats[i].mem);
         }
         var disk: f32 = 0;
         if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.totalBytes()));
@@ -268,10 +264,12 @@ pub const State = struct {
         // overview says "of N cores", so its history must be the share of the
         // whole machine or the dots and the percentage disagree by N.
         const cores: f32 = if (s.activeRuntime()) |rt| @floatFromInt(@max(rt.info.NCPU, 1)) else 1;
+        const cpu = stats_pool.aggregateCpuPercent(s.containers, s.stats, cores);
         s.host_sample = s.host.sample(s.io, s.gpa);
         s.host_sample.engine_rss = s.engine_rss;
         s.history.push(.{
-            .cpu = cpu / cores,
+            .cpu = cpu orelse 0,
+            .cpu_known = cpu != null,
             .mem = mem,
             .running = running,
             .disk = disk,

@@ -4,6 +4,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../app.zig");
+const api = @import("../engine/api.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
 const theme = @import("theme.zig");
@@ -16,6 +17,7 @@ const stacks = @import("views/stacks.zig");
 const events_view = @import("views/events.zig");
 const bulk = @import("../bulk.zig");
 const create_mod = @import("../create.zig");
+const prune = @import("../engine/prune.zig");
 
 const TABS = [_]app.Tab{
     .overview, .containers, .images, .volumes,  .networks,
@@ -179,11 +181,7 @@ fn reachableCount(s: *app.State) usize {
 
 fn storeBytes(s: *app.State) ?u64 {
     const df = s.df orelse return null;
-    const imgs = df.imageBytes();
-    const conts = if (df.ContainerUsage) |u| u.TotalSize else 0;
-    const vols = if (df.VolumeUsage) |u| u.TotalSize else 0;
-    const cache = if (df.BuildCacheUsage) |u| u.TotalSize else 0;
-    const total = imgs + conts + vols + cache;
+    const total = df.stores().total();
     return if (total > 0) @intCast(total) else null;
 }
 
@@ -305,36 +303,47 @@ pub fn confirmDialog(s: *app.State, c: *ui.Context, verb: []const u8, target: []
 /// amounts come from the last `/system/df`, so the user sees what is at stake
 /// before the first destructive click.
 fn pruneDialog(s: *app.State, c: *ui.Context) void {
+    const engine: prune.Engine = if (s.activeRuntime()) |rt|
+        switch (rt.dialect) {
+            .podman => .podman,
+            .docker => .docker,
+        }
+    else
+        .docker;
+    const build_cache_supported = prune.supported(.build_cache, engine);
+    // The shared preference is kept for Docker; only the effective value is
+    // false while a Podman engine is active.
+    const build_cache_on = prune.buildCacheEnabled(s.prune_opts.build_cache, engine);
     var cont: i64 = 0;
     var imgs: i64 = 0;
     var vols: i64 = 0;
     var cache: i64 = 0;
     if (s.df) |df| {
-        if (df.ContainerUsage) |u| cont = u.Reclaimable;
-        if (df.ImageUsage) |u| imgs = u.Reclaimable;
-        if (df.VolumeUsage) |u| vols = u.Reclaimable;
-        if (df.BuildCacheUsage) |u| cache = u.Reclaimable;
+        const free = df.reclaimableByStore();
+        cont = free.containers;
+        imgs = free.images;
+        vols = free.volumes;
+        cache = free.build_cache;
     }
-    var total: i64 = 0;
-    if (s.prune_opts.containers) total += cont;
-    if (s.prune_opts.images) total += imgs;
-    if (s.prune_opts.volumes) total += vols;
-    if (s.prune_opts.build_cache) total += cache;
+    const selected = pruneSelectedBytes(s.df, s.prune_opts, build_cache_on);
 
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.accent);
     defer box.end();
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
     ui.text(c, "Clean up unused data", .{ .size = 13, .weight = .semibold });
     ui.spacer(c);
-    ui.text(c, c.print("{s} selected", .{format.bytesSigned(c, @max(0, total))}), .{ .size = 11, .color = c.theme.muted });
+    ui.text(c, c.print("{s} selected", .{format.bytesSigned(c, @max(0, selected))}), .{ .size = 11, .color = c.theme.muted });
     head.end();
-    ui.text(c, "Stopped containers, unused images and build cache. Volumes and networks are opt-in; this cannot be undone.", .{ .size = 11.5, .color = c.theme.muted });
+    ui.text(c, if (build_cache_supported)
+        "Stopped containers, unused images and build cache. Volumes and networks are opt-in; this cannot be undone."
+    else
+        "Stopped containers and unused images. Volumes and networks are opt-in; this cannot be undone.", .{ .size = 11.5, .color = c.theme.muted });
 
     pruneOption(c, "Stopped containers", cont, &s.prune_opts.containers);
     pruneOption(c, "Unused images", imgs, &s.prune_opts.images);
     pruneOption(c, "Unused volumes", vols, &s.prune_opts.volumes);
     pruneOption(c, "Unused networks", -1, &s.prune_opts.networks);
-    pruneOption(c, "Build cache", cache, &s.prune_opts.build_cache);
+    if (build_cache_supported) pruneOption(c, "Build cache", cache, &s.prune_opts.build_cache);
 
     const buttons = ui.div(c).row().wFull().justifyEnd().gap(8).pt(2);
     if (widgets.dialogButton(c, "Cancel", false, false)) s.closePrune();
@@ -352,4 +361,30 @@ fn pruneOption(c: *ui.Context, label: []const u8, amount: i64, on: *bool) void {
     ui.spacer(c);
     ui.text(c, if (amount < 0) "—" else format.bytesSigned(c, amount), .{ .size = 11, .color = c.theme.muted });
     if (row.clicked()) on.* = !on.*;
+}
+
+/// The dialog's "selected" figure must count only steps cleanup will attempt;
+/// `build_cache_on` is the engine-aware effective flag, not the stored
+/// preference, so a hidden Podman row cannot contribute bytes.
+pub fn pruneSelectedBytes(df: ?api.Df, opts: app.PruneOptions, build_cache_on: bool) i64 {
+    const free = if (df) |d| d.reclaimableByStore() else return 0;
+    var total: i64 = 0;
+    if (opts.containers) total += free.containers;
+    if (opts.images) total += free.images;
+    if (opts.volumes) total += free.volumes;
+    if (build_cache_on) total += free.build_cache;
+    return total;
+}
+
+test "a podman visit does not clear the docker build-cache preference" {
+    const df = api.Df{
+        .ContainerUsage = .{ .Reclaimable = 10 },
+        .BuildCacheUsage = .{ .Reclaimable = 100 },
+    };
+    const opts = app.PruneOptions{ .build_cache = true };
+    const podman_on = prune.buildCacheEnabled(opts.build_cache, .podman);
+    const docker_on = prune.buildCacheEnabled(opts.build_cache, .docker);
+    try std.testing.expectEqual(@as(i64, 10), pruneSelectedBytes(df, opts, podman_on));
+    try std.testing.expectEqual(@as(i64, 110), pruneSelectedBytes(df, opts, docker_on));
+    try std.testing.expect(opts.build_cache);
 }

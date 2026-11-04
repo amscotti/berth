@@ -103,7 +103,7 @@ fn statOrUnknown(s: *app.State, id: []const u8, field: enum { cpu, mem }) f64 {
     const st = app.statFor(s, id);
     if (!st.sampled) return -1;
     return switch (field) {
-        .cpu => st.cpu,
+        .cpu => if (st.cpu_known) st.cpu else -1,
         .mem => @floatFromInt(st.mem),
     };
 }

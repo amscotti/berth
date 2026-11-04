@@ -169,7 +169,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         // A stopped container has no stats at all: say so with a dash rather
         // than a zero, which would read as "idle" instead of "unknown". A
         // paused one still reports — frozen, but real.
-        if (ct.isUp() and st.sampled) {
+        if (ct.isUp() and st.sampled and st.cpu_known) {
             widgets.cell(c, format.percent(c, st.cpu), cols.cpu, true);
         } else {
             widgets.cellMuted(c, "—", cols.cpu, true);

@@ -54,11 +54,18 @@ pub fn update(s: *app.State) void {
             if (sample.sampled) mem += sample.mem;
         }
         var bytes_buf: [32]u8 = undefined;
-        break :blk std.fmt.bufPrint(&title_buf, "{d} up · {d:.1}% · {s}", .{
-            app.runningCount(s),
-            s.history.latest(.cpu),
-            format.bytesBuf(&bytes_buf, mem),
-        }) catch "berth";
+        const cpu = s.history.latestCpu();
+        break :blk if (cpu) |v|
+            std.fmt.bufPrint(&title_buf, "{d} up · {d:.1}% · {s}", .{
+                app.runningCount(s),
+                v,
+                format.bytesBuf(&bytes_buf, mem),
+            }) catch "berth"
+        else
+            std.fmt.bufPrint(&title_buf, "{d} up · — · {s}", .{
+                app.runningCount(s),
+                format.bytesBuf(&bytes_buf, mem),
+            }) catch "berth";
     };
     tray.setTitle(title);
 }

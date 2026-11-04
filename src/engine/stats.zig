@@ -43,18 +43,29 @@ pub const Stats = struct {
     pub const Net = struct { rx: u64 = 0, tx: u64 = 0 };
     pub const Disk = struct { read: u64 = 0, write: u64 = 0 };
 
+    /// A previous sample is what makes CPU% a rate rather than a lifetime
+    /// average. Podman ≤5.7 leaves `precpu_stats` zero with `stream=false`;
+    /// that is "not measured", not an idle container. A counter that went
+    /// backwards means the container restarted inside the window, so the
+    /// delta is unknown too.
+    pub fn cpuKnown(self: Stats) bool {
+        return self.cpu_stats.system_cpu_usage > 0 and
+            self.precpu_stats.system_cpu_usage > 0 and
+            self.cpu_stats.cpu_usage.total_usage >= self.precpu_stats.cpu_usage.total_usage and
+            self.cpu_stats.system_cpu_usage >= self.precpu_stats.system_cpu_usage;
+    }
+
     /// Percent of one core, the same figure `docker stats` prints: the delta in
-    /// container CPU over the delta in system CPU, times the core count.
-    pub fn cpuPercent(self: Stats) f64 {
+    /// container CPU over the delta in system CPU, times the core count. Null
+    /// when there is no previous sample to subtract.
+    pub fn cpuPercent(self: Stats) ?f64 {
+        if (!self.cpuKnown()) return null;
         const total = self.cpu_stats.cpu_usage.total_usage;
         const pre = self.precpu_stats.cpu_usage.total_usage;
         const system = self.cpu_stats.system_cpu_usage;
         const pre_system = self.precpu_stats.system_cpu_usage;
-        // No previous sample means no delta. Without this guard a `one-shot`
-        // response silently reports the lifetime average, which looks like a
-        // plausible number and is not the one `docker stats` prints.
-        if (pre == 0 or pre_system == 0) return 0;
-        if (total <= pre or system <= pre_system) return 0;
+        // Equality is a real idle sample; only a reset is unknown.
+        if (total == pre or system == pre_system) return 0;
         var cores = self.cpu_stats.online_cpus;
         if (cores == 0) {
             if (self.cpu_stats.cpu_usage.percpu_usage) |list| cores = @intCast(list.len);
@@ -149,8 +160,9 @@ test "cpu percent uses the previous sample, not the lifetime average" {
     ;
     var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
+    try std.testing.expect(parsed.value.cpuKnown());
     // (2e6 / 2e7) * 4 * 100 = 40%
-    try std.testing.expectApproxEqAbs(@as(f64, 40.0), parsed.value.cpuPercent(), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 40.0), parsed.value.cpuPercent().?, 0.001);
 }
 
 test "a one-shot sample has no cpu to speak of" {
@@ -159,7 +171,58 @@ test "a one-shot sample has no cpu to speak of" {
     ;
     var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(f64, 0), parsed.value.cpuPercent());
+    try std.testing.expect(!parsed.value.cpuKnown());
+    try std.testing.expect(parsed.value.cpuPercent() == null);
+}
+
+test "zeroed podman precpu stats read as unknown, not idle" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":0},"system_cpu_usage":0}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.cpuKnown());
+    try std.testing.expect(parsed.value.cpuPercent() == null);
+}
+
+test "a counter reset is unknown, not an idle zero" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":500000},"system_cpu_usage":10000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.cpuKnown());
+    try std.testing.expect(parsed.value.cpuPercent() == null);
+
+    // Either counter going backwards is enough; the container restarted.
+    const total_only =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":500000},"system_cpu_usage":50000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000}}
+    ;
+    var a = try std.json.parseFromSlice(Stats, std.testing.allocator, total_only, .{ .ignore_unknown_fields = true });
+    defer a.deinit();
+    try std.testing.expect(a.value.cpuPercent() == null);
+
+    const system_only =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":4000000},"system_cpu_usage":30000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000}}
+    ;
+    var b = try std.json.parseFromSlice(Stats, std.testing.allocator, system_only, .{ .ignore_unknown_fields = true });
+    defer b.deinit();
+    try std.testing.expect(b.value.cpuPercent() == null);
+}
+
+test "equal counters are a measured zero" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value.cpuKnown());
+    try std.testing.expectEqual(@as(?f64, 0), parsed.value.cpuPercent());
 }
 
 test "memory is the working set, not the page cache" {
@@ -274,17 +337,17 @@ test "cpu falls back to the per-core list when online_cpus is absent" {
     var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
     // (2e6 / 2e7) * 4 cores * 100 = 40%.
-    try std.testing.expectApproxEqAbs(@as(f64, 40.0), parsed.value.cpuPercent(), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f64, 40.0), parsed.value.cpuPercent().?, 0.001);
 }
 
-test "a missing previous system sample reports zero, not an infinity" {
+test "a missing previous system sample is unknown, not zero" {
     const json =
         \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},
         \\ "precpu_stats":{"cpu_usage":{"total_usage":1000000}}}
     ;
     var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(f64, 0), parsed.value.cpuPercent());
+    try std.testing.expect(parsed.value.cpuPercent() == null);
 }
 
 test "memory falls back to raw usage and to the older cache key" {

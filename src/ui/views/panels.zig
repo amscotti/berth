@@ -4,6 +4,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../../app.zig");
 const api = @import("../../engine/api.zig");
+const stats_pool = @import("../../stats_pool.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const graph = @import("../graph.zig");
@@ -19,15 +20,13 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
 
     // What the containers are using, as it moves: the figures nanomon's
     // overview is built from, with berth's own colours.
-    var cpu_sum: f32 = 0;
     var mem_sum: u64 = 0;
     for (s.containers, 0..) |ct, i| {
         if (!ct.isUp() or i >= s.stats.len or !s.stats[i].sampled) continue;
-        cpu_sum += @floatCast(s.stats[i].cpu);
         mem_sum += s.stats[i].mem;
     }
     const cores: f32 = @floatFromInt(@max(info.NCPU, 1));
-    const cpu_share = cpu_sum / (cores * 100.0) * 100.0;
+    const cpu_share = stats_pool.aggregateCpuPercent(s.containers, s.stats, cores);
     const connected = if (rt) |r| r.reachable else false;
     const unknown = "—";
     // Two equal columns: `grow` hands out leftover space after each card's
@@ -40,7 +39,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         c,
         "cpu",
         "Containers · CPU",
-        if (connected) format.percent(c, cpu_share) else unknown,
+        if (connected and cpu_share != null) format.percent(c, cpu_share.?) else unknown,
         if (connected) c.print("of {d:.0} cores", .{cores}) else "no engine answering",
         .cpu,
         c.theme.accent,
@@ -220,11 +219,12 @@ fn graphCard(
 }
 
 fn diskBar(c: *ui.Context, df: api.Df, heading: []const u8) void {
-    const imgs = df.imageBytes();
-    const conts = if (df.ContainerUsage) |u| u.TotalSize else 0;
-    const vols = if (df.VolumeUsage) |u| u.TotalSize else 0;
-    const cache = if (df.BuildCacheUsage) |u| u.TotalSize else 0;
-    const total: i64 = imgs + conts + vols + cache;
+    const store = df.stores();
+    const imgs = store.images;
+    const conts = store.containers;
+    const vols = store.volumes;
+    const cache = store.build_cache;
+    const total = store.total();
     if (total <= 0) return;
 
     const box = ui.div(c).column().wFull().gap(8).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
@@ -271,10 +271,11 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
         return;
     };
     const row = ui.div(c).row().wFull().gap(12).pb(12);
-    const imgs = df.imageBytes();
-    const conts = if (df.ContainerUsage) |u| u.TotalSize else 0;
-    const vols = if (df.VolumeUsage) |u| u.TotalSize else 0;
-    const cache = if (df.BuildCacheUsage) |u| u.TotalSize else 0;
+    const store = df.stores();
+    const imgs = store.images;
+    const conts = store.containers;
+    const vols = store.volumes;
+    const cache = store.build_cache;
     // Five figures share the row; fixed 160s need 848pt and clip at the 960
     // minimum. Let them take an equal share of what the page actually has.
     const metric_w = @max(120, (s.layout.content - 4 * 12) / 5);

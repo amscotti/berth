@@ -11,6 +11,9 @@ const api = @import("engine/api.zig");
 pub const Sample = struct {
     id: []const u8 = "",
     cpu: f64 = 0,
+    /// False when the engine sent no previous CPU sample, so `cpu` is not a
+    /// measurement and must render as a dash.
+    cpu_known: bool = false,
     mem: u64 = 0,
     limit: u64 = 0,
     net_rx: u64 = 0,
@@ -22,6 +25,40 @@ pub const Sample = struct {
     /// dash, not as the zero the struct was initialized with.
     sampled: bool = false,
 };
+
+/// Reduces a parsed stats document to the numbers the UI keeps. CPU stays
+/// optional past this point: a missing previous sample is not zero.
+pub fn fromStats(id: []const u8, st: api.Stats) Sample {
+    const net = st.netTotals();
+    const disk = st.diskTotals();
+    const cpu = st.cpuPercent();
+    return .{
+        .id = id,
+        .cpu = cpu orelse 0,
+        .cpu_known = cpu != null,
+        .mem = st.memUsed(),
+        .limit = st.memLimit(),
+        .net_rx = net.rx,
+        .net_tx = net.tx,
+        .blk_read = disk.read,
+        .blk_write = disk.write,
+        .pids = st.pidsCurrent(),
+        .sampled = true,
+    };
+}
+
+/// The containers' CPU share of the whole machine. Null unless every running
+/// container has a real measurement: a partial sum is a lower bound, not the
+/// figure the overview and menu bar claim to show.
+pub fn aggregateCpuPercent(containers: []const api.Container, stats: []const Sample, cores: f32) ?f32 {
+    var sum: f32 = 0;
+    for (containers, 0..) |ct, i| {
+        if (!ct.isUp()) continue;
+        if (i >= stats.len or !stats[i].sampled or !stats[i].cpu_known) return null;
+        sum += @as(f32, @floatCast(stats[i].cpu));
+    }
+    return sum / @max(cores, 1);
+}
 
 const workers_max = 8;
 
@@ -49,20 +86,7 @@ fn work(job: Job) void {
         const ct = job.containers[i];
         if (!ct.isUp() or i >= job.out.len) continue;
         const st = client.stats(ct.Id) catch continue;
-        const net = st.netTotals();
-        const disk = st.diskTotals();
-        job.out[i] = .{
-            .id = ct.Id,
-            .cpu = st.cpuPercent(),
-            .mem = st.memUsed(),
-            .limit = st.memLimit(),
-            .net_rx = net.rx,
-            .net_tx = net.tx,
-            .blk_read = disk.read,
-            .blk_write = disk.write,
-            .pids = st.pidsCurrent(),
-            .sampled = true,
-        };
+        job.out[i] = fromStats(ct.Id, st);
     }
 }
 
@@ -105,4 +129,51 @@ pub fn sample(
         .first = i,
         .stride = workers,
     });
+}
+
+test "a sample without a previous cpu reading stays unknown" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4}}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const got = fromStats("abc", parsed.value);
+    try std.testing.expect(got.sampled);
+    try std.testing.expect(!got.cpu_known);
+}
+
+test "a sample with a previous cpu reading keeps the percentage" {
+    const json =
+        \\{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},
+        \\ "precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000}}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const got = fromStats("abc", parsed.value);
+    try std.testing.expect(got.cpu_known);
+    try std.testing.expectApproxEqAbs(@as(f64, 40.0), got.cpu, 0.001);
+}
+
+test "an aggregate with one unknown cpu is unknown, not a lower bound" {
+    const containers = [_]api.Container{
+        .{ .Id = "a", .State = "running" },
+        .{ .Id = "b", .State = "running" },
+        .{ .Id = "c", .State = "exited" },
+    };
+    const known = [_]Sample{
+        .{ .id = "a", .cpu = 20, .cpu_known = true, .sampled = true },
+        .{ .id = "b", .cpu = 40, .cpu_known = true, .sampled = true },
+        .{ .id = "c", .cpu = 999, .cpu_known = true, .sampled = true },
+    };
+    try std.testing.expectApproxEqAbs(@as(f32, 30), aggregateCpuPercent(&containers, &known, 2).?, 0.001);
+
+    const mixed = [_]Sample{
+        .{ .id = "a", .cpu = 20, .cpu_known = true, .sampled = true },
+        .{ .id = "b", .cpu_known = false, .sampled = true },
+        .{ .id = "c" },
+    };
+    try std.testing.expect(aggregateCpuPercent(&containers, &mixed, 2) == null);
+
+    const none_up = [_]api.Container{.{ .Id = "c", .State = "exited" }};
+    try std.testing.expectEqual(@as(?f32, 0), aggregateCpuPercent(&none_up, &mixed, 2));
 }

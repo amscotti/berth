@@ -134,7 +134,9 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
             // The table can drop MEM at the smallest size; the inspector is
             // then the only place the selected container's figure survives.
             if (st.sampled) {
-                facts(c, "CPU", format.percent(c, st.cpu));
+                // CPU can be unknown while memory is real: say so for CPU
+                // only, rather than hiding the whole sample.
+                facts(c, "CPU", if (st.cpu_known) format.percent(c, st.cpu) else "—");
                 const mem = if (st.limit > 0)
                     c.print("{s} of {s}", .{ format.bytes(c, st.mem), format.bytes(c, @as(u64, @intCast(st.limit))) })
                 else

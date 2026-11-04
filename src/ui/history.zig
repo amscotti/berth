@@ -12,6 +12,9 @@ pub const Which = enum { cpu, mem, running, disk, host_cpu, host_mem };
 
 pub const Sample = struct {
     cpu: f32 = 0,
+    /// False when the engine did not measure CPU this pass. The graph holds
+    /// the last known value instead of drawing a fake zero.
+    cpu_known: bool = true,
     mem: f32 = 0,
     running: f32 = 0,
     disk: f32 = 0,
@@ -21,6 +24,7 @@ pub const Sample = struct {
 
 pub const History = struct {
     cpu: [Cap]f32 = @splat(0),
+    cpu_known: [Cap]bool = @splat(true),
     mem: [Cap]f32 = @splat(0),
     running: [Cap]f32 = @splat(0),
     disk: [Cap]f32 = @splat(0),
@@ -32,6 +36,7 @@ pub const History = struct {
         if (h.count == Cap) {
             // Drop the oldest point by shifting everything down one.
             std.mem.copyForwards(f32, h.cpu[0 .. Cap - 1], h.cpu[1..Cap]);
+            std.mem.copyForwards(bool, h.cpu_known[0 .. Cap - 1], h.cpu_known[1..Cap]);
             std.mem.copyForwards(f32, h.mem[0 .. Cap - 1], h.mem[1..Cap]);
             std.mem.copyForwards(f32, h.running[0 .. Cap - 1], h.running[1..Cap]);
             std.mem.copyForwards(f32, h.disk[0 .. Cap - 1], h.disk[1..Cap]);
@@ -39,7 +44,11 @@ pub const History = struct {
             std.mem.copyForwards(f32, h.host_mem[0 .. Cap - 1], h.host_mem[1..Cap]);
             h.count = Cap - 1;
         }
-        h.cpu[h.count] = s.cpu;
+        // An unknown CPU is not a zero: keep the previous height so the line
+        // stays where the last measurement left it.
+        const previous_cpu = if (h.count > 0) h.cpu[h.count - 1] else 0;
+        h.cpu[h.count] = if (s.cpu_known) s.cpu else previous_cpu;
+        h.cpu_known[h.count] = s.cpu_known;
         h.mem[h.count] = s.mem;
         h.running[h.count] = s.running;
         h.disk[h.count] = s.disk;
@@ -48,9 +57,24 @@ pub const History = struct {
         h.count += 1;
     }
 
+    pub fn firstKnownCpu(h: *const History) ?usize {
+        for (h.cpu_known[0..h.count], 0..) |known, i| {
+            if (known) return i;
+        }
+        return null;
+    }
+
+    pub fn hasKnownCpu(h: *const History) bool {
+        return h.firstKnownCpu() != null;
+    }
+
     pub fn values(h: *const History, which: Which) []const f32 {
         return switch (which) {
-            .cpu => h.cpu[0..h.count],
+            // No measurement yet means no line to draw; a flat zero would
+            // read as an idle engine rather than an unknown CPU. Once there
+            // is a measurement, drop the unknown prefix too, or the graph
+            // starts with fake zeros before the first real sample.
+            .cpu => if (h.firstKnownCpu()) |first| h.cpu[first..h.count] else &.{},
             .mem => h.mem[0..h.count],
             .running => h.running[0..h.count],
             .disk => h.disk[0..h.count],
@@ -63,6 +87,14 @@ pub const History = struct {
     pub fn latest(h: *const History, which: Which) f32 {
         const v = h.values(which);
         return if (v.len == 0) 0 else v[v.len - 1];
+    }
+
+    /// The latest CPU reading, or null when this pass had none. The graph
+    /// holds its last height, but the number must say "unknown" rather than
+    /// repeat an old measurement as if it were current.
+    pub fn latestCpu(h: *const History) ?f32 {
+        if (h.count == 0 or !h.cpu_known[h.count - 1]) return null;
+        return h.cpu[h.count - 1];
     }
 
     /// Forget the series when the engine changes. The host card reads its
@@ -114,4 +146,34 @@ test "each series keeps its own column" {
     try std.testing.expectEqual(@as(f32, 12), h.latest(.host_mem));
     try std.testing.expectEqual(@as(f32, 7), h.peak(.cpu));
     try std.testing.expectEqual(@as(f32, 12), h.peak(.host_mem));
+}
+
+test "an unknown cpu holds the graph and reports no current reading" {
+    var h: History = .{};
+    h.push(.{ .cpu = 12.5, .cpu_known = true });
+    try std.testing.expectEqual(@as(?f32, 12.5), h.latestCpu());
+    h.push(.{ .cpu = 0, .cpu_known = false });
+    // The graph keeps the last measured height, not a fake zero.
+    try std.testing.expectEqual(@as(f32, 12.5), h.latest(.cpu));
+    // The number still says unknown.
+    try std.testing.expect(h.latestCpu() == null);
+}
+
+test "a cpu series with no measurement at all draws nothing" {
+    var h: History = .{};
+    h.push(.{ .cpu_known = false });
+    try std.testing.expect(!h.hasKnownCpu());
+    try std.testing.expectEqual(@as(usize, 0), h.values(.cpu).len);
+    // Other series still record that pass.
+    try std.testing.expectEqual(@as(usize, 1), h.values(.mem).len);
+}
+
+test "unknown cpu prefix is dropped after the first real sample" {
+    var h: History = .{};
+    h.push(.{ .cpu = 0, .cpu_known = false });
+    h.push(.{ .cpu = 0, .cpu_known = false });
+    h.push(.{ .cpu = 7.5, .cpu_known = true });
+    try std.testing.expectEqual(@as(usize, 1), h.values(.cpu).len);
+    try std.testing.expectEqual(@as(f32, 7.5), h.values(.cpu)[0]);
+    try std.testing.expectEqual(@as(usize, 3), h.values(.mem).len);
 }

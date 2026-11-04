@@ -130,9 +130,28 @@ test "ports read as publish to expose" {
     try std.testing.expectEqualStrings("8080→80, 8443→443", parsed.value.portsText(&buf, 2));
 }
 
+test "version components identify podman, not the socket path" {
+    const podman =
+        \\{"Version":"5.7.0","ApiVersion":"1.51",
+        \\ "Components":[{"Name":"Podman Engine","Version":"5.7.0"},{"Name":"API","Version":"5.7.0"}]}
+    ;
+    var a = try std.json.parseFromSlice(api.Version, std.testing.allocator, podman, .{ .ignore_unknown_fields = true });
+    defer a.deinit();
+    try std.testing.expect(a.value.isPodman());
+
+    const docker =
+        \\{"Version":"28.0.1","ApiVersion":"1.51",
+        \\ "Components":[{"Name":"Engine","Version":"28.0.1"},{"Name":"containerd","Version":"2.1.0"}]}
+    ;
+    var b = try std.json.parseFromSlice(api.Version, std.testing.allocator, docker, .{ .ignore_unknown_fields = true });
+    defer b.deinit();
+    try std.testing.expect(!b.value.isPodman());
+}
+
 test "df reads the new shape and the old one" {
     const new_shape =
-        \\{"ImageUsage":{"TotalCount":3,"ActiveCount":1,"TotalSize":100,"Reclaimable":60},
+        \\{"LayersSize":999,"Images":[{"Size":500,"Containers":0}],
+        \\ "ImageUsage":{"TotalCount":3,"ActiveCount":1,"TotalSize":100,"Reclaimable":60},
         \\ "ContainerUsage":{"TotalSize":10,"Reclaimable":5}}
     ;
     var a = try std.json.parseFromSlice(api.Df, std.testing.allocator, new_shape, .{ .ignore_unknown_fields = true });
@@ -141,11 +160,71 @@ test "df reads the new shape and the old one" {
     try std.testing.expectEqual(@as(i64, 65), a.value.reclaimable());
 
     const old_shape =
-        \\{"LayersSize":1,"Images":[{"Size":40},{"Size":2}]}
+        \\{"LayersSize":42,"Images":[{"Size":40},{"Size":2}]}
     ;
     var b = try std.json.parseFromSlice(api.Df, std.testing.allocator, old_shape, .{ .ignore_unknown_fields = true });
     defer b.deinit();
     try std.testing.expectEqual(@as(i64, 42), b.value.imageBytes());
+
+    // No LayersSize: fall back to the image summaries rather than zero.
+    const no_layers =
+        \\{"Images":[{"Size":40},{"Size":2}]}
+    ;
+    var c = try std.json.parseFromSlice(api.Df, std.testing.allocator, no_layers, .{ .ignore_unknown_fields = true });
+    defer c.deinit();
+    try std.testing.expectEqual(@as(i64, 42), c.value.imageBytes());
+}
+
+test "legacy df totals and reclaimable come from the raw lists" {
+    // API 1.51 shape: no *Usage summaries, only LayersSize and the stores.
+    // LayersSize is deliberately different from the sum of image Sizes, and
+    // the same image is repeated under two tags, as a multi-tag image is.
+    const json =
+        \\{"LayersSize":107514958,
+        \\ "Images":[{"Id":"sha256:used","Size":100000000,"SharedSize":5900273,"Containers":1},
+        \\           {"Id":"sha256:used","Size":100000000,"SharedSize":5900273,"Containers":1},
+        \\           {"Id":"sha256:unused-a","Size":20000000,"SharedSize":10000000,"Containers":0},
+        \\           {"Id":"sha256:unused-a","Size":20000000,"SharedSize":10000000,"Containers":0},
+        \\           {"Id":"sha256:unused-b","Size":2000000,"SharedSize":1584769,"Containers":0}],
+        \\ "Containers":[{"Id":"run","State":"running","SizeRw":40960},
+        \\               {"Id":"stop","State":"exited","SizeRw":40960}],
+        \\ "Volumes":[{"Name":"used","UsageData":{"Size":1000000,"RefCount":1}},
+        \\            {"Name":"unused","UsageData":{"Size":2374271,"RefCount":0}}],
+        \\ "BuildCache":[{"ID":"used","Size":500000,"InUse":true},
+        \\               {"ID":"unused","Size":200000,"InUse":false},
+        \\               {"ID":"shared","Size":9000000,"InUse":false,"Shared":true}]}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Df, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    const store = parsed.value.stores();
+    try std.testing.expectEqual(@as(i64, 107514958), store.images);
+    try std.testing.expectEqual(@as(i64, 81920), store.containers);
+    try std.testing.expectEqual(@as(i64, 3374271), store.volumes);
+    // Shared build-cache records are not this store's own bytes.
+    try std.testing.expectEqual(@as(i64, 700000), store.build_cache);
+
+    const free = parsed.value.reclaimableByStore();
+    // 107514958 - (100000000 - 5900273) = 13415231; duplicate Ids and
+    // SharedSize are both load-bearing in that figure.
+    try std.testing.expectEqual(@as(i64, 13415231), free.images);
+    try std.testing.expectEqual(@as(i64, 40960), free.containers);
+    try std.testing.expectEqual(@as(i64, 2374271), free.volumes);
+    try std.testing.expectEqual(@as(i64, 200000), free.build_cache);
+    try std.testing.expectEqual(@as(i64, 16030462), parsed.value.reclaimable());
+}
+
+test "legacy image reclaimable without LayersSize uses unique unused sizes" {
+    const json =
+        \\{"Images":[{"Id":"sha256:used","Size":100000000,"SharedSize":5900273,"Containers":1},
+        \\           {"Id":"sha256:unused-a","Size":20000000,"SharedSize":10000000,"Containers":0},
+        \\           {"Id":"sha256:unused-a","Size":20000000,"SharedSize":10000000,"Containers":0},
+        \\           {"Id":"sha256:unused-b","Size":2000000,"SharedSize":1584769,"Containers":0}]}
+    ;
+    var parsed = try std.json.parseFromSlice(api.Df, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    // (20000000 - 10000000) + (2000000 - 1584769), with the repeated row
+    // counted once.
+    try std.testing.expectEqual(@as(i64, 10415231), parsed.value.reclaimable());
 }
 
 test "df total is every store, not just images" {

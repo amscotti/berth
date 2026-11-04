@@ -39,6 +39,9 @@ pub const Client = struct {
     alloc: std.mem.Allocator,
     /// The engine's own words when a call failed, for the UI to show.
     err_body: []const u8 = "",
+    /// The HTTP status behind `error.EngineError`, so callers can tell a
+    /// missing route (404) or unsupported filter (500) from a real failure.
+    err_status: u16 = 0,
 
     pub fn init(io: std.Io, gpa: std.mem.Allocator, socket: []const u8) Client {
         return .{ .io = io, .gpa = gpa, .socket = socket, .alloc = gpa };
@@ -89,10 +92,12 @@ pub const Client = struct {
             } else |_| {
                 self.err_body = self.alloc.dupe(u8, res.body) catch "";
             }
+            self.err_status = res.status;
             res.deinit(self.gpa);
             return error.EngineError;
         }
         self.err_body = "";
+        self.err_status = 0;
         return res.body;
     }
 
@@ -221,6 +226,21 @@ pub const Version = struct {
     Os: []const u8 = "",
     Arch: []const u8 = "",
     GoVersion: []const u8 = "",
+    Components: ?[]Component = null,
+
+    pub const Component = struct {
+        Name: []const u8 = "",
+    };
+
+    /// Podman's compatibility layer speaks Docker's API, but its version
+    /// response names the engine. The socket path is not evidence enough.
+    pub fn isPodman(self: Version) bool {
+        const list = self.Components orelse return false;
+        for (list) |component| {
+            if (std.mem.eql(u8, component.Name, "Podman Engine")) return true;
+        }
+        return false;
+    }
 };
 
 pub const Info = struct {
@@ -278,6 +298,9 @@ pub const Container = struct {
     Labels: ?std.json.Value = null,
     NetworkSettings: ?std.json.Value = null,
     Mounts: ?[]const Mount = null,
+    /// Writable-layer bytes, present on containers in `/system/df` and used
+    /// for the legacy disk totals.
+    SizeRw: i64 = 0,
 
     /// The first name without Docker's leading slash.
     pub fn name(self: Container) []const u8 {
@@ -529,71 +552,6 @@ pub fn attachedCount(containers: []const Container, network: []const u8) usize {
     return n;
 }
 
-/// `/system/df` in both shapes: `*Usage` from API 1.52, the flat fields before.
-pub const Df = struct {
-    LayersSize: u64 = 0,
-    Images: ?[]Image = null,
-    Containers: ?[]Container = null,
-    Volumes: ?[]Volume = null,
-    BuildCache: ?[]BuildCacheItem = null,
-    ImageUsage: ?Usage = null,
-    ContainerUsage: ?Usage = null,
-    VolumeUsage: ?Usage = null,
-    BuildCacheUsage: ?Usage = null,
-
-    pub const Usage = struct {
-        TotalCount: i64 = 0,
-        ActiveCount: i64 = 0,
-        TotalSize: i64 = 0,
-        Reclaimable: i64 = 0,
-    };
-
-    pub const BuildCacheItem = struct {
-        ID: []const u8 = "",
-        Size: i64 = 0,
-        InUse: bool = false,
-        Shared: bool = false,
-    };
-
-    /// The four figures the Disk view shows, whichever shape arrived.
-    pub fn imageBytes(self: Df) i64 {
-        if (self.ImageUsage) |u| return u.TotalSize;
-        var sum: i64 = 0;
-        if (self.Images) |list| {
-            for (list) |i| sum += @intCast(i.Size);
-        }
-        return sum;
-    }
-
-    /// Everything the engine's stores hold, not only images: the figure the
-    /// overview's DISK card and its graph stand for.
-    pub fn totalBytes(self: Df) i64 {
-        var sum = self.imageBytes();
-        if (self.ContainerUsage) |u| sum += u.TotalSize;
-        if (self.VolumeUsage) |u| {
-            sum += u.TotalSize;
-        } else if (self.Volumes) |list| {
-            for (list) |v| {
-                if (v.UsageData) |d| {
-                    // -1 means "not measured"; adding it would shrink the total.
-                    if (d.Size > 0) sum += d.Size;
-                }
-            }
-        }
-        if (self.BuildCacheUsage) |u| {
-            sum += u.TotalSize;
-        } else if (self.BuildCache) |list| {
-            for (list) |b| sum += b.Size;
-        }
-        return sum;
-    }
-
-    pub fn reclaimable(self: Df) i64 {
-        var sum: i64 = 0;
-        if (self.ImageUsage) |u| sum += u.Reclaimable;
-        if (self.ContainerUsage) |u| sum += u.Reclaimable;
-        if (self.VolumeUsage) |u| sum += u.Reclaimable;
-        if (self.BuildCacheUsage) |u| sum += u.Reclaimable;
-        return sum;
-    }
-};
+/// `/system/df` in both shapes: the definitions live in `df.zig`, re-exported
+/// here where every caller already looks for the API types.
+pub const Df = @import("df.zig").Df;

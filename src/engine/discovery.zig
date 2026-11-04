@@ -7,6 +7,8 @@
 const std = @import("std");
 const api = @import("api.zig");
 const http = @import("http_uds.zig");
+const podman_config = @import("podman_config.zig");
+const socket_path = @import("socket_path.zig");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
 extern "c" fn getuid() c_uint;
@@ -42,9 +44,14 @@ pub const Kind = enum {
     }
 };
 
+pub const Dialect = enum { docker, podman };
+
 pub const Runtime = struct {
     name: []const u8 = "",
     kind: Kind = .dockerd,
+    /// What the engine says it is, from `/version` components. The socket
+    /// path cannot tell Podman's Docker-compatible API from Docker's.
+    dialect: Dialect = .docker,
     socket: []const u8 = "",
     /// The versioned prefix (`v1.56`) for this engine, owned here so the UI
     /// client can use it after discovery's client is gone.
@@ -69,6 +76,10 @@ pub fn freeRuntime(gpa: std.mem.Allocator, rt: *Runtime) void {
     gpa.free(rt.version.Os);
     gpa.free(rt.version.Arch);
     gpa.free(rt.version.GoVersion);
+    if (rt.version.Components) |components| {
+        for (components) |component| gpa.free(component.Name);
+        gpa.free(components);
+    }
     gpa.free(rt.info.ID);
     gpa.free(rt.info.Name);
     gpa.free(rt.info.ServerVersion);
@@ -105,10 +116,10 @@ pub fn candidates(io: std.Io, gpa: std.mem.Allocator, preferred: []const u8) ![]
 
     // The socket the user chose last time comes first: it wins ties, and it
     // is probed even when it is not one of the paths berth knows by heart.
-    if (preferred.len > 0) try add(gpa, &list, preferred);
+    if (preferred.len > 0) try addResolved(io, gpa, &list, preferred);
 
     if (env("DOCKER_HOST")) |host| {
-        if (std.mem.startsWith(u8, host, "unix://")) try add(gpa, &list, host["unix://".len..]);
+        if (std.mem.startsWith(u8, host, "unix://")) try addResolved(io, gpa, &list, host["unix://".len..]);
     }
 
     if (home.len > 0) {
@@ -120,7 +131,12 @@ pub fn candidates(io: std.Io, gpa: std.mem.Allocator, preferred: []const u8) ![]
         try addJoin(io, gpa, &list, home, "/.colima/default/docker.sock");
         try addJoin(io, gpa, &list, home, "/.colima/docker.sock");
         try addJoin(io, gpa, &list, home, "/.lima/default/sock/docker.sock");
-        try addPodmanMachines(io, gpa, &list, home);
+    }
+    // Podman 5's named runtime sockets come before the 4.x alias, which may
+    // be a symlink to whichever machine is active.
+    try addPodmanRuntimeSockets(io, gpa, &list);
+    try addPodmanMachines(io, gpa, &list, home);
+    if (home.len > 0) {
         // Lima names the socket after the instance, so a VM called `docker`
         // lives under `~/.lima/docker/` and would otherwise be invisible.
         try addLimaInstances(io, gpa, &list, home);
@@ -157,28 +173,122 @@ fn addJoin(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8),
     try addIfExists(io, gpa, list, joined);
 }
 
+pub const canonicalSocketPath = socket_path.canonicalSocketPath;
+pub const sameSocket = socket_path.sameSocket;
+
 /// A path that is not there is not a runtime. Filtering keeps stopped
 /// engines from filling the chooser with sockets that can never answer.
 fn addIfExists(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), path: []const u8) !void {
-    std.Io.Dir.accessAbsolute(io, path, .{}) catch return;
-    try add(gpa, list, path);
+    const resolved = try socket_path.canonicalSocketPath(io, gpa, path);
+    defer gpa.free(resolved);
+    std.Io.Dir.accessAbsolute(io, resolved, .{}) catch return;
+    try add(gpa, list, resolved);
 }
 
 /// Podman machine moved from qemu to applehv to libkrun and lets people name
 /// machines; enumerate the provider directories rather than guessing one.
+/// Podman 5 also moved the socket out of the VM-type directory into the
+/// per-user runtime directory, named after the machine.
 fn addPodmanMachines(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), home: []const u8) !void {
-    const root = try std.fmt.allocPrint(gpa, "{s}/.local/share/containers/podman/machine", .{home});
+    const data_home = env("XDG_DATA_HOME") orelse "";
+    const root = if (data_home.len > 0)
+        try std.fmt.allocPrint(gpa, "{s}/containers/podman/machine", .{data_home})
+    else if (home.len > 0)
+        try std.fmt.allocPrint(gpa, "{s}/.local/share/containers/podman/machine", .{home})
+    else
+        return;
     defer gpa.free(root);
-    try addJoin(io, gpa, list, root, "/podman.sock");
-    const dir = std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true }) catch return;
-    defer dir.close(io);
-    var it = dir.iterate();
-    while (it.next(io) catch null) |entry| {
-        if (entry.kind != .directory) continue;
-        const rest = try std.fmt.allocPrint(gpa, "/{s}/podman.sock", .{entry.name});
-        defer gpa.free(rest);
-        try addJoin(io, gpa, list, root, rest);
+    // Podman 5's root socket is often a symlink to the active machine's
+    // runtime socket; resolving it lets the named candidate win instead of
+    // showing the same engine twice under a nameless alias.
+    const alias = try std.fmt.allocPrint(gpa, "{s}/podman.sock", .{root});
+    defer gpa.free(alias);
+    try addIfExists(io, gpa, list, alias);
+    if (std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true })) |dir| {
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            const rest = try std.fmt.allocPrint(gpa, "/{s}/podman.sock", .{entry.name});
+            defer gpa.free(rest);
+            try addJoin(io, gpa, list, root, rest);
+        }
+    } else |_| {}
+}
+
+/// Adds a path even when it is not answering, after resolving a symlink so a
+/// remembered socket and the engine's real socket do not appear twice.
+fn addResolved(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), path: []const u8) !void {
+    const resolved = try socket_path.canonicalSocketPath(io, gpa, path);
+    defer gpa.free(resolved);
+    try add(gpa, list, resolved);
+}
+
+/// Podman 5 names the API socket `<machine>-api.sock` under the runtime
+/// directory. macOS puts it under TMPDIR, Linux under XDG_RUNTIME_DIR or the
+/// system runtime directory.
+fn addPodmanRuntimeSockets(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8)) !void {
+    const tmp = env("TMPDIR") orelse "/tmp";
+    try addPodmanRuntimeRoot(io, gpa, list, if (tmp.len > 0) tmp else "/tmp");
+    if (env("XDG_RUNTIME_DIR")) |xdg| {
+        if (xdg.len > 0) try addPodmanRuntimeRoot(io, gpa, list, xdg);
     }
+    // XDG_RUNTIME_DIR can point somewhere else; the per-uid fallback is still
+    // where Podman puts machine sockets on many Linux installs.
+    var uid_buf: [64]u8 = undefined;
+    const uid_root = std.fmt.bufPrint(&uid_buf, "/run/user/{d}", .{getuid()}) catch "/run/user/0";
+    try addPodmanRuntimeRoot(io, gpa, list, uid_root);
+    try addPodmanRuntimeRoot(io, gpa, list, "/run");
+}
+
+fn addPodmanRuntimeRoot(io: std.Io, gpa: std.mem.Allocator, list: *std.ArrayList([]const u8), base: []const u8) !void {
+    const clean = std.mem.trimEnd(u8, base, "/");
+    const root = try std.fmt.allocPrint(gpa, "{s}/podman", .{if (clean.len > 0) clean else "/"});
+    defer gpa.free(root);
+    // Named `*-api.sock` sockets are the machines a lifecycle command can
+    // address; the unqualified `podman.sock` may be an alias for whichever
+    // one is active, so it comes after them.
+    if (std.Io.Dir.openDirAbsolute(io, root, .{ .iterate = true })) |dir| {
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (it.next(io) catch null) |entry| {
+            if (!isPodmanMachineSocket(entry.name)) continue;
+            const path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ root, entry.name });
+            defer gpa.free(path);
+            try addIfExists(io, gpa, list, path);
+        }
+    } else |_| {}
+    try addJoin(io, gpa, list, root, "/podman.sock");
+}
+
+/// A machine socket's filename carries the machine name; the VM type used to.
+pub fn isPodmanMachineSocket(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, "-api.sock");
+}
+
+/// The machine name encoded in a Podman 5 socket filename, or null for the
+/// unnamed 4.x layout.
+pub fn podmanMachineName(path: []const u8) ?[]const u8 {
+    const slash = std.mem.lastIndexOfScalar(u8, path, '/') orelse return null;
+    const base = path[slash + 1 ..];
+    if (!isPodmanMachineSocket(base)) return null;
+    return base[0 .. base.len - "-api.sock".len];
+}
+
+/// Podman 4's socket lives under a VM-type directory, not the machine name.
+/// The only name available there is the one config file Podman keeps for that
+/// provider; when there are zero or several, the caller must use the default.
+pub fn podman4MachineName(io: std.Io, socket: []const u8, out: []u8) ?[]const u8 {
+    const home = env("HOME") orelse "";
+    const xdg_config = env("XDG_CONFIG_HOME") orelse "";
+    return podman4MachineNameIn(io, home, xdg_config, socket, out);
+}
+
+/// Podman 4's socket lives under a machine name (4.0–4.4) or a VM type
+/// (4.5+); the config directory disambiguates. Kept here so callers have one
+/// discovery entry point.
+pub fn podman4MachineNameIn(io: std.Io, home: []const u8, xdg_config: []const u8, socket: []const u8, out: []u8) ?[]const u8 {
+    return podman_config.machineName(io, home, xdg_config, socket, out);
 }
 
 /// Every Lima instance, not just `default`: `limactl start docker` produces
@@ -213,6 +323,11 @@ pub fn kindOf(path: []const u8) Kind {
     if (std.mem.indexOf(u8, path, ".colima") != null) return .colima;
     if (std.mem.indexOf(u8, path, ".lima") != null) return .lima;
     if (std.mem.indexOf(u8, path, "podman/machine") != null) return .podman_machine;
+    // Podman 5 puts `<machine>-api.sock` under the runtime dir, so the path
+    // no longer contains the 4.x `machine` directory.
+    if (std.mem.indexOf(u8, path, "/podman/") != null) {
+        if (podmanMachineName(path) != null) return .podman_machine;
+    }
     if (std.mem.indexOf(u8, path, "podman") != null) return .podman;
     if (std.mem.indexOf(u8, path, ".docker/run") != null or
         std.mem.indexOf(u8, path, ".docker/desktop") != null or
@@ -265,6 +380,7 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !Found {
         }
         var client = api.Client.init(io, gpa, rt.socket);
         rt.version = client.version() catch api.Version{};
+        rt.dialect = if (rt.version.isPodman()) .podman else .docker;
         if (rt.version.ApiVersion.len > 0) {
             rt.api = std.fmt.allocPrint(gpa, "v{s}", .{rt.version.ApiVersion}) catch "";
             if (rt.api.len > 0) client.api = rt.api;
@@ -308,9 +424,11 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !Found {
 }
 
 fn isDuplicate(earlier: []const Runtime, rt: Runtime) bool {
-    if (!rt.reachable or rt.info.ID.len == 0) return false;
+    // Podman's info.ID is per request, so comparing IDs would leave every
+    // alias visible. Path canonicalization already collapses those.
+    if (!rt.reachable or rt.dialect == .podman or rt.info.ID.len == 0) return false;
     for (earlier) |prev| {
-        if (prev.reachable and prev.info.ID.len > 0 and std.mem.eql(u8, prev.info.ID, rt.info.ID)) return true;
+        if (prev.reachable and prev.dialect == .docker and prev.info.ID.len > 0 and std.mem.eql(u8, prev.info.ID, rt.info.ID)) return true;
     }
     return false;
 }
@@ -346,11 +464,100 @@ test "a socket path names its runtime" {
     try std.testing.expectEqual(Kind.colima, kindOf("/Users/x/.colima/default/docker.sock"));
     try std.testing.expectEqual(Kind.lima, kindOf("/Users/x/.lima/default/sock/docker.sock"));
     try std.testing.expectEqual(Kind.podman_machine, kindOf("/Users/x/.local/share/containers/podman/machine/applehv/podman.sock"));
+    try std.testing.expectEqual(Kind.podman_machine, kindOf("/var/folders/x/T/podman/podman-machine-default-api.sock"));
     try std.testing.expectEqual(Kind.podman, kindOf("/run/user/1000/podman/podman.sock"));
     try std.testing.expectEqual(Kind.docker_desktop, kindOf("/Users/x/.docker/run/docker.sock"));
     try std.testing.expectEqual(Kind.orbstack, kindOf("/Users/x/.orbstack/run/docker.sock"));
     try std.testing.expectEqual(Kind.rancher, kindOf("/Users/x/.rd/docker.sock"));
     try std.testing.expectEqual(Kind.dockerd, kindOf("/var/run/docker.sock"));
+}
+
+test "podman 5 sockets carry the machine name in the filename" {
+    try std.testing.expect(isPodmanMachineSocket("podman-machine-default-api.sock"));
+    try std.testing.expect(!isPodmanMachineSocket("podman.sock"));
+    try std.testing.expectEqualStrings(
+        "podman-machine-default",
+        podmanMachineName("/var/folders/x/T/podman/podman-machine-default-api.sock").?,
+    );
+    // Podman 4's socket lives in a VM-type directory and has no machine name.
+    try std.testing.expect(podmanMachineName("/Users/x/.local/share/containers/podman/machine/applehv/podman.sock") == null);
+}
+
+test "podman runtime sockets are scanned under xdg and system roots" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base = path_buf[0..n];
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    try tmp.dir.createDirPath(io, "xdg/podman");
+    try tmp.dir.createDirPath(io, "run/podman");
+    try tmp.dir.createDirPath(io, "run/user/1000/podman");
+    try tmp.dir.writeFile(io, .{ .sub_path = "xdg/podman/work-api.sock", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "run/podman/system-api.sock", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "run/user/1000/podman/rootless-api.sock", .data = "" });
+
+    const xdg = try std.fmt.allocPrint(gpa, "{s}/xdg", .{base});
+    defer gpa.free(xdg);
+    const run = try std.fmt.allocPrint(gpa, "{s}/run", .{base});
+    defer gpa.free(run);
+    const rootless = try std.fmt.allocPrint(gpa, "{s}/run/user/1000", .{base});
+    defer gpa.free(rootless);
+
+    var list: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (list.items) |s| gpa.free(s);
+        list.deinit(gpa);
+    }
+    try addPodmanRuntimeRoot(io, gpa, &list, xdg);
+    try addPodmanRuntimeRoot(io, gpa, &list, run);
+    try addPodmanRuntimeRoot(io, gpa, &list, rootless);
+
+    try std.testing.expectEqual(@as(usize, 3), list.items.len);
+    const first = try std.fmt.allocPrint(gpa, "{s}/podman/work-api.sock", .{xdg});
+    defer gpa.free(first);
+    const second = try std.fmt.allocPrint(gpa, "{s}/podman/system-api.sock", .{run});
+    defer gpa.free(second);
+    const third = try std.fmt.allocPrint(gpa, "{s}/podman/rootless-api.sock", .{rootless});
+    defer gpa.free(third);
+    try std.testing.expectEqualStrings(first, list.items[0]);
+    try std.testing.expectEqualStrings(second, list.items[1]);
+    try std.testing.expectEqualStrings(third, list.items[2]);
+}
+
+test "a podman 5 alias resolves to the named runtime socket" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &path_buf);
+    const base = path_buf[0..n];
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+
+    try tmp.dir.createDirPath(io, "runtime/podman");
+    try tmp.dir.createDirPath(io, "home/.local/share/containers/podman/machine");
+    try tmp.dir.writeFile(io, .{ .sub_path = "runtime/podman/work-api.sock", .data = "" });
+
+    const runtime_base = try std.fmt.allocPrint(gpa, "{s}/runtime", .{base});
+    defer gpa.free(runtime_base);
+    const socket = try std.fmt.allocPrint(gpa, "{s}/podman/work-api.sock", .{runtime_base});
+    defer gpa.free(socket);
+    const alias = try std.fmt.allocPrint(gpa, "{s}/home/.local/share/containers/podman/machine/podman.sock", .{base});
+    defer gpa.free(alias);
+    try tmp.dir.symLink(io, socket, "home/.local/share/containers/podman/machine/podman.sock", .{});
+
+    var list: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (list.items) |s| gpa.free(s);
+        list.deinit(gpa);
+    }
+    try addPodmanRuntimeRoot(io, gpa, &list, runtime_base);
+    try addResolved(io, gpa, &list, alias);
+
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expectEqualStrings(socket, list.items[0]);
 }
 
 test "lima instance directories exclude lima's own bookkeeping" {

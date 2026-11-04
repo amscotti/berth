@@ -61,6 +61,8 @@ pub fn fromInspect(gpa: std.mem.Allocator, raw: []const u8) Lifetime {
     };
     const Doc = struct {
         Name: []const u8 = "",
+        /// Inspect puts the restart count beside State, not inside it.
+        RestartCount: i64 = 0,
         Config: struct {
             Image: []const u8 = "",
             Env: ?[]const []const u8 = null,
@@ -71,13 +73,13 @@ pub fn fromInspect(gpa: std.mem.Allocator, raw: []const u8) Lifetime {
         Mounts: ?[]const Mount = null,
         State: struct {
             StartedAt: []const u8 = "",
-            RestartCount: i64 = 0,
         } = .{},
     };
     var parsed = std.json.parseFromSlice(Doc, gpa, raw, .{ .ignore_unknown_fields = true, .allocate = .alloc_always }) catch return out;
     defer parsed.deinit();
     const doc = parsed.value;
-    out.restarts = @intCast(@max(@as(i64, 0), doc.State.RestartCount));
+    const restarts = @max(@as(i64, 0), doc.RestartCount);
+    out.restarts = @intCast(@min(restarts, @as(i64, std.math.maxInt(u32))));
     out.started_at = rfc3339(doc.State.StartedAt);
     out.run_cmd = runCommand(gpa, doc) catch null;
     return out;
@@ -294,12 +296,30 @@ test "rfc3339 parses docker timestamps and rejects the never-started zero" {
 
 test "inspect carries restarts and a start time" {
     const doc =
-        \\{"State":{"Status":"running","StartedAt":"2026-09-22T18:13:20Z","RestartCount":3}}
+        \\{"RestartCount":3,"State":{"Status":"running","StartedAt":"2026-09-22T18:13:20Z"}}
     ;
     const life = fromInspect(std.testing.allocator, doc);
     defer if (life.run_cmd) |cmd| std.testing.allocator.free(cmd);
     try std.testing.expectEqual(@as(u32, 3), life.restarts);
     try std.testing.expect(life.started_at != null);
+}
+
+test "restart count comes from the top level, not from State" {
+    const doc =
+        \\{"RestartCount":5,"State":{"StartedAt":"2026-09-22T18:13:20Z"}}
+    ;
+    const life = fromInspect(std.testing.allocator, doc);
+    defer if (life.run_cmd) |cmd| std.testing.allocator.free(cmd);
+    try std.testing.expectEqual(@as(u32, 5), life.restarts);
+}
+
+test "an oversized restart count clamps instead of trapping" {
+    const doc =
+        \\{"RestartCount":5000000000,"State":{"StartedAt":"2026-09-22T18:13:20Z"}}
+    ;
+    const life = fromInspect(std.testing.allocator, doc);
+    defer if (life.run_cmd) |cmd| std.testing.allocator.free(cmd);
+    try std.testing.expectEqual(std.math.maxInt(u32), life.restarts);
 }
 
 test "the run command reproduces ports, env and mounts, and skips the noise" {
@@ -313,7 +333,7 @@ test "the run command reproduces ports, env and mounts, and skips the noise" {
         \\            {"Type":"volume","Name":"shop-data","Destination":"/data"},
         \\            {"Type":"bind","Source":"/srv/a:b","Destination":"/wrong"},
         \\            {"Type":"tmpfs","Destination":"/tmp"}],
-        \\ "State":{"StartedAt":"2026-09-22T18:13:20Z","RestartCount":1}}
+        \\ "RestartCount":1,"State":{"StartedAt":"2026-09-22T18:13:20Z"}}
     ;
     const life = fromInspect(std.testing.allocator, doc);
     const cmd = life.run_cmd.?;
@@ -327,7 +347,7 @@ test "the run command reproduces ports, env and mounts, and skips the noise" {
 
 test "a bare container copies as one line with no empty flags" {
     const doc =
-        \\{"Name":"/solo","Config":{"Image":"alpine"},"State":{"StartedAt":"","RestartCount":0}}
+        \\{"Name":"/solo","Config":{"Image":"alpine"},"RestartCount":0,"State":{"StartedAt":""}}
     ;
     const life = fromInspect(std.testing.allocator, doc);
     defer if (life.run_cmd) |cmd| std.testing.allocator.free(cmd);
