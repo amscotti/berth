@@ -30,6 +30,15 @@ adopt scan ◄── dispatch main ──────┘
   ├─ first reachable runtime
   ├─ clear only on identity change
   └─ install client, start refresh
+
+                                   detail worker (selection and Inspector)
+                                    ├─ inspect → lifetime + run command
+                                    ├─ /logs?tail=500 → localize/copy
+                                    └─ /json → bounded pretty JSON
+apply detail ◄── dispatch main ─────┘
+  ├─ same id, kind and generation
+  ├─ consume one-shot Refresh/Inspect wants
+  └─ free the buffers being replaced
 ```
 
 ## Modules
@@ -39,6 +48,7 @@ adopt scan ◄── dispatch main ──────┘
 | `main.zig` | process entry, window creation, `BERTH_*` harness flags |
 | `boot.zig` | state construction and teardown |
 | `app.zig` | `State`, selection, host sampling, action entry points |
+| `detail_job.zig` | one background inspector read: lifetime, logs, raw JSON |
 | `session.zig` | discovery job, runtime choice, socket preference, refresh start |
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
 | `refresh_selection.zig` | re-resolve the inspector selection by id after a snapshot swap |
@@ -115,10 +125,14 @@ sections of `app.zig`.
   screen may still point into it.
 - A job owns its snapshot arena until commit. Commit moves the arena into the
   state and replaces the job's copy with an empty one.
-- Logs are copied into a `gpa`-owned buffer. They must survive snapshot swaps
-  and are refreshed on demand, not on every pass.
+- Logs, the raw inspect JSON and the run command are copied into page-owned
+  buffers. They must survive snapshot swaps, and the page allocator keeps the
+  worker's copies free of the main thread's `gpa` bookkeeping. The refresh
+  follow tail and the detail job both obey the same clock check: a tail whose
+  captured timestamps no longer match the pane is dropped.
 - `Client.alloc` always points at the state's current arena for interactive
-  calls (actions, logs, prune).
+  calls (actions, prune); the detail worker uses its own arena and hands only
+  page-owned results back.
 - A discovery job owns its copied socket/id strings and scan result. Adoption
   moves the runtimes into the state; abandonment leaves the job to the
   completion callback, or a leak at exit if the loop stops before it runs.
@@ -150,8 +164,12 @@ sections of `app.zig`.
   content-length truncation, malformed chunks, and the total socket deadline
   against both a listener that never answers and one that trickles bytes.
 - A mock engine socket: stats fan-out and load balance, cancellation between
-  containers, a canceled refresh stopping before its next request, and the
-  teardown completion context.
+  containers, a canceled refresh stopping before its next request, the
+  Follow-off gate, and the teardown completion context.
+- Detail reads against the mock engine: lifetime/log success, loading flags,
+  stale selection and generation drops, logs-only and Inspect retries, the
+  Times clock retry, timestamp localization, and log error text. Refresh
+  snapshots are checked for page-owned replacement and stale-clock rejection.
 - Docker JSON shapes: compose labels, ports, `/system/df` new and old shapes,
   prune replies, attached-network counts, image dangling state.
 - Stats math: CPU delta and per-core fallback, missing previous samples,

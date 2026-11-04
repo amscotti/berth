@@ -6,7 +6,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const api = @import("engine/api.zig");
 const cleanup_mod = @import("cleanup.zig");
-const inspect = @import("engine/inspect.zig");
+const detail_job = @import("detail_job.zig");
 const lifetime = @import("engine/lifetime.zig");
 const stats_pool = @import("stats_pool.zig");
 const refresh_mod = @import("refresh.zig");
@@ -179,6 +179,24 @@ pub const State = struct {
     /// Restarts and the exact start time for the selected container, read from
     /// one inspect on selection — not per refresh, which would double requests.
     detail_lifetime: ?lifetime.Lifetime = null,
+    /// The one background read of the inspector's facts, logs, or JSON, so a
+    /// selection or Refresh never waits on the engine inside the frame.
+    detail_job: ?*detail_job.Job = null,
+    /// Tests join the detail worker and call its completion directly.
+    detail_dispatch: bool = true,
+    /// The two halves of a selection read finish independently, so a log
+    /// refresh must not make the lifetime facts look unread.
+    lifetime_loading: bool = false,
+    logs_loading: bool = false,
+    /// True while the raw inspect document is being read for the pane.
+    inspect_loading: bool = false,
+    /// A Times/Refresh or Inspect click that arrived while the detail worker
+    /// was busy. One shot: the next completion satisfies it or drops it.
+    logs_wanted: bool = false,
+    inspect_wanted: bool = false,
+    /// Bumped by every selection change and every detail read; a late worker
+    /// compares it before touching any of the state above.
+    detail_generation: u64 = 0,
     /// A name to select as soon as the list arrives (`BERTH_SELECT`), so the
     /// detail pane can be snapshotted headlessly.
     pending_select: []const u8 = "",
@@ -288,32 +306,24 @@ pub const State = struct {
         });
     }
 
-    /// Opens a container's detail pane and reads its last 200 log lines.
+    /// Opens a container's detail pane immediately with the facts the list
+    /// already knows; inspect and logs arrive later from `detail_job`.
     pub fn select(s: *State, ct: *const api.Container) void {
         s.detail_kind = .container;
         s.selected = ct.Id;
         s.selected_name = ct.name();
+        detail_job.invalidate(s);
         s.clearInspect();
         s.pane_inspect = false;
-        // The cheap, always-shown fact first: an engine that answers nothing
-        // still opens the pane with what the list already knows.
-        s.loadLifetime(ct.Id);
-        logs.load(s, ct.Id);
-    }
-
-    /// One inspect per selection: the restart count and the exact start time
-    /// live there, and asking per refresh would double the request count.
-    fn loadLifetime(s: *State, id: []const u8) void {
-        var client = s.client orelse return;
-        const raw = inspect.fetch(&client, .container, id, s.gpa) catch return;
-        defer s.gpa.free(raw);
-        s.detail_lifetime = lifetime.fromInspect(s.gpa, raw);
+        logs.clear(s);
+        detail_job.startContainer(s, ct.Id);
     }
 
     pub fn selectImage(s: *State, im: *const api.Image) void {
         s.detail_kind = .image;
         s.selected = im.Id;
         s.selected_name = if (im.dangling()) "untagged" else im.tag();
+        detail_job.invalidate(s);
         logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
@@ -324,6 +334,7 @@ pub const State = struct {
         s.detail_kind = .volume;
         s.selected = v.Name;
         s.selected_name = v.Name;
+        detail_job.invalidate(s);
         logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
@@ -334,6 +345,7 @@ pub const State = struct {
         s.detail_kind = .network;
         s.selected = if (n.Id.len > 0) n.Id else n.Name;
         s.selected_name = n.Name;
+        detail_job.invalidate(s);
         logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
@@ -344,6 +356,7 @@ pub const State = struct {
         s.detail_kind = .container;
         s.selected = null;
         s.selected_name = "";
+        detail_job.invalidate(s);
         logs.clear(s);
         s.clearInspect();
         s.pane_inspect = false;
@@ -353,29 +366,11 @@ pub const State = struct {
     /// The pane's raw JSON, on the same terms: read on demand, owned by the
     /// state, cleared with the selection it describes.
     pub fn reloadInspect(s: *State) void {
-        const id = s.selected orelse return;
-        // Only the JSON is being replaced; the lifetime facts belong to the
-        // selection and must survive a glance at the raw document.
-        s.clearInspectJson();
-        var client = s.client orelse return;
-        const kind: inspect.Kind = switch (s.detail_kind) {
-            .container => .container,
-            .image => .image,
-            .volume => .volume,
-            .network => .network,
-        };
-        const raw = inspect.fetch(&client, kind, id, s.gpa) catch {
-            if (client.err_body.len > 0) {
-                s.notifyFmt("{s}", .{client.err_body}, true);
-            } else {
-                s.notify("could not read the inspect JSON", true);
-            }
-            s.redraw();
-            return;
-        };
-        defer s.gpa.free(raw);
-        s.inspect_buf = inspect.pretty(s.gpa, raw, 256 * 1024) catch null;
-        s.redraw();
+        detail_job.startInspect(s);
+    }
+
+    pub fn reloadLogs(s: *State) void {
+        detail_job.startLogs(s);
     }
 
     /// The view the window calls every frame.
@@ -386,14 +381,24 @@ pub const State = struct {
     /// Same lifetime as the logs: the pane's JSON must survive snapshot swaps
     /// and belong to exactly one selected object.
     pub fn clearInspectJson(s: *State) void {
-        if (s.inspect_buf) |buf| s.gpa.free(buf);
+        // The detail worker pretty-prints on the page allocator and the buffer
+        // is owned here afterwards, so the matching free is the page one.
+        if (s.inspect_buf) |buf| std.heap.page_allocator.free(buf);
         s.inspect_buf = null;
     }
 
     pub fn clearInspect(s: *State) void {
         s.clearInspectJson();
+        s.clearLifetime();
+    }
+
+    /// Free the run command with the facts it belongs to; the pane might open
+    /// another container before the next snapshot rotates the lists. The
+    /// detail worker allocates it on the page allocator so it never shares the
+    /// main thread's allocation bookkeeping across threads.
+    pub fn clearLifetime(s: *State) void {
         if (s.detail_lifetime) |*life| {
-            if (life.run_cmd) |cmd| s.gpa.free(cmd);
+            if (life.run_cmd) |cmd| std.heap.page_allocator.free(cmd);
         }
         s.detail_lifetime = null;
     }
@@ -424,6 +429,7 @@ pub const State = struct {
         s.last_update = 0;
         s.selected = null;
         s.selected_name = "";
+        detail_job.invalidate(s);
         logs.clear(s);
         s.clearInspect();
         if (s.client) |*c| c.alloc = s.arena.allocator();

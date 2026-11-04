@@ -43,7 +43,7 @@ pub const Job = struct {
 
 /// The callback context outlives the job at teardown. `discard` frees the job
 /// and nulls `job`; the queued `done` then frees only this small context.
-const Completion = struct {
+pub const Completion = struct {
     gpa: std.mem.Allocator,
     job: ?*Job = null,
 };
@@ -84,9 +84,11 @@ pub fn start(s: *app.State) void {
         .follow = s.log_opts.follow and s.detail_kind == .container,
         .logs_timestamps = s.log_opts.timestamps,
     };
-    if (s.selected) |id| {
-        job.follow_len = @min(id.len, job.follow_id.len);
-        @memcpy(job.follow_id[0..job.follow_len], id[0..job.follow_len]);
+    if (job.follow) {
+        if (s.selected) |id| {
+            job.follow_len = @min(id.len, job.follow_id.len);
+            @memcpy(job.follow_id[0..job.follow_len], id[0..job.follow_len]);
+        }
     }
     job.thread = std.Thread.spawn(.{}, work, .{job}) catch {
         completion.job = null;
@@ -114,6 +116,18 @@ fn work(job: *Job) void {
 /// flight (a stats sample, a list call, `ps`) is the bound on that join.
 fn stopRequested(canceled: *const std.atomic.Value(bool)) bool {
     return canceled.load(.acquire);
+}
+
+/// Follow is opt-in for the pass: a selected row may put an id in the job, but
+/// only a job that captured follow=true may spend a request on its tail.
+pub fn loadLogs(job: *Job, client: *api.Client) void {
+    if (!job.follow or job.follow_len == 0) return;
+    const id = job.follow_id[0..job.follow_len];
+    if (client.logs(id, 500, job.logs_timestamps)) |text| {
+        job.snapshot.logs = text;
+        job.snapshot.logs_id = job.snapshot.arena.allocator().dupe(u8, id) catch "";
+        job.snapshot.logs_timestamps = job.logs_timestamps;
+    } else |_| {}
 }
 
 fn load(job: *Job) void {
@@ -176,14 +190,7 @@ fn load(job: *Job) void {
         return;
     };
     if (stopRequested(canceled)) return;
-    if (job.follow_len > 0) {
-        const id = job.follow_id[0..job.follow_len];
-        if (client.logs(id, 500, job.logs_timestamps)) |text| {
-            job.snapshot.logs = text;
-            job.snapshot.logs_id = job.snapshot.arena.allocator().dupe(u8, id) catch "";
-            job.snapshot.logs_timestamps = job.logs_timestamps;
-        } else |_| {}
-    }
+    loadLogs(job, &client);
     if (stopRequested(canceled)) return;
 
     job.snapshot.df = client.df() catch null;

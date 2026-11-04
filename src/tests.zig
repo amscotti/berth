@@ -26,6 +26,10 @@ test {
     _ = @import("bulk_action.zig");
     _ = @import("bulk_batch.zig");
     _ = @import("tray.zig");
+    _ = @import("detail_job.zig");
+    _ = @import("detail_job_tests.zig");
+    _ = @import("logs_tests.zig");
+    _ = @import("refresh_tests.zig");
     _ = @import("engine/inspect.zig");
     _ = @import("engine/lifetime.zig");
     _ = @import("tabs.zig");

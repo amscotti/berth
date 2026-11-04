@@ -107,6 +107,8 @@ fn inspectView(s: *app.State, c: *ui.Context) void {
             .leading = 1.35,
             .color = c.theme.text,
         });
+    } else if (s.inspect_loading) {
+        ui.text(c, "Reading…", .{ .size = 11.5, .color = c.theme.muted });
     } else {
         ui.text(c, "Nothing loaded yet. Refresh fetches the engine's JSON.", .{ .size = 11.5, .color = c.theme.muted });
     }
@@ -126,6 +128,8 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         // the wall-clock start. Before the inspect lands, show the uptime.
         if (s.detail_lifetime) |life| {
             if (life.started_at) |at| facts(c, "Started", format.started(c, at, format.now()));
+        } else if (s.lifetime_loading) {
+            facts(c, "Started", "Reading…");
         } else if (lifetime.upSeconds(ct.Status)) |secs| {
             facts(c, "Up", format.duration(c, secs));
         }
@@ -158,6 +162,8 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         }
         if (s.detail_lifetime) |life| {
             facts(c, "Restarts", c.print("{d}", .{life.restarts}));
+        } else if (s.lifetime_loading) {
+            facts(c, "Restarts", "Reading…");
         }
         var bindings: [16]api.HostBinding = undefined;
         if (ct.publishedPorts(&bindings) > 0) {
@@ -216,7 +222,9 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
 
     ui.scroll(c, .{ .width = .fill, .height = .fill, .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 }, .radius = 8, .background = c.theme.background });
     defer ui.end(c);
-    if (s.log_text.len == 0) {
+    if (s.logs_loading) {
+        ui.text(c, "Reading…", .{ .size = 11.5, .color = c.theme.muted });
+    } else if (s.log_text.len == 0) {
         ui.text(c, "No output yet. A container that has said nothing says nothing.", .{ .size = 11.5, .color = c.theme.muted });
     } else {
         ui.text(c, logs.visible(s, c), .{

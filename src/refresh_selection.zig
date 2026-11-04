@@ -3,6 +3,7 @@
 const std = @import("std");
 const app = @import("app.zig");
 const logs = @import("logs.zig");
+const detail_job = @import("detail_job.zig");
 
 pub fn resolve(s: *app.State) void {
     if (s.selected) |old_id| {
@@ -44,6 +45,7 @@ pub fn resolve(s: *app.State) void {
         if (!kept) {
             s.selected = null;
             s.selected_name = "";
+            detail_job.invalidate(s);
             logs.clear(s);
             s.clearInspect();
         }

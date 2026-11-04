@@ -10,6 +10,7 @@ const logs = @import("logs.zig");
 const bulk = @import("bulk.zig");
 const actions = @import("actions.zig");
 const image_tasks = @import("image_tasks.zig");
+const detail_job = @import("detail_job.zig");
 
 pub fn create(gpa: std.mem.Allocator, io: std.Io, nanoapp: *nanoui.App) !*app.State {
     const s = try gpa.create(app.State);
@@ -42,6 +43,7 @@ pub fn destroy(s: *app.State) void {
     actions.discard(s);
     image_tasks.cancel(s);
     if (s.job) |job| refresh.discard(s, job);
+    detail_job.cancel(s);
     s.clearPending();
     s.prune_open = false;
     logs.clear(s);

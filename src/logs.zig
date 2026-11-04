@@ -19,36 +19,15 @@ pub const State = struct {
 };
 
 pub fn clear(s: *app.State) void {
-    if (s.log_buf) |buf| s.gpa.free(buf);
+    // Both the detail worker and the refresh completion hand the pane page-
+    // owned text, so the free must not go through the main thread's gpa.
+    if (s.log_buf) |buf| std.heap.page_allocator.free(buf);
     s.log_buf = null;
     s.log_text = "";
 }
 
-pub fn load(s: *app.State, id: []const u8) void {
-    clear(s);
-    var client = s.client orelse return;
-    const text = client.logs(id, 500, s.log_opts.timestamps) catch {
-        s.log_text = "could not read this container's logs";
-        s.redraw();
-        return;
-    };
-    const owned: ?[]u8 = if (s.log_opts.timestamps)
-        localize(s.gpa, text)
-    else
-        s.gpa.dupe(u8, text) catch null;
-    if (owned) |owned_text| {
-        s.log_buf = owned_text;
-        s.log_text = owned_text;
-    } else {
-        s.log_text = "could not read this container's logs";
-    }
-    s.redraw();
-}
-
 pub fn reload(s: *app.State) void {
-    if (s.detail_kind != .container) return;
-    const id = s.selected orelse return;
-    load(s, id);
+    s.reloadLogs();
 }
 
 /// A tail fetched by the refresh worker, committed only if the pane is still
@@ -57,13 +36,17 @@ pub fn reload(s: *app.State) void {
 pub fn commitSnapshot(s: *app.State, text: []const u8, id: []const u8, timestamps: bool) void {
     if (text.len == 0 or id.len == 0) return;
     if (s.detail_kind != .container) return;
+    // The pass may have started before the Times toggle; its tail would put
+    // the old clock back over the one the pane now asks for.
+    if (timestamps != s.log_opts.timestamps) return;
     const selected = s.selected orelse return;
     if (!std.mem.eql(u8, selected, id)) return;
     clear(s);
+    const page = std.heap.page_allocator;
     const owned: ?[]u8 = if (timestamps)
-        localize(s.gpa, text)
+        localize(page, text)
     else
-        s.gpa.dupe(u8, text) catch null;
+        page.dupe(u8, text) catch null;
     if (owned) |owned_text| {
         s.log_buf = owned_text;
         s.log_text = owned_text;
@@ -111,8 +94,10 @@ fn contains(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
-/// Docker writes RFC 3339 UTC; a person reads the clock on their desk.
-fn localize(gpa: std.mem.Allocator, text: []const u8) []u8 {
+/// Docker writes RFC 3339 UTC; a person reads the clock on their desk. Also
+/// used by the detail worker, which localizes on its own thread before the
+/// text reaches the pane.
+pub fn localize(gpa: std.mem.Allocator, text: []const u8) []u8 {
     var out: std.ArrayList(u8) = .empty;
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
