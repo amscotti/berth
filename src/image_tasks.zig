@@ -288,6 +288,7 @@ fn pullDone(s: *app.State, job: *PullJob) void {
         s.notifyFmt("pull failed: {s}", .{refs.firstLine(if (status.len > 0) status else "engine did not answer")}, true);
     }
     if (status.len > 0) s.gpa.free(status);
+    s.df.invalidate();
     s.refresh();
     s.redraw();
 }
@@ -308,7 +309,8 @@ fn runDone(s: *app.State, job: *RunJob) void {
     }
     if (error_text.len > 0) s.gpa.free(error_text);
     // Run is a mutation: refresh the new row, unless a queued switch or rescan
-    // supersedes it.
+    // supersedes it. Its disk footprint is new too, so the df cache is stale.
+    s.df.invalidate();
     s.refresh_wanted = true;
     session.@"resume"(s);
     s.redraw();
@@ -453,6 +455,7 @@ test "an image run completion refreshes with nothing queued" {
     defer state.arena.deinit();
     defer state.create_dialog.deinit();
     state.client = api.Client.init(state.io, state.gpa, "/nonexistent/run-refresh.sock");
+    state.df.noteAttempt();
 
     const job = try state.gpa.create(RunJob);
     job.* = .{ .io = state.io, .owner = &state, .ok = true };
@@ -461,6 +464,7 @@ test "an image run completion refreshes with nothing queued" {
 
     try std.testing.expect(state.image_tasks.run_job == null);
     try std.testing.expect(!state.refresh_wanted);
+    try std.testing.expect(state.df.wanted());
     try std.testing.expectEqual(@as(usize, 1), Hook.starts);
 }
 

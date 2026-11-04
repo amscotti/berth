@@ -7,6 +7,7 @@ const ui = nanoui.ui;
 const app = @import("../../app.zig");
 const api = @import("../../engine/api.zig");
 const bulk = @import("../../bulk.zig");
+const projects_mod = @import("../../projects.zig");
 const widgets = @import("../widgets.zig");
 const theme = @import("../theme.zig");
 
@@ -26,11 +27,7 @@ pub fn view(s: *app.State, c: *ui.Context) void {
         return;
     }
 
-    var projects: usize = 0;
-    for (s.containers) |ct| {
-        if (ct.project() == null) continue;
-        if (isFirstOfProject(s.containers, ct)) projects += 1;
-    }
+    const projects = s.projects.len;
     const subtitle = if (s.error_text.len > 0 and projects == 0)
         "engine not answering"
     else
@@ -67,10 +64,8 @@ pub fn view(s: *app.State, c: *ui.Context) void {
     const list = ui.div(c).column().wFull().gap(10);
     defer list.end();
 
-    for (s.containers, 0..) |ct, i| {
-        const project = ct.project() orelse continue;
-        if (!isFirstOfProject(s.containers[0..i], ct)) continue;
-        projectCard(s, c, project, ct, actions_enabled);
+    for (s.projects) |summary| {
+        projectCard(s, c, summary, actions_enabled);
     }
 }
 
@@ -78,51 +73,34 @@ fn stateLabel(ct: api.Container) []const u8 {
     return ct.health() orelse ct.State;
 }
 
-fn isFirstOfProject(all: []const api.Container, ct: api.Container) bool {
-    const project = ct.project() orelse return false;
-    for (all) |other| {
-        if (other.Id.len == 0) continue;
-        if (std.mem.eql(u8, other.Id, ct.Id)) return true;
-        const p = other.project() orelse continue;
-        if (std.mem.eql(u8, p, project)) return false;
-    }
-    return true;
-}
-
-fn projectCard(s: *app.State, c: *ui.Context, project: []const u8, first: api.Container, enabled: bool) void {
+fn projectCard(s: *app.State, c: *ui.Context, summary: projects_mod.Summary, enabled: bool) void {
     const card = ui.div(c).column().wFull().gap(6).p(14).rounded(10).bg(c.theme.surface).border(c.theme.border);
     defer card.end();
 
-    var running: usize = 0;
-    var total: usize = 0;
-    for (s.containers) |ct| {
-        const p = ct.project() orelse continue;
-        if (!std.mem.eql(u8, p, project)) continue;
-        total += 1;
-        if (ct.isUp()) running += 1;
-    }
-
     const head = ui.div(c).row().wFull().itemsCenter().gap(10);
     ui.icon(c, "code", .{ .size = 16, .color = c.theme.accent });
-    ui.text(c, project, .{ .size = 14, .weight = .semibold, .truncate = .ellipsis });
-    ui.text(c, c.print("{d}/{d} running", .{ running, total }), .{ .size = 12, .color = c.theme.muted });
+    ui.text(c, summary.name, .{ .size = 14, .weight = .semibold, .truncate = .ellipsis });
+    ui.text(c, c.print("{d}/{d} running", .{ summary.running, summary.total }), .{ .size = 12, .color = c.theme.muted });
     ui.spacer(c);
 
     if (s.layout.content >= 760) {
-        if (first.label("com.docker.compose.project.working_dir")) |dir| {
-            ui.text(c, dir, .{ .size = 11, .color = c.theme.muted, .truncate = .middle });
+        if (summary.first < s.containers.len) {
+            const first = s.containers[summary.first];
+            if (first.label("com.docker.compose.project.working_dir")) |dir| {
+                ui.text(c, dir, .{ .size = 11, .color = c.theme.muted, .truncate = .middle });
+            }
         }
     }
     // The one action a Compose project needs from a monitor: start everything
     // that is down, or stop everything that is up, through the bulk worker.
     // Start all is the accent primary, like the creation card's Pull and Run.
-    if (running < total and projectButton(c, "Start all", "play.fill", true, enabled)) bulk.startProject(s, project);
-    if (running > 0 and projectButton(c, "Stop all", "stop.fill", false, enabled)) bulk.stopProject(s, project);
+    if (summary.running < summary.total and projectButton(c, "Start all", "play.fill", true, enabled)) bulk.startProject(s, summary.name);
+    if (summary.running > 0 and projectButton(c, "Stop all", "stop.fill", false, enabled)) bulk.stopProject(s, summary.name);
     head.end();
 
-    for (s.containers) |ct| {
-        const p = ct.project() orelse continue;
-        if (!std.mem.eql(u8, p, project)) continue;
+    for (summary.members) |index| {
+        if (index >= s.containers.len) continue;
+        const ct = s.containers[index];
         const is_selected = s.selected != null and std.mem.eql(u8, s.selected.?, ct.Id);
         var row = ui.div(c).row().wFull().h(28).itemsCenter().gap(8).px(4).rounded(4)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else c.theme.surface)
@@ -159,20 +137,6 @@ fn projectButton(c: *ui.Context, label: []const u8, icon_name: []const u8, prima
     const clicked = if (enabled) box.clicked() else false;
     box.end();
     return clicked;
-}
-
-test "a compose project is claimed once, by its first container" {
-    var a = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
-    defer a.deinit();
-    var b = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
-    defer b.deinit();
-    const items = [_]api.Container{
-        .{ .Id = "1", .Labels = a.value },
-        .{ .Id = "2", .Labels = b.value },
-    };
-    try std.testing.expect(isFirstOfProject(items[0..1], items[0]));
-    try std.testing.expect(!isFirstOfProject(items[0..2], items[1]));
-    try std.testing.expect(!isFirstOfProject(items[0..1], .{ .Id = "3" }));
 }
 
 test "a service row shows its health verdict instead of green running" {

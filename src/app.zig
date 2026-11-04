@@ -28,23 +28,12 @@ const logs = @import("logs.zig");
 const image_tasks = @import("image_tasks.zig");
 const settings = @import("settings.zig");
 const sheets = @import("sheets.zig");
+const system_theme = @import("system_theme.zig");
 const builtin = @import("builtin");
 
-extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
-
-/// Whether the desktop says dark. macOS is handled by the framework (passing
-/// no theme follows the system, live); on Linux the GTK theme name is the
-/// signal GTK itself uses, and there is no event for it here.
-fn systemPrefersDark() bool {
-    if (builtin.os.tag == .macos) return false;
-    const raw = getenv("GTK_THEME") orelse return false;
-    const name = std.mem.span(raw);
-    var i: usize = 0;
-    while (i + 4 <= name.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(name[i .. i + 4], "dark")) return true;
-    }
-    return false;
-}
+const projects_mod = @import("projects.zig");
+const network_counts = @import("engine/network_counts.zig");
+const df_cache = @import("engine/df_cache.zig");
 const shell = @import("ui/shell.zig");
 
 pub const Tab = tabs.Tab;
@@ -146,6 +135,11 @@ pub const State = struct {
     retry_pending: bool = false,
     containers: []api.Container = &.{},
     stats: []Stat = &.{},
+    /// Compose groups, built once per snapshot so the rail and Stacks page do
+    /// not rescan the list per frame.
+    projects: []projects_mod.Summary = &.{},
+    /// Attached containers per network, also one map per snapshot.
+    network_counts: network_counts.Counts = .{},
     /// False when any up container had no stats this pass; container memory is
     /// then a lower bound and must render as partial, not as the total.
     stats_complete: bool = false,
@@ -156,13 +150,9 @@ pub const State = struct {
     /// The last completed pass could not read `/events`; distinct from an
     /// empty ring, which means the engine really has nothing to show.
     events_error: bool = false,
-    df: ?api.Df = null,
-    /// The last completed pass could not read `/system/df`.
-    df_error: bool = false,
-    /// The engine's message for that failed df; cleared by a successful one.
-    df_error_text: []const u8 = "",
-    /// A df may survive one arena rotation; drop it on the next failed pass.
-    df_stale: bool = false,
+    /// The last good `/system/df`, owned outside the rotating snapshot arena
+    /// and refreshed on its own slower cadence.
+    df: df_cache.Cache = .{},
 
     /// Light, dark, or whatever the desktop says.
     appearance: settings.Appearance = .system,
@@ -259,11 +249,16 @@ pub const State = struct {
     }
 
     /// The theme to open a window with. `null` means "follow the system",
-    /// which the framework does live on macOS; Linux has no such notification
-    /// here, so the desktop's own setting is read once instead.
+    /// which the framework does live on macOS. Linux has no such notification
+    /// here, so its desktop setting is sampled when the window is opened;
+    /// other platforms keep the light theme until they grow a probe.
     pub fn themeFor(s: *State) ?ui.Theme {
         return switch (s.appearance) {
-            .system => if (builtin.os.tag == .macos) null else if (systemPrefersDark()) ui.Theme.dark_theme else ui.Theme.light,
+            .system => switch (builtin.os.tag) {
+                .macos => null,
+                .linux => if (system_theme.prefersDark(s.gpa, s.io)) ui.Theme.dark_theme else ui.Theme.light,
+                else => ui.Theme.light,
+            },
             .light => ui.Theme.light,
             .dark => ui.Theme.dark_theme,
         };
@@ -302,7 +297,7 @@ pub const State = struct {
         }
         const mem: f32 = @floatFromInt(stats_pool.memoryUsed(s.containers, s.stats));
         var disk: f32 = 0;
-        if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.totalBytes()));
+        if (s.df.value) |df| disk = @floatFromInt(@max(@as(i64, 0), df.totalBytes()));
         // The table's CPU column is per core (docker stats style). The
         // overview says "of N cores", so its history must be the share of the
         // whole machine or the dots and the percentage disagree by N.
@@ -431,12 +426,11 @@ pub const State = struct {
         s.images = &.{};
         s.volumes = &.{};
         s.networks = &.{};
+        s.projects = &.{};
+        s.network_counts = .{};
         s.events = .{};
         s.events_error = false;
-        s.df = null;
-        s.df_error = false;
-        s.df_error_text = "";
-        s.df_stale = false;
+        s.df.reset();
         s.history.clearEngine();
         s.bulk.clear();
         // A pending answer names the old engine's row; it cannot survive the
@@ -580,13 +574,10 @@ pub const State = struct {
     }
 };
 
-/// A container's figures, or zeros when none were collected (a stopped
-/// container has no stats at all).
-pub fn statFor(s: *State, id: []const u8) Stat {
-    for (s.stats) |st| {
-        if (std.mem.eql(u8, st.id, id)) return st;
-    }
-    return .{};
+/// A container's figures at its snapshot index. Stats are allocated in
+/// container order, so no id scan is needed on a row or in a sort.
+pub fn statAt(s: *State, index: usize) Stat {
+    return if (index < s.stats.len) s.stats[index] else .{};
 }
 
 /// How many containers are running, for the header count.

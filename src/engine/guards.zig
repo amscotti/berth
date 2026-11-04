@@ -18,7 +18,27 @@ pub const max_build_cache: usize = 5_000;
 /// recursive parser cannot be turned into a stack amplifier.
 pub const max_depth: usize = 64;
 
+/// Body limits sit above the 5,000-entry guard rather than below it: a normal
+/// container is roughly 1.7 KiB on the wire, so 8 MiB would reject a list the
+/// structural cap deliberately allows. These names are about transport size,
+/// not entry count; the counts above still refuse an oversized store.
+pub const max_containers_body: usize = 32 << 20;
+pub const max_df_body: usize = 32 << 20;
+pub const max_images_body: usize = 16 << 20;
+pub const max_volumes_body: usize = 16 << 20;
+pub const max_networks_body: usize = 16 << 20;
+
 pub const Shape = enum { containers, images, volumes, networks, df };
+
+pub fn bodyLimit(shape: Shape) usize {
+    return switch (shape) {
+        .containers => max_containers_body,
+        .df => max_df_body,
+        .images => max_images_body,
+        .volumes => max_volumes_body,
+        .networks => max_networks_body,
+    };
+}
 
 pub const Kind = enum { too_deep, too_many };
 

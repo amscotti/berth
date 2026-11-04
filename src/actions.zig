@@ -344,9 +344,13 @@ pub fn finish(job: *Job) void {
     s.actions.job = null;
     report(s, job);
     release(job);
-    // Mutation completions always want a fresh snapshot. A queued switch or
-    // rescan supersedes it (both clear refresh_wanted), and if another
-    // mutation is still running its finish will resume instead.
+    // Mutation completions always want a fresh snapshot. The disk figures are
+    // part of that: pruning or creating a volume changes what the cached
+    // `/system/df` would claim.
+    s.df.invalidate();
+    // A queued switch or rescan supersedes the refresh (both clear
+    // refresh_wanted), and if another mutation is still running its finish
+    // will resume instead.
     s.refresh_wanted = true;
     session.@"resume"(s);
     s.redraw();

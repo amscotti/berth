@@ -6,6 +6,8 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
+const projects_mod = @import("projects.zig");
+const network_counts = @import("engine/network_counts.zig");
 const volumes_mod = @import("engine/volumes.zig");
 const discovery = @import("engine/discovery.zig");
 const format = @import("ui/format.zig");
@@ -34,6 +36,12 @@ pub const Job = struct {
     follow_id: [64]u8 = undefined,
     follow_len: usize = 0,
     logs_timestamps: bool = false,
+    /// Captured on the main thread: a df pass is expensive, so most refreshes
+    /// skip the request and keep the cached document.
+    want_df: bool = false,
+    /// `s.df.generation` when the job was prepared. A mutation can invalidate
+    /// the cache while this pass is in flight; its answer is then too old.
+    df_generation: u64 = 0,
     error_text: []const u8 = "",
     engine_dead: bool = false,
     canceled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -82,6 +90,8 @@ pub fn start(s: *app.State) void {
         .completion = completion,
         .follow = s.log_opts.follow and s.detail_kind == .container,
         .logs_timestamps = s.log_opts.timestamps,
+        .want_df = s.df.wanted(),
+        .df_generation = s.df.generation,
     };
     if (job.follow) {
         if (s.selected) |id| {
@@ -158,9 +168,7 @@ fn load(job: *Job) void {
     if (stopRequested(canceled)) return;
 
     job.snapshot.stats = job.snapshot.arena.allocator().alloc(Stat, job.snapshot.containers.len) catch &.{};
-    for (job.snapshot.containers, 0..) |ct, i| {
-        if (i < job.snapshot.stats.len) job.snapshot.stats[i] = .{ .id = ct.Id };
-    }
+    for (job.snapshot.stats) |*sample| sample.* = .{};
     // Stats are sampled on every pass, whichever page is open: the worker is
     // off the UI thread, and a snapshot without them would show 0.0% for the
     // first few seconds after switching to Containers.
@@ -192,12 +200,15 @@ fn load(job: *Job) void {
     loadLogs(job, &client);
     if (stopRequested(canceled)) return;
 
-    if (client.df()) |df| {
-        job.snapshot.df = df;
-    } else |_| {
-        job.snapshot.df_error = true;
-        // `client.alloc` is the snapshot arena, so this copy survives commit.
-        job.snapshot.df_error_text = client.err_body;
+    if (job.want_df) {
+        job.snapshot.df_attempted = true;
+        if (client.df()) |df| {
+            job.snapshot.df = df;
+            job.snapshot.df_at = format.now();
+        } else |_| {
+            // `client.alloc` is the snapshot arena, so this copy survives commit.
+            job.snapshot.df_error_text = client.err_body;
+        }
     }
     if (stopRequested(canceled)) return;
 
@@ -308,20 +319,26 @@ pub fn discard(s: *app.State, job: *Job) void {
     cleanup(job);
 }
 
-fn commit(s: *app.State, job: *Job) void {
+pub fn commit(s: *app.State, job: *Job) void {
     const snap = &job.snapshot;
-    // Decide the df before the old arena dies. A df may survive exactly one
-    // rotation (pointing into the then-retired arena); a second timed-out pass
-    // must drop it before freeing that arena, or the views read freed memory.
-    var next_df: ?api.Df = null;
-    if (snap.df) |df| {
-        next_df = df;
-        s.df_stale = false;
-    } else if (s.df != null and !s.df_stale) {
-        next_df = s.df;
-        s.df_stale = true;
+    // The cached df is refreshed only on its cadence; between attempts the
+    // previous document stays, with its timestamp, so the page can say how old
+    // the figures are. A failed attempt keeps the last good one too.
+    // A mutation may have invalidated the cache while this pass was in flight.
+    // Its df answer describes the pre-mutation engine, so keep the invalidation
+    // and let the pass that the mutation queued fetch a fresh document.
+    const df_current = job.df_generation == s.df.generation;
+    if (!df_current) {
+        s.df.invalidate();
+    } else if (snap.df_attempted) {
+        s.df.noteAttempt();
+        if (snap.df) |df| {
+            if (!s.df.adopt(s.gpa, df, snap.df_at)) s.df.noteFailure("out of memory caching disk figures");
+        } else {
+            s.df.noteFailure(if (snap.df_error_text.len > 0) snap.df_error_text else "could not read disk figures");
+        }
     } else {
-        s.df_stale = false;
+        s.df.noteSkipped();
     }
 
     if (s.retired) |*old| old.deinit();
@@ -338,12 +355,15 @@ fn commit(s: *app.State, job: *Job) void {
     s.images = snap.images;
     s.volumes = snap.volumes;
     s.networks = snap.networks;
-    s.df = next_df;
+    // Grouping and per-network counts are derived once, in the snapshot arena,
+    // so every frame reads a slice or a hash lookup instead of rescanning.
+    s.projects = projects_mod.summarize(s.arena.allocator(), s.containers) catch &.{};
+    s.network_counts = network_counts.build(s.arena.allocator(), s.containers) catch .{};
     // A failed `ps` leaves the last known figure rather than flashing zero.
     if (snap.engine_rss) |rss| s.engine_rss = rss;
-    // `/volumes` does not carry size; the df does. Use the last good df even
-    // when this pass timed out, or every volume row loses its size again.
-    if (s.df) |df| volumes_mod.mergeVolumeUsage(s.volumes, df);
+    // `/volumes` does not carry size; the df does. The df cache outlives the
+    // snapshot, so this works on skipped passes as well as fresh ones.
+    if (s.df.value) |df| volumes_mod.mergeVolumeUsage(s.gpa, s.volumes, df) catch {};
     // Engine version/info come from discovery and stay in runtime memory;
     // copying them out of this arena on every pass is how a failed /info used
     // to leave a string pointing into the retired snapshot.
@@ -352,8 +372,6 @@ fn commit(s: *app.State, job: *Job) void {
     refresh_selection.resolve(s);
     s.events_error = snap.events_error;
     s.events.error_text = snap.events_error_text;
-    s.df_error = snap.df_error;
-    s.df_error_text = snap.df_error_text;
     events_feed.commit(s, snap.events_since, snap.events_until, snap.events);
     logs.commitSnapshot(s, snap.logs, snap.logs_id, snap.logs_timestamps);
     s.error_text = "";

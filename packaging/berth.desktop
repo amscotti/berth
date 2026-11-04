@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=berth
+Comment=A native monitor for Docker, Podman, Colima and Lima
+Exec=berth
+TryExec=berth
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=container;docker;podman;colima;lima;
+StartupNotify=true

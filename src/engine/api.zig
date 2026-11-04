@@ -140,7 +140,7 @@ pub const Client = struct {
     /// parser sees it: millions of `{}` or a deeply nested Labels object must
     /// not turn one request into hundreds of megabytes of snapshot.
     fn getGuarded(self: *Client, comptime T: type, p: []const u8, shape: guards.Shape, seconds: isize) !T {
-        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, false, seconds, false);
+        const body = try self.callOptsTimeout("GET", p, "", guards.bodyLimit(shape), false, seconds, false);
         defer self.gpa.free(body);
         if (guards.violation(body, shape)) |v| {
             switch (v.kind) {
@@ -578,21 +578,6 @@ pub const Network = struct {
         return c.object.count();
     }
 };
-
-/// How many containers are attached to `network`. The `/networks` list leaves
-/// `Containers` empty on current engines, so count from each container's
-/// `NetworkSettings.Networks` instead of trusting the list's field.
-pub fn attachedCount(containers: []const Container, network: []const u8) usize {
-    var n: usize = 0;
-    for (containers) |ct| {
-        const settings = ct.NetworkSettings orelse continue;
-        if (settings != .object) continue;
-        const nets = settings.object.get("Networks") orelse continue;
-        if (nets != .object) continue;
-        if (nets.object.get(network) != null) n += 1;
-    }
-    return n;
-}
 
 /// `/system/df` in both shapes: the definitions live in `df.zig`, re-exported
 /// here where every caller already looks for the API types.

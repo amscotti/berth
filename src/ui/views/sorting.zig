@@ -4,6 +4,7 @@
 const std = @import("std");
 const app = @import("../../app.zig");
 const api = @import("../../engine/api.zig");
+const network_counts = @import("../../engine/network_counts.zig");
 const metrics = @import("metrics.zig");
 
 fn numOrder(a: f64, b: f64) std.math.Order {
@@ -17,19 +18,25 @@ fn ordered(order: std.math.Order, desc: bool) bool {
 }
 
 pub const ContainerSort = struct {
-    s: *app.State,
+    items: []const api.Container,
+    /// Index-aligned with `items`, exactly as the snapshot stores it.
+    stats: []const app.Stat,
     key: u8,
     desc: bool,
 
-    pub fn lessThan(ctx: ContainerSort, a: *const api.Container, b: *const api.Container) bool {
+    pub fn lessThan(ctx: ContainerSort, a: usize, b: usize) bool {
+        const x = ctx.items[a];
+        const y = ctx.items[b];
+        const sx = statAt(ctx.stats, a);
+        const sy = statAt(ctx.stats, b);
         const order: std.math.Order = switch (ctx.key) {
-            1 => std.ascii.orderIgnoreCase(a.name(), b.name()),
-            2 => std.ascii.orderIgnoreCase(a.Image, b.Image),
-            3 => std.ascii.orderIgnoreCase(a.health() orelse a.State, b.health() orelse b.State),
-            4 => numOrder(statOrUnknown(ctx.s, a.Id, .cpu), statOrUnknown(ctx.s, b.Id, .cpu)),
-            5 => numOrder(statOrUnknown(ctx.s, a.Id, .mem), statOrUnknown(ctx.s, b.Id, .mem)),
-            6 => std.ascii.orderIgnoreCase(a.project() orelse "", b.project() orelse ""),
-            7, 8, 9, 10 => numOrder(metrics.statKey(ctx.s, ctx.key, a), metrics.statKey(ctx.s, ctx.key, b)),
+            1 => std.ascii.orderIgnoreCase(x.name(), y.name()),
+            2 => std.ascii.orderIgnoreCase(x.Image, y.Image),
+            3 => std.ascii.orderIgnoreCase(x.health() orelse x.State, y.health() orelse y.State),
+            4 => numOrder(statOrUnknown(sx, .cpu), statOrUnknown(sy, .cpu)),
+            5 => numOrder(statOrUnknown(sx, .mem), statOrUnknown(sy, .mem)),
+            6 => std.ascii.orderIgnoreCase(x.project() orelse "", y.project() orelse ""),
+            7, 8, 9, 10 => numOrder(metrics.statKey(ctx.key, &x, sx), metrics.statKey(ctx.key, &y, sy)),
             else => .eq,
         };
         return ordered(order, ctx.desc);
@@ -80,7 +87,7 @@ pub const VolumeSort = struct {
 
 pub const NetworkSort = struct {
     items: []const api.Network,
-    containers: []const api.Container,
+    counts: network_counts.Counts,
     key: u8,
     desc: bool,
 
@@ -92,8 +99,8 @@ pub const NetworkSort = struct {
             2 => std.ascii.orderIgnoreCase(x.Driver, y.Driver),
             3 => std.ascii.orderIgnoreCase(x.Scope, y.Scope),
             4 => numOrder(
-                @floatFromInt(api.attachedCount(ctx.containers, x.Name)),
-                @floatFromInt(api.attachedCount(ctx.containers, y.Name)),
+                @floatFromInt(network_counts.get(ctx.counts, x.Name)),
+                @floatFromInt(network_counts.get(ctx.counts, y.Name)),
             ),
             else => .eq,
         };
@@ -101,8 +108,11 @@ pub const NetworkSort = struct {
     }
 };
 
-fn statOrUnknown(s: *app.State, id: []const u8, field: enum { cpu, mem }) f64 {
-    const st = app.statFor(s, id);
+fn statAt(stats: []const app.Stat, index: usize) app.Stat {
+    return if (index < stats.len) stats[index] else .{};
+}
+
+fn statOrUnknown(st: app.Stat, field: enum { cpu, mem }) f64 {
     if (!st.sampled) return -1;
     return switch (field) {
         .cpu => if (st.cpu_known) st.cpu else -1,
@@ -125,22 +135,41 @@ test "container sorting is case-insensitive and reversible" {
         .{ .Id = "b", .Names = &.{"/Web"}, .Image = "nginx", .State = "running" },
         .{ .Id = "a", .Names = &.{"/api"}, .Image = "alpine", .State = "exited" },
     };
-    const name_asc = ContainerSort{ .s = undefined, .key = 1, .desc = false };
-    const name_desc = ContainerSort{ .s = undefined, .key = 1, .desc = true };
-    try std.testing.expect(name_asc.lessThan(&items[1], &items[0]));
-    try std.testing.expect(name_desc.lessThan(&items[0], &items[1]));
+    const name_asc = ContainerSort{ .items = &items, .stats = &.{}, .key = 1, .desc = false };
+    const name_desc = ContainerSort{ .items = &items, .stats = &.{}, .key = 1, .desc = true };
+    try std.testing.expect(name_asc.lessThan(1, 0));
+    try std.testing.expect(name_desc.lessThan(0, 1));
 
-    const image_asc = ContainerSort{ .s = undefined, .key = 2, .desc = false };
-    try std.testing.expect(image_asc.lessThan(&items[1], &items[0]));
+    const image_asc = ContainerSort{ .items = &items, .stats = &.{}, .key = 2, .desc = false };
+    try std.testing.expect(image_asc.lessThan(1, 0));
 
-    const state_asc = ContainerSort{ .s = undefined, .key = 3, .desc = false };
-    try std.testing.expect(state_asc.lessThan(&items[1], &items[0]));
+    const state_asc = ContainerSort{ .items = &items, .stats = &.{}, .key = 3, .desc = false };
+    try std.testing.expect(state_asc.lessThan(1, 0));
 
     // STATUS shows the health verdict when there is one; the sort agrees.
     const healthy: api.Container = .{ .Id = "h", .State = "running", .Status = "Up 1 hour (healthy)" };
     const unhealthy: api.Container = .{ .Id = "u", .State = "running", .Status = "Up 1 hour (unhealthy)" };
-    try std.testing.expect(state_asc.lessThan(&healthy, &unhealthy));
-    try std.testing.expect(!state_asc.lessThan(&unhealthy, &healthy));
+    const states = [_]api.Container{ healthy, unhealthy };
+    const state_check = ContainerSort{ .items = &states, .stats = &.{}, .key = 3, .desc = false };
+    try std.testing.expect(state_check.lessThan(0, 1));
+    try std.testing.expect(!state_check.lessThan(1, 0));
+}
+
+test "container sort reads stats by row index" {
+    const items = [_]api.Container{
+        .{ .Id = "a", .State = "running" },
+        .{ .Id = "b", .State = "running" },
+    };
+    // Index 1 carries 10 bytes and index 0 carries 20; the comparator must use
+    // the row's own sample, not a search that could pick the other.
+    const stats = [_]app.Stat{
+        .{ .mem = 20, .sampled = true },
+        .{ .mem = 10, .sampled = true },
+    };
+    const sort = ContainerSort{ .items = &items, .stats = &stats, .key = 5, .desc = false };
+    try std.testing.expect(sort.lessThan(1, 0));
+    const desc = ContainerSort{ .items = &items, .stats = &stats, .key = 5, .desc = true };
+    try std.testing.expect(desc.lessThan(0, 1));
 }
 
 test "image sorting follows tag, size and dangling state" {
@@ -197,10 +226,25 @@ test "network sorting follows name, driver and scope" {
         .{ .Name = "bridge", .Driver = "bridge", .Scope = "local" },
         .{ .Name = "host", .Driver = "host", .Scope = "local" },
     };
-    const name = NetworkSort{ .items = items[0..], .containers = &.{}, .key = 1, .desc = false };
+    const name = NetworkSort{ .items = items[0..], .counts = .{}, .key = 1, .desc = false };
     try std.testing.expect(name.lessThan(1, 0));
-    const driver = NetworkSort{ .items = items[0..], .containers = &.{}, .key = 2, .desc = false };
+    const driver = NetworkSort{ .items = items[0..], .counts = .{}, .key = 2, .desc = false };
     try std.testing.expect(driver.lessThan(0, 2)); // bridge < host
-    const desc = NetworkSort{ .items = items[0..], .containers = &.{}, .key = 1, .desc = true };
+    const desc = NetworkSort{ .items = items[0..], .counts = .{}, .key = 1, .desc = true };
     try std.testing.expect(desc.lessThan(0, 1));
+}
+
+test "network sort orders by the snapshot's attached counts" {
+    const items = [_]api.Network{
+        .{ .Name = "shop" },
+        .{ .Name = "bridge" },
+    };
+    var counts: network_counts.Counts = .empty;
+    defer counts.deinit(std.testing.allocator);
+    try counts.put(std.testing.allocator, "shop", 2);
+    try counts.put(std.testing.allocator, "bridge", 1);
+    const most = NetworkSort{ .items = items[0..], .counts = counts, .key = 4, .desc = true };
+    try std.testing.expect(most.lessThan(0, 1));
+    const least = NetworkSort{ .items = items[0..], .counts = counts, .key = 4, .desc = false };
+    try std.testing.expect(least.lessThan(1, 0));
 }

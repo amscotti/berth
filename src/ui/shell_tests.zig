@@ -334,3 +334,36 @@ test "Enter submits the create form and Escape closes it" {
     _ = t.shortcut(.{ .key = ui.Shortcut.escape });
     try std.testing.expect(state.create_dialog.open == null);
 }
+
+test "the select-shown label and truncation toast fit both list widths" {
+    var items: [513]api.Container = undefined;
+    var ids: [513][8]u8 = undefined;
+    for (&items, &ids, 0..) |*ct, *id, i| {
+        const text = try std.fmt.bufPrint(id, "c{d}", .{i});
+        ct.* = .{ .Id = text, .State = "running" };
+    }
+
+    for ([_]f32{ 1280, 960 }) |width| {
+        var state: app.State = .{
+            .gpa = std.testing.allocator,
+            .io = std.testing.io,
+            .app = undefined,
+            .arena = .init(std.testing.allocator),
+            .tab = .containers,
+            .last_update = 1,
+            .bulk = .{ .enabled = true },
+        };
+        defer state.arena.deinit();
+        state.containers = items[0..];
+
+        var t: ui.Tester = undefined;
+        try t.init(std.testing.allocator, .init(&state, app.State.view), .{ .width = width, .height = 600 });
+        defer t.deinit();
+
+        try std.testing.expect(t.containsText("Select shown (512 max)"));
+        try t.clickText("Select shown (512 max)");
+        // The narrow rail clips longer toasts; the count must still be the
+        // visible word at both widths.
+        try std.testing.expect(t.containsText("Selected 512"));
+    }
+}

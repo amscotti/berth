@@ -224,6 +224,9 @@ fn finish(ctx: ?*anyopaque) callconv(.c) void {
     if (output.len > 0) s.gpa.free(output);
     if (label.len > 0) s.gpa.free(label);
 
+    // An engine command changes which containers are alive, so the cached
+    // store figures must be re-read with the next pass.
+    s.df.invalidate();
     if (restart_after_stop and ok) {
         _ = start(s, .start, s.ops.target_kind, restartSocket(s));
         // If the second half could not spawn, still rescan and release any

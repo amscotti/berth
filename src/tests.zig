@@ -1,9 +1,13 @@
 //! Tests: protocol, fixtures and formatting, with no window and no engine.
 test {
     _ = @import("engine/http_uds.zig");
+    _ = @import("boot.zig");
     _ = @import("engine/api.zig");
     _ = @import("engine/api_tests.zig");
     _ = @import("engine/guards.zig");
+    _ = @import("engine/limit_tests.zig");
+    _ = @import("engine/network_counts.zig");
+    _ = @import("engine/df_cache.zig");
     _ = @import("engine/stats.zig");
     _ = @import("engine/discovery.zig");
     _ = @import("engine/socket_path.zig");
@@ -34,12 +38,15 @@ test {
     _ = @import("detail_job_tests.zig");
     _ = @import("logs_tests.zig");
     _ = @import("refresh_tests.zig");
+    _ = @import("commit_tests.zig");
+    _ = @import("projects.zig");
     _ = @import("auto_tick.zig");
     _ = @import("engine/inspect.zig");
     _ = @import("engine/lifetime.zig");
     _ = @import("engine/lifetime_tests.zig");
     _ = @import("tabs.zig");
     _ = @import("settings.zig");
+    _ = @import("system_theme.zig");
     _ = @import("session.zig");
     _ = @import("session_tests.zig");
     _ = @import("ui/views/lists.zig");

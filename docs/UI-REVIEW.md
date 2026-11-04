@@ -112,8 +112,6 @@ Now every one names the state and the next action:
 - **The container list is a table, not a monitor.** With forty containers it
   will read as a spreadsheet. A compact/comfortable density switch is the fix,
   and it is not built.
-- **No text search.** Filters only. Typing a name is the fastest way to find a
-  container and it does not exist yet.
 - **Actions are always visible on every row.** Right for three containers,
   noisy for thirty. A row-level menu is the usual answer; it costs a click and
   buys calm.
@@ -123,13 +121,19 @@ Now every one names the state and the next action:
   the pill inset is per-widget. It reads as deliberate inset rather than drift,
   which is why it was left.
 
+**Fixed after this review:** text search now sits in the five table views —
+Containers, Images, Volumes, Networks and Events (`⌘F`/`Ctrl+F`, clear button,
+"N of M shown") — and Events became the tenth view when the feed landed in the
+next wave.
+
 ## Method
 
-Snapshots were taken of all nine views through the headless path
-(`BERTH_TAB=… --nanoui-snapshot=…`), in both themes, plus one run with no engine
-reachable to exercise the error state. Each was read as an image, not inferred
-from code. The defects above are the ones that survived that reading; the fixes
-were re-snapshotted and re-read.
+Snapshots were taken of all nine views that existed at the time through the
+headless path (`BERTH_TAB=… --nanoui-snapshot=…`), in both themes, plus one run
+with no engine reachable to exercise the error state. Each was read as an
+image, not inferred from code. The defects above are the ones that survived
+that reading; the fixes were re-snapshotted and re-read. Events is the tenth
+view today, added by the next wave.
 
 ## Second pass: nanomon as the reference
 

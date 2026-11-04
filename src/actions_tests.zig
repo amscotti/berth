@@ -199,6 +199,9 @@ test "an action completion refreshes with nothing queued" {
     defer state.create_dialog.deinit();
     state.client = api.Client.init(state.io, state.gpa, "/nonexistent/action-refresh.sock");
     state.discovery_test = .{ .scan = Hook.scan, .start_refresh = Hook.refresh };
+    // The pass just finished is not due by cadence; the mutation must still
+    // force the next one to read the disk figures.
+    state.df.noteAttempt();
 
     const job = try state.gpa.create(Job);
     job.* = .{ .state = &state, .gpa = state.gpa, .io = state.io, .kind = .action, .ok = true };
@@ -208,6 +211,7 @@ test "an action completion refreshes with nothing queued" {
     actions.finish(job);
     try std.testing.expect(state.actions.job == null);
     try std.testing.expect(!state.refresh_wanted);
+    try std.testing.expect(state.df.wanted());
     try std.testing.expectEqual(@as(usize, 1), Hook.starts);
 
     // A second resume must not start another pass by itself.

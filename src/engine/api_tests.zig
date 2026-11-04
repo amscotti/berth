@@ -254,21 +254,6 @@ test "df total is every store, not just images" {
     try std.testing.expectEqual(@as(i64, 52), b.value.totalBytes());
 }
 
-test "attached counts come from container network settings" {
-    const json =
-        \\{"Id":"a","Names":["/web"],"NetworkSettings":{"Networks":{"bridge":{},"shop":{}}}}
-    ;
-    var parsed = try std.json.parseFromSlice(api.Container, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-    const list = [_]api.Container{parsed.value};
-    try std.testing.expectEqual(@as(usize, 1), api.attachedCount(&list, "bridge"));
-    try std.testing.expectEqual(@as(usize, 1), api.attachedCount(&list, "shop"));
-    try std.testing.expectEqual(@as(usize, 0), api.attachedCount(&list, "host"));
-
-    const none = [_]api.Container{.{ .Id = "b" }};
-    try std.testing.expectEqual(@as(usize, 0), api.attachedCount(&none, "bridge"));
-}
-
 test "an image is dangling without a usable tag" {
     const tagged = api.Image{ .RepoTags = &.{"alpine:3.22"} };
     try std.testing.expect(!tagged.dangling());
@@ -397,7 +382,7 @@ test "volume sizes fall back to the df document" {
         .{ .Name = "cache", .UsageData = .{ .Size = 999, .RefCount = 9 } },
     };
     const df = api.Df{ .Volumes = df_volumes[0..] };
-    volumes_mod.mergeVolumeUsage(volumes[0..], df);
+    volumes_mod.mergeVolumeUsage(std.testing.allocator, volumes[0..], df) catch unreachable;
     try std.testing.expectEqual(@as(i64, 2048), volumes[0].UsageData.?.Size);
     // An existing measurement is not overwritten by a later guess.
     try std.testing.expectEqual(@as(i64, 7), volumes[1].UsageData.?.Size);

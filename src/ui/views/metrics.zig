@@ -85,9 +85,9 @@ pub fn diskTotal(st: app.Stat) u64 {
     return st.blk_read +| st.blk_write;
 }
 
-/// The sort arms for the new keys; shared with the comparator in lists.zig.
-pub fn statKey(s: *app.State, key: u8, ct: *const api.Container) f64 {
-    const st = app.statFor(s, ct.Id);
+/// The sort arms for the live keys; the caller passes the row's already
+/// index-aligned sample so no id lookup happens inside a comparison.
+pub fn statKey(key: u8, ct: *const api.Container, st: app.Stat) f64 {
     return switch (key) {
         7 => if (st.sampled) @floatFromInt(netTotal(st)) else -1,
         8 => if (st.sampled) @floatFromInt(diskTotal(st)) else -1,

@@ -43,10 +43,10 @@ reviewer; findings are fixed before the next item starts.
 - [x] Prune opt-ins reset (Stacks health/clickable and AGE sort done)
 - [x] Select all/none; inspector unknown facts
 
-## 6. Scale and performance
-- [ ] 512-row container cap and pre-virtualization sorting
-- [ ] Per-frame project scans, volume merge, image order caching
-- [ ] Rotating arenas + `/system/df` duplication; list body caps
+## 6. Scale and performance — done
+- [x] 512-row container cap and pre-virtualization sorting
+- [x] Per-frame project scans, volume merge, image order caching
+- [x] Rotating arenas + `/system/df` duplication; list body caps
 
 ## 7. Security and robustness
 - [x] Copy-run port quoting; port-pill IP validation
@@ -54,8 +54,12 @@ reviewer; findings are fixed before the next item starts.
 - [x] Numeric casts from engine data; container-count cap
 - [x] Copy-run secret redaction
 
-## 8. Build, release, platform and docs
-- [ ] `dist` packs the emitted artifact; target-based naming; ReleaseFast nanoui
-- [ ] Release workflow checkout/gates; Linux CI executes a snapshot
-- [ ] Linux theme signal and rootless sockets; packaging extras
-- [ ] Docs drift, version metadata, `zig fmt`
+## 8. Build, release, platform and docs — done — done
+- [x] `dist` packs the emitted artifact; target-based naming; ReleaseFast nanoui
+- [x] Release workflow checks out the requested tag, mirrors CI gates, verifies
+      the tag ref/commit/version and signature, and runs a Linux headless
+      snapshot; glibc 2.28 and macOS 13.0 floors are pinned and checked
+- [x] Linux-only theme signal (single-deadline gsettings, GTK_THEME fallback);
+      packaging extras (`bin/berth`, desktop entry, LICENSE/README, stripped
+      macOS binary)
+- [x] Docs drift, version metadata from `build.zig.zon`, `zig fmt`

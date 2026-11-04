@@ -3,6 +3,7 @@
 const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
+const api = @import("engine/api.zig");
 const refresh = @import("refresh.zig");
 const auto_tick = @import("auto_tick.zig");
 const runtimes = @import("runtimes.zig");
@@ -54,7 +55,24 @@ pub fn destroy(s: *app.State) void {
     s.create_dialog.deinit();
     s.clearInspect();
     s.search.deinit();
+    s.df.reset();
     if (s.retired) |*r| r.deinit();
     s.arena.deinit();
     s.gpa.destroy(s);
+}
+
+test "teardown frees the df cache arena" {
+    const gpa = std.testing.allocator;
+    const s = try gpa.create(app.State);
+    s.* = .{
+        .gpa = gpa,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(gpa),
+    };
+    var images = [_]api.Image{.{ .Id = "sha256:teardown", .Size = 7 }};
+    try std.testing.expect(s.df.adopt(gpa, .{ .Images = &images }, 1));
+    // The testing allocator fails this test if either the state arena or the
+    // df cache's own arena survives teardown.
+    destroy(s);
 }

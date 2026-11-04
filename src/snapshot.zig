@@ -28,10 +28,13 @@ pub const Snapshot = struct {
     logs_id: []const u8 = &.{},
     logs_timestamps: bool = false,
     df: ?api.Df = null,
-    /// `/system/df` was attempted and failed. A null `df` with this false is
-    /// "not read yet"; with it true it is "could not be read".
-    df_error: bool = false,
-    /// The engine's own words for the failed df, when it gave any.
+    /// This pass asked for `/system/df` and got this answer (or failed below).
+    /// A skipped pass leaves `df` null without claiming an error.
+    df_attempted: bool = false,
+    /// When the df document was read, for the honest age on the Disk page.
+    df_at: i64 = 0,
+    /// `/system/df` failed; `df_error_text` carries the engine's words. A null
+    /// `df` with no text is "not read yet" or a skipped cadence pass.
     df_error_text: []const u8 = "",
     /// The engine's host-process RSS, or null when this pass could not read it.
     engine_rss: ?u64 = null,

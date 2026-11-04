@@ -63,7 +63,7 @@ fn applyPendingSheet(s: *app.State) void {
     s.pending_sheet = "";
     if (std.mem.eql(u8, spec, "bulk-all")) {
         s.bulk.enabled = true;
-        s.bulk.selectShown(s.containers, s.filter, s.search.containers.text());
+        _ = s.bulk.selectShown(s.containers, s.filter, s.search.containers.text());
         return;
     }
     if (std.mem.startsWith(u8, spec, "confirm:")) {

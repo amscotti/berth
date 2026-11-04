@@ -27,7 +27,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     widgets.pageHeader(c, "Overview", subtitle);
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
-    if (s.df_error_text.len > 0) widgets.errorBanner(c, s.df_error_text);
+    if (s.df.errorText().len > 0) widgets.errorBanner(c, s.df.errorText());
 
     const info = if (rt) |r| r.info else api.Info{};
 
@@ -75,11 +75,11 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         "reading engine…"
     else if (!ready)
         "no figures yet"
-    else if (s.df_error)
+    else if (s.df.failed)
         "could not read disk figures"
     else if (!connected)
         "no engine answering"
-    else if (s.df) |df|
+    else if (s.df.value) |df|
         c.print("reclaimable {s}", .{format.bytesSigned(c, df.reclaimable())})
     else
         "no figures yet";
@@ -116,7 +116,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     );
     top.end();
 
-    const disk_bytes: u64 = if (s.df) |df| @intCast(@max(0, df.totalBytes())) else 0;
+    const disk_bytes: u64 = if (s.df.value) |df| @intCast(@max(0, df.totalBytes())) else 0;
     const bottom = ui.div(c).row().wFull().gap(12).pb(12);
     graphCard(
         s,
@@ -138,7 +138,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         c,
         "internaldrive",
         "Disk",
-        if (ready and connected and s.df != null) format.bytes(c, disk_bytes) else unknown,
+        if (ready and connected and s.df.value != null) format.bytes(c, disk_bytes) else unknown,
         disk_note,
         .disk,
         c.theme.muted,
@@ -186,7 +186,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     }
     engine_card.end(); // before the disk breakdown, or the bar becomes its child
 
-    if (s.df) |df| diskBar(c, df, "Disk (engine)");
+    if (s.df.value) |df| diskBar(c, df, "Disk (engine)");
 }
 
 /// The machine, and how much of it the containers account for. This is the
@@ -366,14 +366,20 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
         widgets.emptyState(c, "internaldrive", "Engine not answering", widgets.engine_help);
         return;
     }
-    const disk_subtitle = if (s.df_error and s.df != null) "last disk read failed" else "as of the last refresh";
+    const df_age = if (s.df.at > 0) format.ago(c, s.df.at, format.now()) else "—";
+    const disk_subtitle = if (s.df.failed and s.df.value != null)
+        c.print("last disk read failed · last good {s} ago", .{df_age})
+    else if (s.df.value != null)
+        c.print("read {s} ago", .{df_age})
+    else
+        "as of the last refresh";
     widgets.pageHeader(c, "Disk", disk_subtitle);
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
-    if (s.df_error_text.len > 0) widgets.errorBanner(c, s.df_error_text);
-    const df = s.df orelse {
+    if (s.df.errorText().len > 0) widgets.errorBanner(c, s.df.errorText());
+    const df = s.df.value orelse {
         if (s.error_text.len > 0) {
             widgets.emptyState(c, "internaldrive", "Engine not answering", widgets.engine_help);
-        } else if (s.df_error) {
+        } else if (s.df.failed) {
             widgets.emptyState(c, "internaldrive", "Could not read disk figures", "The engine answered, but /system/df did not");
         } else {
             widgets.emptyState(c, "internaldrive", "No disk figures yet", "They arrive with the first completed refresh");
@@ -426,7 +432,7 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
     const note = ui.div(c).column().wFull().gap(4).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
     defer note.end();
     ui.text(c, "What these numbers are", .{ .size = 15, .weight = .semibold });
-    ui.text(c, "Read from /system/df, which walks the image and volume stores. It is cached because it is expensive.", .{ .size = 12, .color = c.theme.muted });
+    ui.text(c, "Read from /system/df, which walks the image and volume stores. It is refreshed about every 30 s because it is expensive; the age above says how fresh these figures are.", .{ .size = 12, .color = c.theme.muted });
     ui.text(c, "On macOS this is space inside the engine's VM. Pruning frees it in the guest; the disk image file itself only shrinks when it is compacted.", .{ .size = 12, .color = c.theme.muted });
     const actions = ui.div(c).row().wFull().justifyEnd().pt(4);
     const clean = ui.div(c).row().h(26).px(10).itemsCenter().rounded(13).bg(c.theme.accent);

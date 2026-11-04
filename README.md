@@ -16,7 +16,7 @@ berth reads the engine's HTTP API over its Unix socket — the same API
 three questions without a terminal:
 
 - **What is running?** Containers with CPU, memory, ports, state and Compose
-  project, plus the last 200 log lines for any one of them.
+  project, plus the last 500 log lines for any one of them.
 - **What does it cost?** Container CPU and memory over time, the host's memory
   split into containers, engine and everything else, and the engine's image,
   container, volume and build-cache stores.
@@ -31,7 +31,7 @@ three questions without a terminal:
 | **Engines** | Docker Desktop, OrbStack, Rancher Desktop, dockerd, Colima, Lima, Podman machine, rootless and rootful Podman — discovered, grouped, with a custom socket path and start/stop/restart for Colima, Lima and Podman machines |
 | **Protocol** | HTTP/1.1 over a Unix socket, chunked bodies, API version negotiated from `/version` |
 | **Views** | Overview, Containers, Images, Volumes, Networks, Events, Stacks (Compose), Disk, Runtimes, Settings |
-| **Tables** | sortable headers, search in every page header, checkbox bulk start/stop/delete, clickable rows, and a column set that scales with the window |
+| **Tables** | sortable headers, search in the five table views (Containers, Images, Volumes, Networks, Events), checkbox bulk start/stop/delete, clickable rows, and a column set that scales with the window |
 | **Layout** | the rail folds to icons below 1120 points; the inspector is 430 or 360; tables choose one of five densities |
 | **Live figures** | per-container CPU and memory (two-sample deltas, matching `docker stats`), network and disk I/O, PIDs, uptime and restarts, container history graphs, host CPU and memory |
 | **Inspectors** | container facts and logs (follow, local timestamps, search, copy); image, volume and network details; raw JSON behind an Inspect tab |
@@ -67,13 +67,20 @@ zig build dist            # ReleaseFast + a tarball in zig-out/dist
 sh macos/build.sh         # ReleaseFast + zig-out/berth.app (macOS)
 ```
 
-Measured on macOS arm64 with Zig 0.17.0: **1.3 MB** stripped ReleaseFast. The
-binary links nothing at build time — GTK is `dlopen`'d at run time on Linux,
-and the Mac uses system frameworks.
+A stripped ReleaseFast build is roughly 1.5 MB on macOS arm64; the exact size
+varies by target. The binary links nothing at build time — GTK is `dlopen`'d at
+run time on Linux, and the Mac uses system frameworks.
+
+Version metadata comes from `build.zig.zon`: `zig build` passes it to the
+Settings subtitle, and `macos/build.sh` stamps it into the bundle's
+`CFBundleShortVersionString` and `CFBundleVersion`. Release builds pin their
+platforms: Linux x86_64 targets glibc **2.28**, and the macOS arm64 app targets
+**macOS 13.0**. The release workflow checks both floors against the built
+artifact before publishing.
 
 Linux needs **GTK 3 or 4 at run time** (dlopen'd, not linked) and a display.
 macOS needs nothing beyond the system frameworks. `macos/build.sh` wraps the
-binary, adds the icon and ad-hoc signs the bundle; run
+binary, adds the icon, strips it and ad-hoc signs the bundle; run
 `python3 macos/make-icon.py` only if you change the icon.
 
 ## Running
@@ -114,12 +121,21 @@ BERTH_TAB=images BERTH_RUN_IMAGE=nginx:alpine BERTH_RUN_NAME=web \
 # a filter
 BERTH_FILTER=running ...
 
-# a particular window size and a search query
-BERTH_SIZE=960x600 BERTH_TAB=containers BERTH_SEARCH=web ...
+# a particular window size, theme and search query
+BERTH_SIZE=960x600 BERTH_THEME=dark BERTH_TAB=containers BERTH_SEARCH=web ...
+
+# a sheet, for a still frame of a confirmation or dialog
+BERTH_SHEET='confirm:stop:my-container' BERTH_TAB=containers ...
+BERTH_SHEET=prune BERTH_SIZE=960x600 ...
 ```
 
 `--nanoui-wait` matters: it runs the event loop for that many seconds first, so
-the snapshot has live data rather than a skeleton.
+the snapshot has live data rather than a skeleton. `BERTH_SIZE` is
+`WIDTHxHEIGHT` in content points, `BERTH_THEME=light|dark` overrides the saved
+appearance for one run, and `BERTH_SHEET` accepts `prune`, `create-volume`,
+`create-network`, `create-error`, `form-errors`, `bulk`, `bulk-all`,
+`confirm:stop:<name>`, `confirm:delete:<name>`, `engine-stop` or
+`engine-restart`. The full list is in `AGENTS.md`.
 
 ## How it is built
 
@@ -155,8 +171,20 @@ feature roadmap drawn from Docker Desktop and Podman Desktop lives in
 ## Releases
 
 Tagged builds are produced by GitHub Actions: a Linux x86_64 tarball, a macOS
-arm64 `.app` zip, and `SHA256SUMS`. See the
-[releases page](https://github.com/amscotti/berth/releases) for `v0.2.0`.
+arm64 `.app` zip, and `SHA256SUMS`. The Linux tarball carries `bin/berth`,
+`LICENSE`, `README.md` and `share/applications/berth.desktop`; with `bin` on
+`PATH`, the desktop entry's `Exec=berth` resolves. To install it per-user:
+
+```sh
+tar -xzf berth-linux-x86_64.tar.gz
+install -Dm755 bin/berth ~/.local/bin/berth
+install -Dm644 share/applications/berth.desktop ~/.local/share/applications/
+```
+
+See the [releases page](https://github.com/amscotti/berth/releases) for
+`v0.2.0`. Release tags must match the zon version (`v0.2.0` for `0.2.0`).
+Annotated tags are preferred; lightweight tags are accepted when the tag ref
+and checked-out commit agree.
 
 ## Testing notes
 

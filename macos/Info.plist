@@ -14,12 +14,14 @@
     <string>berth.icns</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <!-- macos/build.sh stamps both version keys from build.zig.zon. -->
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>@VERSION@</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>@VERSION@</string>
+    <!-- Stamped from the target's macOS version, so it cannot drift. -->
     <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
+    <string>@MACOS_FLOOR@</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSRequiresAquaSystemAppearance</key>

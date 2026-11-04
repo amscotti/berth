@@ -47,30 +47,39 @@ apply detail ◄── dispatch main ─────┘
 |---|---|
 | `main.zig` | process entry, window creation, `BERTH_*` harness flags |
 | `boot.zig` | state construction and teardown |
-| `app.zig` | `State`, selection, host sampling, action entry points |
-| `detail_job.zig` | one background inspector read: lifetime, logs, raw JSON |
+| `app.zig` | `State`, selection, host sampling, action entry points, theme choice |
+| `system_theme.zig` | Linux-only dark-mode probe: one 250 ms deadline for `gsettings` pipe reads; `default`/unset values fall back to `GTK_THEME` |
 | `session.zig` | discovery job, runtime choice, socket preference, refresh start |
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
 | `refresh_selection.zig` | re-resolve the inspector selection by id after a snapshot swap |
-| `actions.zig` | one background job for container actions, create and prune |
-| `cleanup.zig` | the cleanup sheet's run, delegating to the action job |
-| `image_tasks.zig` | pull/create/start as background jobs, the create body |
-| `image_refs.zig` | reference, name and port parsing for the creation card |
-| `create.zig` | the volume/network create dialog and name validation |
-| `terminal.zig` | the socket-pinned exec command and terminal launch |
-| `tray.zig` | the menu-bar mini-monitor |
 | `snapshot.zig` | a complete engine snapshot and its arena |
-| `stats_pool.zig` | per-container stats, fetched together |
+| `stats_pool.zig` | per-container stats, fetched together on a bounded pool |
+| `events_feed.zig` | `/events` interval, dedupe and the event ring |
+| `engine/events.zig` | event parsing and ring ownership |
+| `engine/df_cache.zig` | the last good `/system/df` and its separate cadence |
+| `actions.zig` | one background job for container actions, create and prune |
+| `bulk.zig` | checkbox mode, selected ids and the pending bulk action |
+| `bulk_action.zig`, `bulk_batch.zig` | bulk start/stop/delete on the worker, batched results |
+| `cleanup.zig` | the cleanup sheet's run, delegating to the action job |
+| `image_tasks.zig`, `image_refs.zig`, `image_validation.zig` | pull/create/start jobs, the create body, reference and form checks |
+| `create.zig`, `engine/create.zig` | the volume/network create dialog and its engine routes |
+| `detail_job.zig` | one background inspector read: lifetime, logs, raw JSON |
+| `logs.zig` | the page-owned log tail, follow clock, timestamps and search |
+| `terminal.zig` | the socket-pinned exec command and terminal launch |
+| `ops.zig`, `engine/command.zig` | engine start/stop/restart as bounded background commands |
+| `tray.zig` | the menu-bar mini-monitor |
+| `tabs.zig` | views, filters and their order |
+| `settings.zig`, `sheets.zig`, `shortcuts.zig` | preferences, modal sheet state, keyboard map |
 | `engine/http_uds.zig` | HTTP/1.1 over a Unix socket, timeouts, framing |
 | `engine/api.zig` | Docker API types and parsing |
-| `engine/stats.zig` | stats math, log demux |
-| `engine/discovery.zig` | socket candidates, probing, runtime kinds |
-| `engine/prune.zig` | prune routes and `SpaceReclaimed` parsing |
-| `engine/create.zig` | volume and network creation |
+| `engine/stats.zig`, `engine/inspect.zig`, `engine/lifetime.zig` | stats math, log demux, inspect and run-command facts |
+| `engine/discovery.zig`, `engine/socket_path.zig` | socket candidates, probing, runtime kinds, canonical paths |
+| `engine/prune.zig`, `engine/volumes.zig` | prune routes, reclaim parsing and volume sizes |
+| `engine/guards.zig`, `engine/podman_config.zig` | numeric/list bounds and Podman 4 machine-name lookup |
 | `host/` | host CPU/memory and engine-process RSS: Linux `/proc`, macOS Mach + `ps` |
 | `ui/shell.zig` | rail, page frame, inspector, sheets |
-| `ui/views/` | list tables, overview, disk, runtimes, settings, stacks |
-| `ui/` | theme, widgets, format, history, cell graphs |
+| `ui/views/` | list tables, overview, disk, runtimes, settings, stacks, events, creation |
+| `ui/` | theme, widgets, format, history, cell graphs, layout, detail pane |
 
 The 600-line rule is part of the build (`zig build lines`). That is why the
 refresh worker, snapshot, boot and stats pool are separate files rather than
@@ -109,14 +118,15 @@ sections of `app.zig`.
 1. **Start** (`refresh.start`): guard on an in-flight job, copy the socket path
    into memory owned by the job, create the snapshot arena, spawn a thread.
 2. **Load** (`refresh.load`): probe, negotiate `/version`, read `/info`, the
-   container list, stats, image/volume/network lists, then `/system/df`.
+   container list, stats, image/volume/network lists and the events interval;
+   `/system/df` is read only when its own ~30 s cadence says so.
 3. **Done** (`refresh.done`, dispatched to the main queue): join the worker,
    copy any error into the state buffer, then either commit or keep the old
    snapshot.
 4. **Commit**: retire the old arena, adopt the new one, update the selection by
-   id, sample history, and schedule the next pass five seconds after this one
-   finished. A click during a pass sets `refresh_wanted` and starts the next one
-   immediately.
+   id, sample history, adopt a fresh df document into its own cache, and
+   schedule the next pass five seconds after this one finished. A click during
+   a pass sets `refresh_wanted` and starts the next one immediately.
 
 ### Ownership rules
 
@@ -130,9 +140,18 @@ sections of `app.zig`.
   worker's copies free of the main thread's `gpa` bookkeeping. The refresh
   follow tail and the detail job both obey the same clock check: a tail whose
   captured timestamps no longer match the pane is dropped.
+- `State.df` owns the last good `/system/df` in a separate arena, outside the
+  rotating snapshot arenas. A failed or skipped attempt keeps the old document
+  with its age and error note, so snapshot rotation cannot dangle it.
+- The event ring and its strings belong to the refresh snapshot; a failed
+  interval leaves the previous ring intact instead of pointing into freed
+  memory.
 - `Client.alloc` always points at the state's current arena for interactive
   calls (actions, prune); the detail worker uses its own arena and hands only
   page-owned results back.
+- Action, bulk, image and engine-command jobs own their copied argv, request
+  bodies and captured output. They run one at a time, post one completion to
+  the main queue, and the completion frees whatever the state did not adopt.
 - A discovery job owns its copied socket/id strings and scan result. Adoption
   moves the runtimes into the state; abandonment leaves the job to the
   completion callback, or a leak at exit if the loop stops before it runs.
@@ -145,8 +164,8 @@ sections of `app.zig`.
 - A failed core call aborts the snapshot and leaves the last complete one on
   screen. A failed image/volume/network list is a core failure: committing an
   empty list would read as “they were deleted”.
-- A failed `/system/df` keeps the previous disk figures; disk numbers are
-  advisory and should not blank the page.
+- A failed `/system/df` keeps the previous disk figures from the df cache;
+  disk numbers are advisory and should not blank the page.
 - A failed stats sample skips that container; the next pass retries. The pass is
   marked incomplete, so container totals render as partial rather than as a
   lower bound presented as the whole.

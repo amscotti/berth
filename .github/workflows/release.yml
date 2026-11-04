@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v0.1.0"
+        description: "Release tag, for example v0.2.0"
         required: true
         type: string
 
@@ -24,6 +24,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A dispatch starts on the default branch; check out the tag ref the
+          # user named, not a branch that happens to share its name.
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Verify tag matches the zon version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)
+          echo "tag=$TAG version=$version"
+          test "$TAG" = "v$version"
 
       - name: Cache Zig artifacts
         uses: actions/cache@v4
@@ -38,11 +50,43 @@ jobs:
         with:
           version: 0.17.0
 
+      - name: Debug build
+        run: zig build
+
       - name: Unit tests
         run: zig build test
 
+      - name: 600-line rule
+        run: zig build lines
+
+      # glibc 2.28 is the documented floor. Building against it is what keeps
+      # the release usable on older LTS distributions.
       - name: Build release tarball
-        run: zig build dist
+        run: zig build dist -Dtarget=x86_64-linux-gnu.2.28
+
+      - name: Check the glibc floor
+        run: |
+          mkdir -p /tmp/berth-glibc
+          tar -xzf zig-out/dist/berth-linux-x86_64.tar.gz -C /tmp/berth-glibc
+          bin=/tmp/berth-glibc/bin/berth
+          test -x "$bin"
+          max=$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sed 's/^GLIBC_//' | sort -V | tail -n 1)
+          echo "highest GLIBC symbol: $max"
+          test -n "$max"
+          if [ "$(printf '%s\n' 2.28 "$max" | sort -V | tail -n 1)" != "2.28" ]; then
+            echo "error: binary needs glibc $max, release floor is 2.28" >&2
+            exit 1
+          fi
+
+      # Compiling is not proof the Linux binary runs. Headless snapshots do
+      # not start GTK, so this needs no display or GTK installation.
+      - name: Headless smoke
+        run: |
+          mkdir -p /tmp/berth-smoke
+          tar -xzf zig-out/dist/berth-linux-x86_64.tar.gz -C /tmp/berth-smoke
+          BERTH_TAB=containers BERTH_SIZE=960x600 timeout 30 \
+            /tmp/berth-smoke/bin/berth --nanoui-snapshot=/tmp/berth-smoke.png --nanoui-wait=1
+          test -s /tmp/berth-smoke.png
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -54,8 +98,21 @@ jobs:
   macos:
     name: macOS arm64
     runs-on: macos-14
+    env:
+      # One floor feeds the target, the plist stamp and both artifact checks.
+      MACOS_FLOOR: "13.0"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Verify tag matches the zon version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)
+          echo "tag=$TAG version=$version"
+          test "$TAG" = "v$version"
 
       - name: Cache Zig artifacts
         uses: actions/cache@v4
@@ -70,11 +127,36 @@ jobs:
         with:
           version: 0.17.0
 
+      - name: Debug build
+        run: zig build
+
       - name: Unit tests
         run: zig build test
 
+      - name: 600-line rule
+        run: zig build lines
+
       - name: Build app bundle
-        run: sh macos/build.sh
+        run: BERTH_MACOS_TARGET="aarch64-macos.${MACOS_FLOOR}" sh macos/build.sh
+
+      - name: Check bundle signature, floor and version
+        run: |
+          app=zig-out/berth.app
+          plist="$app/Contents/Info.plist"
+          bin="$app/Contents/MacOS/berth"
+          test -x "$bin"
+          codesign --verify --deep --strict "$app"
+          minos=$(otool -l "$bin" | awk '/LC_BUILD_VERSION/{seen=1} seen && /minos/{print $2; exit}')
+          plist_min=$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$plist")
+          version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)
+          plist_version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")
+          plist_build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")
+          echo "minos=$minos floor=$MACOS_FLOOR plist_floor=$plist_min"
+          echo "version=$version plist_version=$plist_version plist_build=$plist_build"
+          test "$minos" = "$MACOS_FLOOR"
+          test "$plist_min" = "$MACOS_FLOOR"
+          test "$version" = "$plist_version"
+          test "$version" = "$plist_build"
 
       - name: Package app bundle
         run: |
@@ -94,6 +176,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          # Full history is needed to resolve the tag ref and its target
+          # commit. Annotated tags are preferred, but lightweight tags work.
+          fetch-depth: 0
+
+      - name: Verify tag, commit and version
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          ref="refs/tags/$TAG"
+          ref_type=$(git cat-file -t "$ref")
+          echo "tag=$TAG ref_type=$ref_type"
+          case "$ref_type" in
+            tag|commit) ;;
+            *) echo "error: $ref is not a tag ref" >&2; exit 1 ;;
+          esac
+          tag_commit=$(git rev-parse "$ref^{commit}")
+          head_commit=$(git rev-parse HEAD)
+          version=$(sed -n 's/.*\.version = "\([^"]*\)".*/\1/p' build.zig.zon | head -n 1)
+          echo "tag=$TAG tag_commit=$tag_commit head=$head_commit version=$version"
+          test "$tag_commit" = "$head_commit"
+          test "$TAG" = "v$version"
+          echo "RELEASE_TARGET=$tag_commit" >> "$GITHUB_ENV"
 
       - name: Download packages
         uses: actions/download-artifact@v4
@@ -110,13 +216,13 @@ jobs:
       - name: Create or update GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
-              --target "$GITHUB_SHA" \
+              --target "$RELEASE_TARGET" \
               --title "berth $TAG" \
               --generate-notes
           fi

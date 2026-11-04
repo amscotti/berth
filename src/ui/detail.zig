@@ -6,6 +6,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../app.zig");
 const api = @import("../engine/api.zig");
+const network_counts = @import("../engine/network_counts.zig");
 const lifetime = @import("../engine/lifetime.zig");
 const image_tasks = @import("../image_tasks.zig");
 const terminal = @import("../terminal.zig");
@@ -120,7 +121,7 @@ fn inspectView(s: *app.State, c: *ui.Context) void {
 
 fn containerDetail(s: *app.State, c: *ui.Context) void {
     // The facts that answer "what is this thing", from the list entry we have.
-    for (s.containers) |ct| {
+    for (s.containers, 0..) |ct, index| {
         if (s.selected == null or !std.mem.eql(u8, s.selected.?, ct.Id)) continue;
         facts(c, "Image", ct.Image);
         facts(c, "State", ct.State);
@@ -137,7 +138,7 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
         } else if (lifetime.upSeconds(ct.Status)) |secs| {
             facts(c, "Up", format.duration(c, secs));
         }
-        const st = app.statFor(s, ct.Id);
+        const st = app.statAt(s, index);
         if (ct.isUp()) {
             // The table can drop MEM at the smallest size; the inspector is
             // then the only place the selected container's figure survives.
@@ -318,7 +319,7 @@ fn networkDetail(s: *app.State, c: *ui.Context) void {
         facts(c, "ID", shortId(n.Id));
         facts(c, "Driver", if (std.mem.eql(u8, n.Driver, "null")) "—" else n.Driver);
         facts(c, "Scope", n.Scope);
-        facts(c, "Attached", c.print("{d}", .{api.attachedCount(s.containers, n.Name)}));
+        facts(c, "Attached", c.print("{d}", .{network_counts.get(s.network_counts, n.Name)}));
         if (n.builtin()) {
             ui.text(c, "Built-in networks cannot be removed.", .{ .size = 11.5, .color = c.theme.muted });
         } else {

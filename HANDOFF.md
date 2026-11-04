@@ -62,19 +62,24 @@ takes about two minutes.
 
 ## What works
 
-Overview · Containers · Images · Volumes · Networks · Stacks · Disk · Runtimes ·
-Settings. Live per-container CPU and memory, history graphs, host memory split
-three ways (containers / engine / elsewhere), start / stop / restart / delete,
-container detail with the last 200 log lines, light and dark themes.
+Overview · Containers · Images · Volumes · Networks · Events · Stacks · Disk ·
+Runtimes · Settings. Live per-container CPU and memory, history graphs, host
+memory split three ways (containers / engine / elsewhere), start / stop /
+restart / pause / resume / delete, bulk container actions, container detail with
+the last 500 log lines (follow, search, local timestamps, copy), events with
+exit/OOM/restart toasts, image pull and run, volume and network creation,
+Compose start-all/stop-all, engine start/stop/restart for Colima/Lima/Podman
+machines, a macOS tray mini-monitor, and light and dark themes.
 
 ## What is not built yet
 
-Compose `up`/`down`, embedded terminal output (the Terminal action opens the
-user's own terminal with a socket-pinned `exec`), the macOS notification
-centre, true streaming log follow, a DMG, code signing and notarization.
-`docs/UI-REVIEW.md` also lists the design work that is knowingly
-unfinished — the list is a table rather than a monitor at forty containers,
-actions always visible on every row.
+Compose `up`/`down` through the Compose CLI, embedded terminal output (the
+Terminal action ships and opens the user's own terminal with a socket-pinned
+`exec`), the macOS notification centre (in-app toasts exist), true streaming log
+follow (follow polls a 500-line tail), a DMG, code signing and notarization.
+`docs/UI-REVIEW.md` also lists the design work that is knowingly unfinished —
+the list is a table rather than a monitor at forty containers, actions always
+visible on every row.
 
 ## Screenshots without a display
 
@@ -97,7 +102,7 @@ BERTH_THEME=dark     … # the snapshot path takes the window theme, so choose i
 
 ## Also here
 
-- `berth-linux-x86_64.tar.gz` — the Linux release build (1.4 MB binary), if you
-  want to compare behaviour side by side.
+- `berth-linux-x86_64.tar.gz` — the Linux release build, if you want to
+  compare behaviour side by side.
 - `zig-pkg/` — the pinned nanoui v0.9.2 checkout, so the first Mac build does
   not need to fetch it.

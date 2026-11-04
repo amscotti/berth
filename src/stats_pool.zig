@@ -9,7 +9,6 @@ const api = @import("engine/api.zig");
 
 /// One container's figures, from a single stats sample.
 pub const Sample = struct {
-    id: []const u8 = "",
     cpu: f64 = 0,
     /// False when the engine sent no previous CPU sample, so `cpu` is not a
     /// measurement and must render as a dash.
@@ -28,12 +27,11 @@ pub const Sample = struct {
 
 /// Reduces a parsed stats document to the numbers the UI keeps. CPU stays
 /// optional past this point: a missing previous sample is not zero.
-pub fn fromStats(id: []const u8, st: api.Stats) Sample {
+pub fn fromStats(st: api.Stats) Sample {
     const net = st.netTotals();
     const disk = st.diskTotals();
     const cpu = st.cpuPercent();
     return .{
-        .id = id,
         .cpu = cpu orelse 0,
         .cpu_known = cpu != null,
         .mem = st.memUsed(),
@@ -138,7 +136,7 @@ fn work(job: Job) void {
             _ = arena.reset(.retain_capacity);
             continue;
         };
-        job.out[i] = fromStats(ct.Id, st);
+        job.out[i] = fromStats(st);
         if (job.assignments) |counts| counts[job.first] += 1;
         // The parsed body is dead once its numbers are copied out. Reset per
         // container, not per worker: otherwise 64 workers each hold every
@@ -207,7 +205,7 @@ test "a sample without a previous cpu reading stays unknown" {
     ;
     var parsed = try std.json.parseFromSlice(api.Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
-    const got = fromStats("abc", parsed.value);
+    const got = fromStats(parsed.value);
     try std.testing.expect(got.sampled);
     try std.testing.expect(!got.cpu_known);
 }
@@ -219,7 +217,7 @@ test "a sample with a previous cpu reading keeps the percentage" {
     ;
     var parsed = try std.json.parseFromSlice(api.Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
-    const got = fromStats("abc", parsed.value);
+    const got = fromStats(parsed.value);
     try std.testing.expect(got.cpu_known);
     try std.testing.expectApproxEqAbs(@as(f64, 40.0), got.cpu, 0.001);
 }
@@ -231,16 +229,16 @@ test "an aggregate with one unknown cpu is unknown, not a lower bound" {
         .{ .Id = "c", .State = "exited" },
     };
     const known = [_]Sample{
-        .{ .id = "a", .cpu = 20, .cpu_known = true, .sampled = true },
-        .{ .id = "b", .cpu = 40, .cpu_known = true, .sampled = true },
-        .{ .id = "c", .cpu = 999, .cpu_known = true, .sampled = true },
+        .{ .cpu = 20, .cpu_known = true, .sampled = true },
+        .{ .cpu = 40, .cpu_known = true, .sampled = true },
+        .{ .cpu = 999, .cpu_known = true, .sampled = true },
     };
     try std.testing.expectApproxEqAbs(@as(f32, 30), aggregateCpuPercent(&containers, &known, 2).?, 0.001);
 
     const mixed = [_]Sample{
-        .{ .id = "a", .cpu = 20, .cpu_known = true, .sampled = true },
-        .{ .id = "b", .cpu_known = false, .sampled = true },
-        .{ .id = "c" },
+        .{ .cpu = 20, .cpu_known = true, .sampled = true },
+        .{ .cpu_known = false, .sampled = true },
+        .{},
     };
     try std.testing.expect(aggregateCpuPercent(&containers, &mixed, 2) == null);
 
@@ -255,16 +253,16 @@ test "a partial stats pass is not reported as complete" {
         .{ .Id = "c", .State = "exited" },
     };
     const all = [_]Sample{
-        .{ .id = "a", .sampled = true },
-        .{ .id = "b", .sampled = true },
+        .{ .sampled = true },
+        .{ .sampled = true },
         .{},
     };
     try std.testing.expect(allSampled(&containers, &all));
 
     const partial = [_]Sample{
-        .{ .id = "a", .sampled = true },
-        .{ .id = "b", .sampled = false },
-        .{ .id = "c", .sampled = true },
+        .{ .sampled = true },
+        .{ .sampled = false },
+        .{ .sampled = true },
     };
     try std.testing.expect(!allSampled(&containers, &partial));
     try std.testing.expect(!allSampled(&containers, all[0..1]));
@@ -281,16 +279,16 @@ test "overview and tray memory sums saturate instead of wrapping" {
         .{ .Id = "c", .State = "exited" },
     };
     const stats = [_]Sample{
-        .{ .id = "a", .mem = max, .sampled = true },
-        .{ .id = "b", .mem = 5, .sampled = true },
-        .{ .id = "c", .mem = max, .sampled = true },
+        .{ .mem = max, .sampled = true },
+        .{ .mem = 5, .sampled = true },
+        .{ .mem = max, .sampled = true },
     };
     try std.testing.expectEqual(max, memoryUsed(&containers, &stats));
 
     const normal = [_]Sample{
-        .{ .id = "a", .mem = 10, .sampled = true },
-        .{ .id = "b", .mem = 20, .sampled = true },
-        .{ .id = "c", .mem = 999, .sampled = true },
+        .{ .mem = 10, .sampled = true },
+        .{ .mem = 20, .sampled = true },
+        .{ .mem = 999, .sampled = true },
     };
     try std.testing.expectEqual(@as(u64, 30), memoryUsed(&containers, &normal));
     try std.testing.expectEqual(@as(u64, 0), memoryUsed(&containers, &.{}));

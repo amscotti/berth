@@ -237,7 +237,9 @@ fn finish(job: *Job) void {
         if (done.error_text.len > 0) s.notifyFmt("{s}", .{firstLine(done.error_text)}, true);
     }
     // Even with nothing queued, the rows just changed; resume must refresh,
-    // not merely arm the next automatic tick.
+    // not merely arm the next automatic tick. The disk cache is invalidated
+    // too, because a stopped or deleted container changes reclaimable space.
+    s.df.invalidate();
     s.refresh_wanted = true;
     session.@"resume"(s);
     s.redraw();
@@ -388,6 +390,7 @@ test "a bulk completion refreshes with nothing queued" {
     defer state.arena.deinit();
     defer state.create_dialog.deinit();
     state.client = api.Client.init(state.io, state.gpa, "/nonexistent/bulk-refresh.sock");
+    state.df.noteAttempt();
 
     const job = try fakeJob(&state);
     state.bulk.job = job;
@@ -395,6 +398,7 @@ test "a bulk completion refreshes with nothing queued" {
 
     try std.testing.expect(state.bulk.job == null);
     try std.testing.expect(!state.refresh_wanted);
+    try std.testing.expect(state.df.wanted());
     try std.testing.expectEqual(@as(usize, 1), Hook.starts);
 }
 

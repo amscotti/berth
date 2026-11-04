@@ -14,6 +14,7 @@ const bulk = @import("../../bulk.zig");
 const create = @import("create.zig");
 const create_mod = @import("../../create.zig");
 const sorting = @import("sorting.zig");
+const network_counts = @import("../../engine/network_counts.zig");
 const shell = @import("../shell.zig");
 const theme = @import("../theme.zig");
 
@@ -46,15 +47,16 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     }
 
     // The rows this filter keeps, chosen once so the count and the list agree.
-    // The search query ANDs with the chip: both narrow what is on screen.
+    // The search query ANDs with the chip: both narrow what is on screen. The
+    // order is indices into the snapshot, so sorting and row stats are O(1)
+    // lookups; the list is virtualized, so there is no fixed row cap here.
     const q = c.alloc().dupe(u8, s.search.containers.text()) catch "";
-    var shown: [512]*const api.Container = undefined;
+    const order = c.alloc().alloc(usize, s.containers.len) catch return;
     var n: usize = 0;
-    for (s.containers) |*ct| {
+    for (s.containers, 0..) |*ct, index| {
         if (!s.filter.keeps(ct)) continue;
         if (!search.keepContainer(q, ct)) continue;
-        if (n == shown.len) break;
-        shown[n] = ct;
+        order[n] = index;
         n += 1;
     }
 
@@ -133,12 +135,10 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
 
     // Only when something is actually grouped: a column of dashes costs width
     // that the ports column needs, and says nothing.
-    var any_project = false;
-    for (s.containers) |ct| {
-        if (ct.project() != null) any_project = true;
-    }
-    std.mem.sort(*const api.Container, shown[0..n], sorting.ContainerSort{
-        .s = s,
+    const any_project = s.projects.len > 0;
+    std.mem.sort(usize, order[0..n], sorting.ContainerSort{
+        .items = s.containers,
+        .stats = s.stats,
         .key = s.sort_containers.key,
         .desc = s.sort_containers.desc,
     }, sorting.ContainerSort.lessThan);
@@ -149,7 +149,8 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
 
     var rows = ui.list(c, .{ .count = n, .row_height = ROW });
     while (rows.next()) |i| {
-        const ct = shown[i].*;
+        const index = order[i];
+        const ct = s.containers[index];
         const is_selected = s.selected != null and std.mem.eql(u8, s.selected.?, ct.Id);
         var row = ui.div(c).row().wFull().h(ROW).px(12).itemsCenter().gap(10).rounded(4)
             .bg(if (is_selected) c.theme.accent.alpha(0.10) else if (i % 2 == 1) c.theme.surface_hover.alpha(0.35) else c.theme.surface)
@@ -166,7 +167,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         if (cols.select) checkboxCell(s, c, &ct, cols.check);
         metrics.nameCell(c, &ct, cols.name);
         widgets.pillCell(c, ct.health() orelse ct.State, cols.state);
-        const st = app.statFor(s, ct.Id);
+        const st = app.statAt(s, index);
         // A stopped container has no stats at all: say so with a dash rather
         // than a zero, which would read as "idle" instead of "unknown". A
         // paused one still reports — frozen, but real.
@@ -230,8 +231,9 @@ fn bulkBar(s: *app.State, c: *ui.Context) void {
     // here keeps the shortcut honest when a query is in the field. A frozen
     // confirmation already names its set, so the bar must not change it.
     if (s.bulk.pending == null) {
-        if (smallButton(c, "Select all shown", false)) {
-            s.bulk.selectShown(s.containers, s.filter, s.search.containers.text());
+        if (smallButton(c, c.print("Select shown ({d} max)", .{bulk.max}), false)) {
+            if (s.bulk.selectShown(s.containers, s.filter, s.search.containers.text()))
+                s.notifyFmt("Selected {d}", .{bulk.max}, false);
             s.redraw();
         }
         if (smallButton(c, "None", false)) {
@@ -416,10 +418,16 @@ pub fn volumes(s: *app.State, c: *ui.Context) void {
         .desc = s.sort_volumes.desc,
     }, sorting.VolumeSort.lessThan);
 
-    const subtitle = if (q.len > 0 and shown < s.volumes.len)
+    const basis = if (q.len > 0 and shown < s.volumes.len)
         c.print("{d} of {d} shown", .{ shown, s.volumes.len })
     else
         widgets.count(c, s.volumes.len, "volume", "volumes");
+    // Sizes come from the aged df cache, so the count alone would hide how
+    // fresh the numbers beside it are.
+    const subtitle = if (s.df.at > 0 and s.df.value != null)
+        c.print("{s} · disk {s} ago", .{ basis, format.ago(c, s.df.at, format.now()) })
+    else
+        basis;
     const width = s.layout.content;
     const box_w = searchWidth(width);
     const header = widgets.pageHeaderSearch(c, "Volumes", subtitle, .{
@@ -504,7 +512,7 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
     }
     std.mem.sort(usize, order[0..shown], sorting.NetworkSort{
         .items = s.networks,
-        .containers = s.containers,
+        .counts = s.network_counts,
         .key = s.sort_networks.key,
         .desc = s.sort_networks.desc,
     }, sorting.NetworkSort.lessThan);
@@ -567,7 +575,7 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
             widgets.cellMuted(c, n.Driver, cols.driver, false);
             widgets.cellMuted(c, n.Scope, cols.scope, false);
         }
-        widgets.cellMuted(c, c.print("{d}", .{api.attachedCount(s.containers, n.Name)}), cols.attached, true);
+        widgets.cellMuted(c, c.print("{d}", .{network_counts.get(s.network_counts, n.Name)}), cols.attached, true);
     }
     rows.end();
 }

@@ -66,8 +66,7 @@ references pull `latest` (never "every tag"), `ip:host:container` port
 bindings, env/volume lists, Enter submits, headless via `BERTH_PULL` and
 `BERTH_RUN_*`. The macOS tray mini-monitor (#16) reports engine state,
 running count, aggregate container CPU and memory, with Open/Quit, and the
-window reopens at the size it was closed at. Still open from this wave's
-original list: the "Open in Terminal" exec substitute.
+window reopens at the size it was closed at.
 
 **Status: Tier 3, wave 1 shipped** — the "Open in Terminal" substitute
 (#17) opens the user's terminal with a socket-pinned `docker`/`podman exec`,
@@ -75,8 +74,8 @@ so it attaches to the engine the window shows. Compose projects gained
 start all / stop all (#18's honest subset) over the bulk worker, with the
 stop confirmation naming the project and its live count. Volumes and
 networks can be created (#22) from their page headers, with the name
-validated before the POST. On macOS the host bar's engine segment now
-attributes the engine's host processes (#24) — helper RSS, deliberately not
+validated before the POST. On macOS and Linux the host bar's engine segment
+now attributes the engine's host processes (#24) — helper RSS, deliberately not
 the VM's guest RAM, which contains the containers and stays in "elsewhere".
 
 | # | Feature | Seen in | Use | Diff | Why / how |
@@ -84,7 +83,7 @@ the VM's guest RAM, which contains the containers and stays in "elsewhere".
 | 9 | **Engine/VM lifecycle controls** — start/stop/restart Colima, Lima, Podman machine; create with CPU/memory/disk presets | PD tray + Resources page ("create new machine… start or stop Podman machines", allocated CPU/memory/storage) | 5 | M | The feature berth's own development history argues for: the user's Lima VM sat wedged and the app could only watch. berth already knows which engine kind owns each socket; spawn `colima start/stop`, `limactl start/stop`, `podman machine start/stop` as background jobs and keep the Runtimes view honest while the engine is down. Resource *editing* (CPU/RAM/disk) is the L-sized second half. |
 | 10 | **Events feed** (created/started/died/oom/destroy) | neither app has a real one; berth is a monitor | 4 | M | `GET /events?since=<ts>&until=<now>` works without streaming: the refresh worker can collect the interval each pass into a ring, and the view is a table like any other. Groundwork for notifications and "why did it restart". |
 | 11 | **Bulk selection + bulk start/stop/delete** | DD checkbox toolbar; PD bulk delete | 4 | M | A checkbox column, a selection set in state, loop the existing action path with one confirm naming the count. DD's "estimated space reclaimed" for selected images falls out of sizes berth already has. |
-| 12 | **Log pane upgrades** — follow/auto-refresh, timestamps toggle, wrap, search-in-logs, copy | DD Logs (`⌘F`, copy, clear, timestamps); PD logs | 5 | M (auto-refresh) → L (true streaming) | Honest staging: today the pane is a 200-line tail with a manual refresh. Auto-refresh on the worker + timestamp toggle + in-pane search is M. True `follow` streaming needs hijacked connections and `fdwatch`, which nanoui has but berth's HTTP client does not yet — that's the L follow-up and also unlocks #17. |
+| 12 | **Log pane upgrades** — follow/auto-refresh, timestamps toggle, wrap, search-in-logs, copy | DD Logs (`⌘F`, copy, clear, timestamps); PD logs | 5 | M (auto-refresh) → L (true streaming) | Shipped as a 500-line tail fetched on the refresh worker, with follow, local timestamps, in-pane search and copy. True `follow` streaming needs hijacked connections and `fdwatch`, which nanoui has but berth's HTTP client does not yet — that's the L follow-up and also unlocks #17. |
 | 13 | **Notifications on exit/OOM/restart** | DD's Gordon flags issues; PD tasks/notifications | 4 | M | Built on #10's events. In-app toasts are trivial (berth has them); macOS notification centre needs a small native call or `osascript` — verify before sizing. |
 | 14 | **Run image as a container** with optional name/ports/volumes/env | DD Images "Run" + optional settings | 4 | M | `POST /containers/create` then `/start`; works identically on Podman. The cost is the options dialog, not the protocol. Pairs with #15. |
 | 15 | **Pull image** by reference | DD/PD | 4 | M | `POST /images/create?fromImage=…&tag=…` streams JSON progress. berth can run it as a background job with a spinner and the final "Downloaded" line — no streaming UI required for v1. |
@@ -101,7 +100,7 @@ the VM's guest RAM, which contains the containers and stays in "elsewhere".
 | 21 | **Push/tag image, registries management, sign-in** | DD My Hub/push; PD registries | 2 | M–L | Registry auth and account UX pull berth away from local-first; Podman's registries live in `registries.conf`, Docker's in `config.json`. Defer until someone asks for it. |
 | 22 | **Volume create / network create** | DD Volumes "Create"; PD networks page | 2 | S–M | `POST /volumes/create`, `POST /networks/create` — trivial protocol, low demand in a monitor. Cheap to add whenever. |
 | 23 | **Pods view** (Podman-only) | PD Pods page | 3 for Podman users | L | Libpod API (`/v4.0.0/libpod/pods/json`) is engine-specific; adds a second protocol dialect. Only if Podman users become a primary audience. |
-| 24 | **Engine VM resource attribution** (Lima/QEMU/Podman machine RSS as the engine segment) | DD resource graphs; PD Resources | 3 | M | Fills a known berth gap: on macOS the host bar's "engine" segment is always 0 because no sampler attributes the VM processes. Scan `ps` for the engine's PIDs by kind. |
+| 24 | **Engine VM resource attribution** (Lima/QEMU/Podman machine RSS as the engine segment) | DD resource graphs; PD Resources | 3 | M | The engine segment now attributes the engine's host helper processes on macOS and Linux (Linux `/proc`, macOS `ps`). The VM's guest RAM stays in "elsewhere" on purpose: the containers are measured inside it, so counting the VM again would double-count them. |
 
 ## Tier 4 — out of scope for berth
 

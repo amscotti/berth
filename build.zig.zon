@@ -1,6 +1,6 @@
 .{
     .name = .berth,
-    .version = "0.0.1",
+    .version = "0.2.0",
     .dependencies = .{
         .nanoui = .{
             .url = "git+https://github.com/justrach/nanoui?ref=v0.9.2#f329a9698c9ef70127aaee18df242bfcb687e3b7",

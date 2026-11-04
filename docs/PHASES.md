@@ -3,6 +3,10 @@
 Written after each phase, as the brief asks: what was verified, what broke, and
 whether anything found would block the next phase.
 
+> This is a historical log. Sizes, view counts and feature claims describe the
+> phase that wrote them; `README.md` and `docs/ARCHITECTURE.md` describe the
+> current build.
+
 ## P0 — the protocol spike — PASSED
 
 **Goal.** Prove the three unknowns before building on them: an HTTP/1.1 client

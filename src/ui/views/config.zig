@@ -1,6 +1,7 @@
 //! Runtimes and Settings: the engine chooser, socket discovery and the
 //! preferences that belong to the machine rather than to a container.
 const std = @import("std");
+const build_options = @import("build_options");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../../app.zig");
@@ -192,7 +193,7 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
 }
 
 pub fn settings(s: *app.State, c: *ui.Context) void {
-    widgets.pageHeader(c, "Settings", "berth 0.2 · a native container monitor");
+    widgets.pageHeader(c, "Settings", c.print("berth {s} · a native container monitor", .{build_options.version}));
     const page = ui.div(c).column().wFull().gap(12);
     defer page.end();
 
@@ -241,7 +242,7 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
     ui.text(c, "Maintenance", .{ .size = 15, .weight = .semibold });
     ui.spacer(c);
-    ui.text(c, if (s.df) |df| c.print("{s} reclaimable", .{format.bytesSigned(c, df.reclaimable())}) else "reclaimable —", .{
+    ui.text(c, if (s.df.value) |df| c.print("{s} reclaimable", .{format.bytesSigned(c, df.reclaimable())}) else "reclaimable —", .{
         .size = 11.5,
         .color = c.theme.muted,
     });
@@ -250,7 +251,12 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     const actions = ui.div(c).row().wFull().gap(8).pt(2);
     if (s.client != null) {
         if (settingButton(c, "Clean up unused…", true)) s.openPrune();
-        if (settingButton(c, "Refresh now", false)) s.refresh();
+        if (settingButton(c, "Refresh now", false)) {
+            // A person asking now wants the expensive disk figures too, not
+            // the cached copy waiting for its own cadence.
+            s.df.invalidate();
+            s.refresh();
+        }
     } else if (s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0)) {
         ui.text(c, "Reading engine… cleanup and refresh unlock with the first snapshot.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
     } else {

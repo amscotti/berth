@@ -245,28 +245,11 @@ fn railFigure(s: *app.State, c: *ui.Context, tab: app.Tab) []const u8 {
         .volumes => c.print("{d}", .{s.volumes.len}),
         .networks => c.print("{d}", .{s.networks.len}),
         .events => c.print("{d}", .{s.events.items.len}),
-        .stacks => c.print("{d}", .{projectCount(s)}),
+        .stacks => c.print("{d}", .{s.projects.len}),
         .disk => if (storeBytes(s)) |n| format.bytes(c, n) else "—",
         .runtimes => c.print("{d}", .{reachableCount(s)}),
         .settings => "",
     };
-}
-
-fn projectCount(s: *app.State) usize {
-    var n: usize = 0;
-    for (s.containers, 0..) |ct, i| {
-        const project = ct.project() orelse continue;
-        var seen = false;
-        for (s.containers[0..i]) |earlier| {
-            const other = earlier.project() orelse continue;
-            if (std.mem.eql(u8, project, other)) {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen) n += 1;
-    }
-    return n;
 }
 
 fn reachableCount(s: *app.State) usize {
@@ -278,7 +261,7 @@ fn reachableCount(s: *app.State) usize {
 }
 
 fn storeBytes(s: *app.State) ?u64 {
-    const df = s.df orelse return null;
+    const df = s.df.value orelse return null;
     const total = df.stores().total();
     return if (total > 0) @intCast(total) else null;
 }
@@ -493,19 +476,25 @@ fn pruneDialog(s: *app.State, c: *ui.Context) void {
     var imgs: i64 = 0;
     var vols: i64 = 0;
     var cache: i64 = 0;
-    if (s.df) |df| {
+    if (s.df.value) |df| {
         const free = df.reclaimableByStore();
         cont = free.containers;
         imgs = free.images;
         vols = free.volumes;
         cache = free.build_cache;
     }
-    const selected = pruneSelectedBytes(s.df, s.prune_opts, build_cache_on);
+    const selected = pruneSelectedBytes(s.df.value, s.prune_opts, build_cache_on);
 
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.accent);
     defer box.end();
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
-    sheetHeading(c, "Clean up unused data", c.theme.text, false);
+    // The amounts below come from the df cache; name its age in the heading so
+    // a stale figure cannot read as a fresh one.
+    const title = if (s.df.at > 0 and s.df.value != null)
+        c.print("Clean up unused data · disk {s} ago", .{format.ago(c, s.df.at, format.now())})
+    else
+        "Clean up unused data";
+    sheetHeading(c, title, c.theme.text, false);
     ui.spacer(c);
     ui.text(c, c.print("{s} selected", .{format.bytesSigned(c, @max(0, selected))}), .{ .size = 11, .color = c.theme.muted });
     head.end();

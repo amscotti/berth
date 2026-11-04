@@ -74,24 +74,25 @@ pub const State = struct {
     }
 
     /// Selects every row the current filter and search leave on screen, in
-    /// the engine's order, up to the same 512-row cap as manual ticks. The
-    /// table can show at most that many, so the button cannot promise rows
-    /// the list never painted.
-    pub fn selectShown(self: *State, containers: []const api.Container, filter: app.Filter, query: []const u8) void {
+    /// the engine's order, up to the bulk worker's 512-id cap. That cap is the
+    /// batch size, not the table's: the virtualized list can show more rows.
+    /// Returns whether rows were left behind by that cap.
+    pub fn selectShown(self: *State, containers: []const api.Container, filter: app.Filter, query: []const u8) bool {
         // A confirmation names a frozen set; letting the bar change it behind
         // the dialog would make the count and the worker disagree.
-        if (self.pending != null) return;
+        if (self.pending != null) return false;
         self.count = 0;
         for (containers) |*ct| {
             if (!filter.keeps(ct)) continue;
             if (!search.keepContainer(query, ct)) continue;
             if (ct.Id.len == 0 or ct.Id.len > id_len) continue;
-            if (self.count == max) break;
+            if (self.count == max) return true;
             const n = ct.Id.len;
             @memcpy(self.ids[self.count][0..n], ct.Id);
             self.lens[self.count] = @intCast(n);
             self.count += 1;
         }
+        return false;
     }
 
     /// "None" clears the ticks without leaving checkbox mode.
@@ -482,24 +483,24 @@ test "select all shown respects the filter, the search and the cap" {
         .{ .Id = "db-up", .Names = &.{"/db-up"}, .State = "running" },
     };
     var state: State = .{ .enabled = true };
-    state.selectShown(items[0..], .running, "web");
+    try std.testing.expect(!state.selectShown(items[0..], .running, "web"));
     try std.testing.expectEqual(@as(usize, 1), state.count);
     try std.testing.expectEqualStrings("web-up", state.id(0));
 
-    state.selectShown(items[0..], .all, "");
+    try std.testing.expect(!state.selectShown(items[0..], .all, ""));
     try std.testing.expectEqual(@as(usize, 3), state.count);
     state.selectNone();
     try std.testing.expectEqual(@as(usize, 0), state.count);
 
-    // The list itself stops at 512; a "select all" over a bigger snapshot
-    // must not grow a batch the worker cannot carry.
+    // The bulk worker's batch cap is separate from the table: a "select all"
+    // over a bigger snapshot must not grow a batch it cannot carry.
     var many: [max + 1]api.Container = undefined;
     var ids: [max + 1][8]u8 = undefined;
     for (&many, &ids, 0..) |*ct, *id, i| {
         const text = std.fmt.bufPrint(id, "c{d}", .{i}) catch unreachable;
         ct.* = .{ .Id = text, .State = "running" };
     }
-    state.selectShown(many[0..], .all, "");
+    try std.testing.expect(state.selectShown(many[0..], .all, ""));
     try std.testing.expectEqual(@as(usize, max), state.count);
     try std.testing.expectEqualStrings("c0", state.id(0));
     try std.testing.expectEqualStrings("c511", state.id(max - 1));

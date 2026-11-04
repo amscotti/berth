@@ -102,8 +102,9 @@ Docker on this box is `sudo -n docker …`; the user is not in the `docker` grou
   availability limit, not an empty or deleted store: the refresh reports
   “refusing to parse (availability limit — retry when the engine has fewer)”.
   A refused list aborts that pass, so the previous list snapshot stays on
-  screen. A failed `/system/df` keeps its last figures for exactly one more
-  pass (they point into the retired arena), then shows the engine’s df error.
+  screen. `/system/df` is fetched on its own ~30 s cadence; its last good
+  document is kept with an age/error note and owns a separate arena, so
+  snapshot rotation cannot dangle it. Mutations and Refresh now invalidate it.
 - Copy-run redaction is best-effort: credential tokens (including plural,
   camelCase and `PASSCODE`/`PASSPHRASE`/`PASSWD` forms) and URL userinfo are
   replaced with `<redacted>`, and the toast says “some env values redacted”
