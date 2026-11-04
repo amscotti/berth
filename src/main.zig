@@ -137,8 +137,9 @@ pub fn main(init: std.process.Init) !void {
         state.auto_refresh = false; // one action, then stop refreshing
     }
 
-    // Find an engine and read it before the first frame, so the window opens
-    // with data rather than a skeleton that fills in on its own.
+    // Start finding an engine on a worker. The window opens on its skeletons
+    // instead of waiting out a stale socket, and the scan's completion starts
+    // the first refresh.
     tray.create(state);
     state.discover();
     try app.run();

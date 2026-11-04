@@ -402,7 +402,10 @@ pub fn pendingAct(s: *app.State) bool {
 /// of one that is still running.
 pub fn autoTick(ctx: ?*anyopaque) callconv(.c) void {
     const s: *app.State = @ptrCast(@alignCast(ctx.?));
-    if (s.job != null) return;
+    // A scan in flight owns the next step; its completion starts the refresh
+    // (or schedules the retry). Starting another scan from this timer would
+    // replace the first refresh after adoption with a redundant rescan.
+    if (s.job != null or s.discovery_job != null) return;
     if (s.client == null) {
         s.discover();
         return;

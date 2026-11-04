@@ -1,9 +1,10 @@
 # Architecture
 
-berth is a single-window native app with one background refresh worker. The
-window paints from an immutable snapshot; the worker reads the engine and builds
-the next one. There are no locks in the UI path because there is no shared
-mutable data between the two threads.
+berth is a single-window native app with background workers for refresh and
+engine discovery. The window paints from an immutable snapshot; a refresh
+worker reads the engine and builds the next one, and a discovery worker probes
+sockets so startup never waits on a stale one. There are no locks in the UI path
+because there is no shared mutable data between the threads.
 
 ```
 main thread                        refresh worker
@@ -20,6 +21,15 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
   ├─ re-resolve selection
   ├─ sample history
   └─ schedule next pass
+
+                                   discovery worker (startup and rescan)
+                                    ├─ candidates (preferred first)
+                                    ├─ probe (bounded threads)
+                                    └─ /version, /info
+adopt scan ◄── dispatch main ──────┘
+  ├─ first reachable runtime
+  ├─ clear only on identity change
+  └─ install client, start refresh
 ```
 
 ## Modules
@@ -29,6 +39,7 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
 | `main.zig` | process entry, window creation, `BERTH_*` harness flags |
 | `boot.zig` | state construction and teardown |
 | `app.zig` | `State`, selection, actions, cleanup, host sampling |
+| `session.zig` | discovery job, runtime choice, socket preference, refresh start |
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
 | `refresh_selection.zig` | re-resolve the inspector selection by id after a snapshot swap |
 | `image_tasks.zig` | pull/create/start as background jobs, the create body |
@@ -52,6 +63,34 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
 The 600-line rule is part of the build (`zig build lines`). That is why the
 refresh worker, snapshot, boot and stats pool are separate files rather than
 sections of `app.zig`.
+
+## Discovery lifecycle
+
+1. **Start** (`session.discover`): guard on a running refresh or scan, copy the
+   preferred socket and the last engine identity into a job, then spawn a
+   worker. The old runtimes and client stay usable, so a rescan keeps painting
+   the engine already on screen. Forgetting or typing a socket during a scan
+   changes the preference and queues a rescan; it does not wait on or replace
+   the running job.
+2. **Scan**: the worker runs `discovery.scan`; it reads only its own copies and
+   never a mutable `State` field.
+3. **Done** (dispatched to the main queue): join, adopt the first reachable
+   runtime, compare the dialect, daemon id and socket with the identity
+   captured at start, clear the snapshot only when it changed, remember the
+   engine, install the client, and start a refresh. A dialect change is always
+   an engine change, even on the same path. Podman's compat `/info` returns a
+   fresh id per request, so Podman falls back to socket identity. Failure
+   reports the same errors as before, samples the host, schedules the retry,
+   and drops the old client/runtimes. A rescan requested while the scan was
+   running is started after it finishes. Views and the tray keep saying
+   "reading engine" until the first snapshot commits, not merely until
+   adoption.
+4. **Teardown**: `boot.destroy` abandons the job instead of joining a scan that
+   may be stuck in a connect, so quit stays bounded. The completion callback
+   checks the abandoned flag before touching state and frees only the job. If
+   the worker is still inside the io/allocator teardown as the process exits,
+   that exit-only race is accepted, matching other detached jobs; if the
+   callback never runs, the job leaks at exit.
 
 ## Refresh lifecycle
 
@@ -78,8 +117,12 @@ sections of `app.zig`.
   and are refreshed on demand, not on every pass.
 - `Client.alloc` always points at the state's current arena for interactive
   calls (actions, logs, prune).
-- The worker never reads a mutable `State` field. It gets the socket path,
-  IO handle, allocator and generation at start; everything else is its own.
+- A discovery job owns its copied socket/id strings and scan result. Adoption
+  moves the runtimes into the state; abandonment leaves the job to the
+  completion callback, or a leak at exit if the loop stops before it runs.
+- The workers never read a mutable `State` field. A refresh job gets the socket
+  path, IO handle, allocator and generation at start; a discovery job gets the
+  preferred socket and old identity. Everything else is its own.
 
 ### Failure model
 
@@ -112,10 +155,15 @@ sections of `app.zig`.
 - Stats math: CPU delta and per-core fallback, missing previous samples,
   working-set memory and the older cache key.
 - Host parsers for Linux `/proc` and macOS Mach tick math.
+- Discovery's pure choices (first reachable runtime, Docker id vs socket
+  identity, Podman's per-request id, Docker→Podman dialect changes, rescan
+  re-arm), the asynchronous start with a fake scan, one-runtime adoption and
+  refresh start, scan failure with one retry, queued rescans, and timers
+  standing down while a scan runs.
 - Formatting, history windows, tab/filter parsing, settings JSON, sorting
   comparators for all four tables, stack grouping, theme choices, prune routes.
 
-Not unit-tested: the full worker lifecycle (spawn/commit/timer), discovery
+Not unit-tested: the full worker lifecycle (spawn/commit/timer), real socket
 scans, real engine actions/prune, and pixel output. Those are exercised by the
 headless `BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT`/`BERTH_PULL`/`BERTH_RUN_*`
 harness and by running against a live engine. `docs/ui/` is the visual evidence.
@@ -134,15 +182,17 @@ harness and by running against a live engine. `docs/ui/` is the visual evidence.
 
 | | Risk | Impact | Recommendation |
 |---|---|---|---|
-| 1 | `discover` scans sockets synchronously on the UI thread | Startup or Rediscover can block for `3s × stale candidates` | Move the scan into a job, like refresh |
-| 2 | Stats spawn one thread per running container, capped at 64, every pass | Bounded per pass, but still thread churn on every refresh | Persistent sampler if thread creation shows up in profiles |
-| 3 | Unix-domain `connect` has no deadline | A full listener backlog can hold a worker before the request budget starts | Add a connect deadline where the platform exposes one |
-| 4 | Actions and prune run synchronously on the UI thread | A slow daemon or build-cache prune can stall a frame | Put both behind the job/status pattern |
-| 5 | No pixel-regression test in CI | Visual regressions still need a human to look | Snapshot every view as an artifact; add a diff gate when stable |
-| 6 | macOS guest RAM belongs to no attributable process | The engine segment is helper-only; the VM's RAM (which holds the containers) sits in "elsewhere" | Documented limitation; Virtualization.framework exposes no per-VM accounting |
+| 1 | Stats spawn one thread per running container, capped at 64, every pass | Bounded per pass, but still thread churn on every refresh | Persistent sampler if thread creation shows up in profiles |
+| 2 | Unix-domain `connect` has no deadline | A full listener backlog can hold a worker before the request budget starts | Add a connect deadline where the platform exposes one |
+| 3 | Actions and prune run synchronously on the UI thread | A slow daemon or build-cache prune can stall a frame | Put both behind the job/status pattern |
+| 4 | No pixel-regression test in CI | Visual regressions still need a human to look | Snapshot every view as an artifact; add a diff gate when stable |
+| 5 | macOS guest RAM belongs to no attributable process | The engine segment is helper-only; the VM's RAM (which holds the containers) sits in "elsewhere" | Documented limitation; Virtualization.framework exposes no per-VM accounting |
 
-Fixed during this review: a failed images/volumes/networks fetch used to
-commit an empty list; it now aborts the snapshot and keeps the previous one.
+Fixed during this review: discovery used to scan sockets on the UI thread, so
+startup or a rescan could block for `3s × stale candidates`; it now runs on a
+worker and the window opens with skeletons. A failed images/volumes/networks
+fetch used to commit an empty list; it now aborts the snapshot and keeps the
+previous one.
 Stats used to top out at eight threads, so nine running containers stretched a
 pass past the refresh period; the pool now runs up to 64 and cancels between
 requests when the job is discarded. Socket reads now share one deadline per

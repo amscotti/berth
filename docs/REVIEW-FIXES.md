@@ -25,10 +25,10 @@ reviewer; findings are fixed before the next item starts.
 - [x] Podman CPU unknown when `precpu_stats` is absent
 - [x] Legacy `/system/df` aggregates (containers/volumes/cache/reclaimable)
 
-## 4. UI-thread I/O, refresh cadence and teardown — 4a done
+## 4. UI-thread I/O, refresh cadence and teardown — 4a, 4b done
 - [ ] Actions/prune/create off the UI thread
 - [ ] Selection fetches inspect/logs off the UI thread
-- [ ] Discovery off the UI thread before the first frame
+- [x] Discovery off the UI thread before the first frame
 - [x] Refresh worker observes cancellation; quit is bounded after connect (connect residual documented)
 - [x] Stats pool concurrency / two-cycle cost
 

@@ -45,8 +45,13 @@ pub fn update(s: *app.State) void {
     // not. Either one means the title must not promise containers that are
     // no longer there.
     const live = runtime != null and runtime.?.reachable and s.error_text.len == 0;
+    // Reading lasts until the first snapshot commits; "engine down" would
+    // report a failure that has not happened while the client is connecting.
+    const reading = s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0);
     var title_buf: [96]u8 = undefined;
-    const title = if (!live)
+    const title = if (reading)
+        "berth · reading engine…"
+    else if (!live)
         "berth · engine down"
     else blk: {
         var mem: u64 = 0;

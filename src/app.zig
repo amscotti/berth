@@ -120,10 +120,10 @@ pub const State = struct {
     active: usize = 0,
     /// The socket last chosen or typed; probed before the built-in candidates.
     preferred_socket: ?[]u8 = null,
-    /// Identity of the engine currently on screen, kept across failed scans so
-    /// a later scan can tell a real engine change from another alias.
+    /// Engine identity on screen, kept across failed scans to spot real changes.
     last_engine_id: ?[]u8 = null,
     last_engine_socket: ?[]u8 = null,
+    last_engine_dialect: ?discovery.Dialect = null,
     /// The custom-socket field and the settings engine menu.
     socket_input: ui.TextBuffer = .{},
     engine_menu_open: bool = false,
@@ -138,18 +138,20 @@ pub const State = struct {
     retired: ?std.heap.ArenaAllocator = null,
     /// The background refresh, if one is in flight.
     job: ?*refresh_mod.Job = null,
+    /// Background socket scan; runtimes/client stay until it is adopted.
+    discovery_job: ?*session.Job = null,
+    discovery_test: ?session.TestHook = null, // fake scan for tests
     /// Bumped when the engine changes; a late job from the old engine is
     /// discarded instead of committing its snapshot over the new one.
     generation: u64 = 0,
     /// A refresh was asked for while a pass was in flight.
     refresh_wanted: bool = false,
-    /// A rescan was asked for while a pass was in flight.
+    /// A rescan was asked for while a pass or scan was in flight.
     discover_wanted: bool = false,
     /// An engine chosen while a pass was in flight.
     select_wanted: ?usize = null,
     /// One discovery retry timer, not one per failed scan.
     retry_pending: bool = false,
-
     containers: []api.Container = &.{},
     stats: []Stat = &.{},
     /// False when any up container had no stats this pass; container memory is
@@ -441,8 +443,8 @@ pub const State = struct {
         session.refresh(s);
     }
 
-    pub fn useSocket(s: *State, path: []const u8) bool {
-        return session.useSocket(s, path);
+    pub fn useSocket(s: *State, path: []const u8) void {
+        session.useSocket(s, path);
     }
 
     pub fn forgetSocket(s: *State) void {

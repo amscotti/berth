@@ -27,6 +27,8 @@ test {
     _ = @import("engine/lifetime.zig");
     _ = @import("tabs.zig");
     _ = @import("settings.zig");
+    _ = @import("session.zig");
+    _ = @import("session_tests.zig");
     _ = @import("ui/views/lists.zig");
     _ = @import("ui/views/columns.zig");
     _ = @import("ui/views/sorting.zig");

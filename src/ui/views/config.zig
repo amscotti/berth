@@ -21,15 +21,23 @@ const KINDS = [_]discovery.Kind{
 };
 
 pub fn runtimes(s: *app.State, c: *ui.Context) void {
+    // Nothing has been found yet: header and custom form stay, only the cards
+    // read as loading. The form must not vanish between retries either.
+    const first_scan = s.discovery_job != null and s.runtimes.len == 0;
     var live: usize = 0;
     for (s.runtimes) |rt| {
         if (rt.reachable) live += 1;
     }
-    widgets.pageHeader(c, "Runtimes", c.print("{d} {s}", .{ live, if (live == 1) "engine" else "engines" }));
+    widgets.pageHeader(c, "Runtimes", if (first_scan) "Reading engine…" else c.print("{d} {s}", .{ live, if (live == 1) "engine" else "engines" }));
 
     const bar = ui.div(c).row().wFull().itemsCenter().gap(8).pb(8);
     if (s.ops.running()) {
         ui.text(c, s.ops.label(), .{ .size = 11.5, .weight = .medium, .color = .hex(0xff9f0a), .truncate = .ellipsis });
+        ui.spacer(c);
+    } else if (s.discovery_job != null) {
+        // Keep the existing cards on screen while a rescan probes; they are
+        // still the engine being read until the result is adopted.
+        ui.text(c, "Probing sockets…", .{ .size = 11.5, .weight = .medium, .color = .hex(0xff9f0a), .truncate = .ellipsis });
         ui.spacer(c);
     } else {
         ui.text(c, "Sockets are probed in parallel. Choose one, or add a path below.", .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
@@ -39,6 +47,10 @@ pub fn runtimes(s: *app.State, c: *ui.Context) void {
     bar.end();
 
     customSocket(s, c);
+    if (first_scan) {
+        widgets.loadingRows(c, 4);
+        return;
+    }
 
     for (KINDS) |kind| kindCard(s, c, kind);
 }
@@ -58,8 +70,8 @@ fn customSocket(s: *app.State, c: *ui.Context) void {
         .width = .fill,
         .size = 12,
     });
-    if (field.submitted) _ = s.useSocket(s.socket_input.text());
-    if (settingButton(c, "Connect", true)) _ = s.useSocket(s.socket_input.text());
+    if (field.submitted) s.useSocket(s.socket_input.text());
+    if (settingButton(c, "Connect", true)) s.useSocket(s.socket_input.text());
     row.end();
 
     if (s.preferred_socket) |p| {
@@ -213,12 +225,19 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
     head.end();
     ui.text(c, "Clean up removes stopped containers, unused images and build cache; unused volumes and networks are opt-in. Refresh reloads the engine immediately instead of waiting for the next five-second pass.", .{ .size = 12, .color = c.theme.muted, .wrap = true });
     const actions = ui.div(c).row().wFull().gap(8).pt(2);
-    if (settingButton(c, "Clean up unused…", true)) s.openPrune();
-    if (settingButton(c, "Refresh now", false)) s.refresh();
+    if (s.client != null) {
+        if (settingButton(c, "Clean up unused…", true)) s.openPrune();
+        if (settingButton(c, "Refresh now", false)) s.refresh();
+    } else if (s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0)) {
+        ui.text(c, "Reading engine… cleanup and refresh unlock with the first snapshot.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
+    } else {
+        ui.text(c, "No engine connected. Choose one on Runtimes.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
+    }
     actions.end();
 }
 
 fn engineCard(s: *app.State, c: *ui.Context) void {
+    const scanning = s.discovery_job != null and s.last_update == 0;
     const engine = ui.div(c).column().grow().gap(5).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
     ui.text(c, "Engine", .{ .size = 15, .weight = .semibold });
     if (s.activeRuntime()) |r| {
@@ -228,6 +247,8 @@ fn engineCard(s: *app.State, c: *ui.Context) void {
             .color = if (r.reachable) c.theme.muted else c.theme.danger,
         });
         ui.text(c, r.socket, .{ .size = 11, .mono = true, .color = c.theme.muted, .wrap = true });
+    } else if (scanning) {
+        ui.text(c, "Reading engine…", .{ .size = 12, .color = c.theme.muted });
     } else {
         ui.text(c, "No engine selected.", .{ .size = 12, .color = c.theme.muted });
     }
@@ -257,7 +278,7 @@ fn engineCard(s: *app.State, c: *ui.Context) void {
             row.end();
         }
         if (shown == 0) {
-            ui.text(c, "No engine is answering. Add a socket on Runtimes.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
+            ui.text(c, if (scanning) "Reading engine…" else "No engine is answering. Add a socket on Runtimes.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
         }
         if (settingButton(c, "All sockets…", false)) {
             s.tab = .runtimes;

@@ -203,21 +203,32 @@ fn tabKind(tab: app.Tab) theme.Kind {
 fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
     const rt = s.activeRuntime();
     const live = rt != null and rt.?.reachable;
+    const scanning = s.discovery_job != null;
     // A partial refresh leaves usable data on screen; it belongs here as a
     // warning, not as a banner over the table. The busy state deliberately
     // does not change the line: the updated clock is the refresh indicator,
     // and a status that changes width every five seconds makes the rail twitch.
+    // The first scan is the exception: before it finishes, "not answering"
+    // would be a verdict on a question that is still being asked.
     const warn = s.error_text.len > 0;
+    const label = if (warn)
+        (if (narrow) "Warning" else "Engine warning")
+    else if (scanning)
+        (if (narrow) "Reading" else if (rt != null) "Rescanning sockets…" else "Reading engine…")
+    else if (live)
+        (if (narrow) "Refresh" else "Refresh · every 5 s")
+    else
+        "Engine not answering";
     var status = ui.div(c).column().wFull().gap(3).pb(6);
     status = if (narrow) status.itemsCenter() else status.px(8);
     defer status.end();
 
     const line = ui.div(c).row().itemsCenter().gap(if (narrow) 5 else 7);
-    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (live) .hex(0xff9f0a) else c.theme.danger);
+    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (scanning or live) .hex(0xff9f0a) else c.theme.danger);
     dot.end();
-    ui.text(c, if (warn) (if (narrow) "Warning" else "Engine warning") else if (live) (if (narrow) "Refresh" else "Refresh · every 5 s") else "Engine not answering", .{
+    ui.text(c, label, .{
         .size = if (narrow) 9.5 else 11,
-        .color = if (warn) .hex(0xff9f0a) else if (live) c.theme.muted else c.theme.danger,
+        .color = if (warn) .hex(0xff9f0a) else if (scanning or live) c.theme.muted else c.theme.danger,
     });
     line.end();
 
@@ -232,9 +243,16 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         return;
     }
 
-    // Frame-owned copy: a Rescan/Connect later in this frame frees the
-    // runtime strings, and the rail is painted after the page.
-    const engine_line = if (warn) s.error_text else if (rt) |r| c.print("{s}", .{r.name}) else "no engine found";
+    // Frame-owned copy: the runtime strings belong to the state and a scan may
+    // replace them between frames, while this painted slice must stay valid.
+    const engine_line = if (warn)
+        s.error_text
+    else if (scanning and rt == null)
+        "probing known sockets…"
+    else if (rt) |r|
+        c.print("{s}", .{r.name})
+    else
+        "no engine found";
     ui.text(c, engine_line, .{
         .size = 10.5,
         .color = if (warn) .hex(0xff9f0a) else c.theme.muted,

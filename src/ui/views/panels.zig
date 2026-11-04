@@ -12,7 +12,16 @@ const history = @import("../history.zig");
 
 pub fn overview(s: *app.State, c: *ui.Context) void {
     const rt = s.activeRuntime();
-    widgets.pageHeader(c, "Overview", if (rt) |r| r.name else "no engine");
+    // Reading lasts until the first snapshot commits, not just until adoption:
+    // there is a client but no data for the moment in between.
+    const reading = s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0);
+    const subtitle = if (reading and rt == null)
+        "Reading engine…"
+    else if (rt) |r|
+        r.name
+    else
+        "no engine";
+    widgets.pageHeader(c, "Overview", subtitle);
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
 
@@ -30,7 +39,9 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     const connected = if (rt) |r| r.reachable else false;
     const unknown = "—";
     const mem_value = if (connected and s.stats_complete) format.bytes(c, mem_sum) else unknown;
-    const mem_note = if (!connected)
+    const mem_note = if (reading)
+        "reading engine…"
+    else if (!connected)
         "no engine answering"
     else if (s.stats_complete)
         c.print("of {s}", .{format.bytes(c, info.MemTotal)})
@@ -47,7 +58,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         "cpu",
         "Containers · CPU",
         if (connected and cpu_share != null) format.percent(c, cpu_share.?) else unknown,
-        if (connected) c.print("of {d:.0} cores", .{cores}) else "no engine answering",
+        if (connected) c.print("of {d:.0} cores", .{cores}) else if (reading) "reading engine…" else "no engine answering",
         .cpu,
         c.theme.accent,
         100,
@@ -75,7 +86,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         "square.grid.3x3",
         "Containers Running",
         if (connected) c.print("{d}", .{app.runningCount(s)}) else unknown,
-        if (connected) c.print("of {d} containers", .{s.containers.len}) else "no engine answering",
+        if (connected) c.print("of {d} containers", .{s.containers.len}) else if (reading) "reading engine…" else "no engine answering",
         .running,
         .hex(0xd9a441),
         @max(s.history.peak(.running) * 2, 4),
@@ -87,7 +98,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         "internaldrive",
         "Disk",
         if (connected and s.df != null) format.bytes(c, disk_bytes) else unknown,
-        if (s.df) |df| c.print("reclaimable {s}", .{format.bytesSigned(c, df.reclaimable())}) else "no figures yet",
+        if (s.df) |df| c.print("reclaimable {s}", .{format.bytesSigned(c, df.reclaimable())}) else if (reading) "reading engine…" else "no figures yet",
         .disk,
         c.theme.muted,
         @max(s.history.peak(.disk) * 1.6, 1),
@@ -124,6 +135,8 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         } else {
             ui.text(c, "Nothing is answering on the sockets berth knows. Open Runtimes to see what was tried.", .{ .size = 12, .color = c.theme.muted });
         }
+    } else if (reading) {
+        ui.text(c, "Reading engine… sockets are being probed in the background.", .{ .size = 12, .color = c.theme.muted });
     } else {
         ui.text(c, "No engine selected. Open Runtimes to see what was found.", .{ .size = 12, .color = c.theme.muted });
     }

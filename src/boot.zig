@@ -22,6 +22,15 @@ pub fn destroy(s: *app.State) void {
     // App.destroy would otherwise close after boot.destroy has freed it.
     if (s.window) |window| window.close();
     s.window = null;
+    // A scan can be stuck in a connect, which has no deadline; do not join it
+    // at exit. `done` checks the flag before touching state, but the worker
+    // may still be inside the io/allocator teardown as the process exits. That
+    // exit-only race is accepted, like other detached jobs; joining could hang
+    // the quit. If the callback never runs, the job leaks at exit.
+    if (s.discovery_job) |job| {
+        s.discovery_job = null;
+        job.abandoned.store(true, .release);
+    }
     runtimes.drop(s);
     if (s.preferred_socket) |p| s.gpa.free(p);
     if (s.last_engine_id) |p| s.gpa.free(p);

@@ -10,6 +10,14 @@ const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 
 pub fn view(s: *app.State, c: *ui.Context) void {
+    // Reading lasts until the first snapshot commits; an empty stack list
+    // would claim the engine has no compose projects before it has been read.
+    if (s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0)) {
+        widgets.pageHeader(c, "Stacks", "Reading engine…");
+        widgets.loadingRows(c, 4);
+        return;
+    }
+
     var projects: usize = 0;
     for (s.containers) |ct| {
         if (ct.project() == null) continue;
