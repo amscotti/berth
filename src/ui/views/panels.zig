@@ -27,16 +27,13 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     widgets.pageHeader(c, "Overview", subtitle);
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    if (s.df_error_text.len > 0) widgets.errorBanner(c, s.df_error_text);
 
     const info = if (rt) |r| r.info else api.Info{};
 
     // What the containers are using, as it moves: the figures nanomon's
     // overview is built from, with berth's own colours.
-    var mem_sum: u64 = 0;
-    for (s.containers, 0..) |ct, i| {
-        if (!ct.isUp() or i >= s.stats.len or !s.stats[i].sampled) continue;
-        mem_sum += s.stats[i].mem;
-    }
+    const mem_sum = stats_pool.memoryUsed(s.containers, s.stats);
     const cores: f32 = @floatFromInt(@max(info.NCPU, 1));
     const cpu_share = stats_pool.aggregateCpuPercent(s.containers, s.stats, cores);
     const connected = if (rt) |r| r.reachable else false;
@@ -372,6 +369,7 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
     const disk_subtitle = if (s.df_error and s.df != null) "last disk read failed" else "as of the last refresh";
     widgets.pageHeader(c, "Disk", disk_subtitle);
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    if (s.df_error_text.len > 0) widgets.errorBanner(c, s.df_error_text);
     const df = s.df orelse {
         if (s.error_text.len > 0) {
             widgets.emptyState(c, "internaldrive", "Engine not answering", widgets.engine_help);

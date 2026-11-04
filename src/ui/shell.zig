@@ -544,11 +544,23 @@ fn pruneOption(c: *ui.Context, label: []const u8, amount: i64, on: *bool) void {
 pub fn pruneSelectedBytes(df: ?api.Df, opts: app.PruneOptions, build_cache_on: bool) i64 {
     const free = if (df) |d| d.reclaimableByStore() else return 0;
     var total: i64 = 0;
-    if (opts.containers) total += free.containers;
-    if (opts.images) total += free.images;
-    if (opts.volumes) total += free.volumes;
-    if (build_cache_on) total += free.build_cache;
+    if (opts.containers) total = total +| free.containers;
+    if (opts.images) total = total +| free.images;
+    if (opts.volumes) total = total +| free.volumes;
+    if (build_cache_on) total = total +| free.build_cache;
     return total;
+}
+
+test "selected prune bytes saturate across stores" {
+    const max = std.math.maxInt(i64);
+    const df = api.Df{
+        .ContainerUsage = .{ .Reclaimable = max },
+        .ImageUsage = .{ .Reclaimable = max },
+        .VolumeUsage = .{ .Reclaimable = max },
+        .BuildCacheUsage = .{ .Reclaimable = max },
+    };
+    const opts = app.PruneOptions{ .containers = true, .images = true, .volumes = true, .build_cache = true };
+    try std.testing.expectEqual(max, pruneSelectedBytes(df, opts, true));
 }
 
 test "a podman visit does not clear the docker build-cache preference" {

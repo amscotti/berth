@@ -196,6 +196,8 @@ fn load(job: *Job) void {
         job.snapshot.df = df;
     } else |_| {
         job.snapshot.df_error = true;
+        // `client.alloc` is the snapshot arena, so this copy survives commit.
+        job.snapshot.df_error_text = client.err_body;
     }
     if (stopRequested(canceled)) return;
 
@@ -220,6 +222,7 @@ fn load(job: *Job) void {
         job.snapshot.events_until = until_events;
     } else |_| {
         job.snapshot.events_error = true;
+        job.snapshot.events_error_text = client.err_body;
     }
 }
 
@@ -348,7 +351,9 @@ fn commit(s: *app.State, job: *Job) void {
 
     refresh_selection.resolve(s);
     s.events_error = snap.events_error;
+    s.events.error_text = snap.events_error_text;
     s.df_error = snap.df_error;
+    s.df_error_text = snap.df_error_text;
     events_feed.commit(s, snap.events_since, snap.events_until, snap.events);
     logs.commitSnapshot(s, snap.logs, snap.logs_id, snap.logs_timestamps);
     s.error_text = "";

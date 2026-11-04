@@ -64,6 +64,13 @@ pub fn run(client: *api.Client, kind: Kind, engine: Engine) !u64 {
     return reclaimed;
 }
 
+/// Add one answer to a run's total. `SpaceReclaimed` is engine-supplied and a
+/// multi-pass/retry run can legitimately reach the u64 ceiling; saturate there
+/// instead of wrapping to a small "freed" figure.
+pub fn addReclaimed(total: *u64, freed: u64) void {
+    total.* = total.* +| freed;
+}
+
 /// The same run, but the caller keeps the bytes reclaimed before a later
 /// failure. Podman's image step is two passes; losing the first pass's figure
 /// because the second failed would under-report what cleanup actually freed.
@@ -74,13 +81,13 @@ pub fn runInto(client: *api.Client, kind: Kind, engine: Engine, out: *u64) !void
             // filter with 400/500 for reasons unrelated to Podman. Retry the
             // documented default before treating it as a real failure.
             if (kind == .volumes and engine == .docker and retryVolumeWithoutAll(e, client)) {
-                out.* += reclaim(client, "/volumes/prune") catch |retry_error| return retry_error;
+                addReclaimed(out, reclaim(client, "/volumes/prune") catch |retry_error| return retry_error);
                 continue;
             }
             if (unsupportedRoute(e, client, kind, engine)) return error.EngineUnsupported;
             return e;
         };
-        out.* += freed;
+        addReclaimed(out, freed);
     }
 }
 
@@ -268,6 +275,45 @@ test "podman image prune sums both requests" {
     try server.finish();
     try std.testing.expect(std.mem.indexOf(u8, server.requests[0][0..server.request_len[0]], "dangling%22%3A%7B%22true") != null);
     try std.testing.expect(std.mem.indexOf(u8, server.requests[1][0..server.request_len[1]], "dangling%22%3A%7B%22false") != null);
+}
+
+test "prune reclaimed totals saturate across passes and retries" {
+    const max = std.math.maxInt(u64);
+    var total: u64 = 0;
+    addReclaimed(&total, max);
+    addReclaimed(&total, 1);
+    try std.testing.expectEqual(max, total);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try std.Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var server: Scripted = .{
+        .io = std.testing.io,
+        .listener = &listener,
+        .count = 2,
+        .statuses = .{ 500, 200, 200, 200 },
+        .bodies = .{ "{\"message\":\"invalid filter \\\"all\\\"\"}", "{\"SpaceReclaimed\":18446744073709551615}", "", "" },
+    };
+    try server.start();
+    defer server.finish() catch {};
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var client = api.Client.init(std.testing.io, std.testing.allocator, path);
+    client.alloc = arena.allocator();
+
+    var retry_total: u64 = max - 5;
+    try runInto(&client, .volumes, .docker, &retry_total);
+    try server.finish();
+    try std.testing.expectEqual(max, retry_total);
 }
 
 test "podman image prune keeps bytes from a successful first pass" {

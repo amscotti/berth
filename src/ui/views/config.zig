@@ -164,7 +164,11 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
 
     const text = ui.div(c).column().grow().gap(0);
     ui.text(c, rt.name, .{ .size = 11.5, .weight = .medium });
-    ui.text(c, rt.socket, .{ .size = 10, .mono = true, .color = c.theme.muted, .truncate = .middle });
+    if (rt.error_text.len > 0) {
+        ui.text(c, rt.error_text, .{ .size = 10, .color = theme.dangerText(c.theme), .truncate = .middle });
+    } else {
+        ui.text(c, rt.socket, .{ .size = 10, .mono = true, .color = c.theme.muted, .truncate = .middle });
+    }
     text.end();
 
     if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = theme.accentText(c.theme) });

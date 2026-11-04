@@ -70,6 +70,18 @@ pub fn allSampled(containers: []const api.Container, stats: []const Sample) bool
     return true;
 }
 
+/// Container memory for the overview and menu bar. Engine figures are u64 and
+/// can be hostile maxima; saturating keeps the sum from wrapping into a tiny
+/// "current memory" claim.
+pub fn memoryUsed(containers: []const api.Container, stats: []const Sample) u64 {
+    var total: u64 = 0;
+    for (containers, 0..) |ct, i| {
+        if (!ct.isUp() or i >= stats.len or !stats[i].sampled) continue;
+        total = total +| stats[i].mem;
+    }
+    return total;
+}
+
 /// The engine holds every `/stats?stream=false` request for two collection
 /// cycles (~2 s), so a pass costs `ceil(running / workers) × 2 s`. The cap has
 /// to cover the container counts this app should keep inside its 5 s refresh
@@ -259,6 +271,29 @@ test "a partial stats pass is not reported as complete" {
     // No running containers is a complete zero, not a partial sample.
     const stopped = [_]api.Container{.{ .Id = "c", .State = "exited" }};
     try std.testing.expect(allSampled(&stopped, &.{}));
+}
+
+test "overview and tray memory sums saturate instead of wrapping" {
+    const max = std.math.maxInt(u64);
+    const containers = [_]api.Container{
+        .{ .Id = "a", .State = "running" },
+        .{ .Id = "b", .State = "running" },
+        .{ .Id = "c", .State = "exited" },
+    };
+    const stats = [_]Sample{
+        .{ .id = "a", .mem = max, .sampled = true },
+        .{ .id = "b", .mem = 5, .sampled = true },
+        .{ .id = "c", .mem = max, .sampled = true },
+    };
+    try std.testing.expectEqual(max, memoryUsed(&containers, &stats));
+
+    const normal = [_]Sample{
+        .{ .id = "a", .mem = 10, .sampled = true },
+        .{ .id = "b", .mem = 20, .sampled = true },
+        .{ .id = "c", .mem = 999, .sampled = true },
+    };
+    try std.testing.expectEqual(@as(u64, 30), memoryUsed(&containers, &normal));
+    try std.testing.expectEqual(@as(u64, 0), memoryUsed(&containers, &.{}));
 }
 
 test "worker count covers every running container and never starts zero" {

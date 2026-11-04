@@ -96,6 +96,18 @@ Docker on this box is `sudo -n docker …`; the user is not in the `docker` grou
   full.
 - The host bar is three segments — containers, engine, elsewhere. Containerd
   shims are excluded from "engine" or per-container memory counts twice.
+- List answers are capped at **5,000 entries per store** (containers, images,
+  volumes, networks, build cache, and the same arrays inside `/system/df`), and
+  parsed JSON deeper than 64 levels is refused. This is a deliberate
+  availability limit, not an empty or deleted store: the refresh reports
+  “refusing to parse (availability limit — retry when the engine has fewer)”.
+  A refused list aborts that pass, so the previous list snapshot stays on
+  screen. A failed `/system/df` keeps its last figures for exactly one more
+  pass (they point into the retired arena), then shows the engine’s df error.
+- Copy-run redaction is best-effort: credential tokens (including plural,
+  camelCase and `PASSCODE`/`PASSPHRASE`/`PASSWD` forms) and URL userinfo are
+  replaced with `<redacted>`, and the toast says “some env values redacted”
+  rather than claiming every secret was found.
 
 ## Rules of the codebase
 

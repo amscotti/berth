@@ -49,10 +49,10 @@ reviewer; findings are fixed before the next item starts.
 - [ ] Rotating arenas + `/system/df` duplication; list body caps
 
 ## 7. Security and robustness
-- [ ] Copy-run port quoting; port-pill IP validation
-- [ ] Inspect JSON depth/output bound
-- [ ] Numeric casts from engine data; container-count cap
-- [ ] Copy-run secret redaction
+- [x] Copy-run port quoting; port-pill IP validation
+- [x] Inspect JSON depth/output bound
+- [x] Numeric casts from engine data; container-count cap
+- [x] Copy-run secret redaction
 
 ## 8. Build, release, platform and docs
 - [ ] `dist` packs the emitted artifact; target-based naming; ReleaseFast nanoui

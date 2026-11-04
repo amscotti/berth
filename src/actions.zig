@@ -301,7 +301,7 @@ fn runPruneSteps(job: *Job, client: *api.Client) void {
         var freed: u64 = 0;
         prune.runInto(client, kind, job.engine, &freed) catch |e| {
             // Keep the bytes a multi-pass step freed before it failed.
-            job.reclaimed += freed;
+            prune.addReclaimed(&job.reclaimed, freed);
             if (e == error.EngineUnsupported) {
                 job.outcomes[i] = .skipped;
                 if (kind == .build_cache) job.skipped_build_cache = true;
@@ -311,7 +311,7 @@ fn runPruneSteps(job: *Job, client: *api.Client) void {
             }
             continue;
         };
-        job.reclaimed += freed;
+        prune.addReclaimed(&job.reclaimed, freed);
         job.outcomes[i] = .done;
     }
 }

@@ -75,14 +75,39 @@ pub fn uptimeCell(c: *ui.Context, ct: *const api.Container, width: f32) void {
     widgets.cellMuted(c, text, width, false);
 }
 
+/// Sums are lifetime counters from the engine; a hostile pair of maxima must
+/// clamp rather than wrap the sort key or the displayed total.
+pub fn netTotal(st: app.Stat) u64 {
+    return st.net_rx +| st.net_tx;
+}
+
+pub fn diskTotal(st: app.Stat) u64 {
+    return st.blk_read +| st.blk_write;
+}
+
 /// The sort arms for the new keys; shared with the comparator in lists.zig.
 pub fn statKey(s: *app.State, key: u8, ct: *const api.Container) f64 {
     const st = app.statFor(s, ct.Id);
     return switch (key) {
-        7 => if (st.sampled) @floatFromInt(st.net_rx + st.net_tx) else -1,
-        8 => if (st.sampled) @floatFromInt(st.blk_read + st.blk_write) else -1,
+        7 => if (st.sampled) @floatFromInt(netTotal(st)) else -1,
+        8 => if (st.sampled) @floatFromInt(diskTotal(st)) else -1,
         9 => if (st.pids) |n| @floatFromInt(n) else -1,
         10 => if (lifetime.upSeconds(ct.Status)) |secs| @floatFromInt(secs) else -1,
         else => 0,
     };
+}
+
+test "network and disk totals saturate at the integer limit" {
+    const full: app.Stat = .{
+        .net_rx = std.math.maxInt(u64),
+        .net_tx = 1,
+        .blk_read = std.math.maxInt(u64),
+        .blk_write = 1,
+    };
+    try std.testing.expectEqual(std.math.maxInt(u64), netTotal(full));
+    try std.testing.expectEqual(std.math.maxInt(u64), diskTotal(full));
+
+    const normal: app.Stat = .{ .net_rx = 10, .net_tx = 20, .blk_read = 3, .blk_write = 4 };
+    try std.testing.expectEqual(@as(u64, 30), netTotal(normal));
+    try std.testing.expectEqual(@as(u64, 7), diskTotal(normal));
 }

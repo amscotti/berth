@@ -36,7 +36,14 @@ pub fn bytesBuf(buf: []u8, n: u64) []const u8 {
 
 /// A signed byte figure, for reclaimable totals.
 pub fn bytesSigned(c: *ui.Context, n: i64) []const u8 {
-    if (n < 0) return c.print("-{s}", .{bytes(c, @as(u64, @intCast(-n)))});
+    if (n < 0) {
+        // `-minInt` is not representable as i64; take the magnitude in u64.
+        const magnitude: u64 = if (n == std.math.minInt(i64))
+            @as(u64, std.math.maxInt(i64)) + 1
+        else
+            @intCast(-n);
+        return c.print("-{s}", .{bytes(c, magnitude)});
+    }
     return bytes(c, @as(u64, @intCast(n)));
 }
 
@@ -69,7 +76,10 @@ pub fn duration(c: *ui.Context, seconds: i64) []const u8 {
 
 /// How long ago, from a Unix timestamp in seconds.
 pub fn ago(c: *ui.Context, unix_seconds: i64, now_seconds: i64) []const u8 {
-    return duration(c, now_seconds - unix_seconds);
+    // Either endpoint can be the extreme an engine chooses to report. The
+    // saturating difference keeps `now - created` from wrapping; duration
+    // already clamps the negative end.
+    return duration(c, now_seconds -| unix_seconds);
 }
 
 extern "c" fn time(t: ?*c_long) c_long;
@@ -257,4 +267,31 @@ test "a day and beyond keeps two fields" {
     var b: [32]u8 = undefined;
     try std.testing.expectEqualStrings("1d", durationInto(&b, 86400));
     try std.testing.expectEqualStrings("2d 06h", durationInto(&b, 194400));
+    // The negative end of the clock is a zero age, not an overflow.
+    try std.testing.expectEqualStrings("0s", durationInto(&b, std.math.minInt(i64)));
+}
+
+test "signed bytes handle the minimum integer" {
+    var c: ui.Context = undefined;
+    c.gpa = std.testing.allocator;
+    c.text = undefined;
+    c.arena = .init(std.testing.allocator);
+    defer c.arena.deinit();
+
+    try std.testing.expectEqualStrings("-8192 PiB", bytesSigned(&c, std.math.minInt(i64)));
+    try std.testing.expectEqualStrings("8192 PiB", bytesSigned(&c, std.math.maxInt(i64)));
+    try std.testing.expectEqualStrings("1.5 KiB", bytesSigned(&c, 1536));
+}
+
+test "an age at the ends of the clock saturates" {
+    var c: ui.Context = undefined;
+    c.gpa = std.testing.allocator;
+    c.text = undefined;
+    c.arena = .init(std.testing.allocator);
+    defer c.arena.deinit();
+
+    try std.testing.expectEqualStrings("50s", ago(&c, 50, 100));
+    const huge = ago(&c, std.math.minInt(i64), std.math.maxInt(i64));
+    try std.testing.expect(std.mem.indexOfScalar(u8, huge, 'd') != null);
+    try std.testing.expectEqualStrings("0s", ago(&c, 200, 100));
 }

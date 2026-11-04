@@ -88,7 +88,7 @@ pub const Stats = struct {
             const v = stats.object.get(k) orelse continue;
             const cache: u64 = switch (v) {
                 .integer => |i| @intCast(@max(@as(i64, 0), i)),
-                .float => |f| @intFromFloat(@max(@as(f64, 0), f)),
+                .float => |f| clampedU64(f),
                 else => continue,
             };
             if (cache >= usage) return 0;
@@ -112,8 +112,8 @@ pub const Stats = struct {
         while (it.next()) |entry| {
             const iface = entry.value_ptr.*;
             if (iface != .object) continue;
-            out.rx += jsonU64(iface.object.get("rx_bytes"));
-            out.tx += jsonU64(iface.object.get("tx_bytes"));
+            out.rx = out.rx +| jsonU64(iface.object.get("rx_bytes"));
+            out.tx = out.tx +| jsonU64(iface.object.get("tx_bytes"));
         }
         return out;
     }
@@ -128,9 +128,9 @@ pub const Stats = struct {
         const entries = blkio.io_service_bytes_recursive orelse return out;
         for (entries) |e| {
             if (std.ascii.eqlIgnoreCase(e.op, "read")) {
-                out.read += e.value;
+                out.read = out.read +| e.value;
             } else if (std.ascii.eqlIgnoreCase(e.op, "write")) {
-                out.write += e.value;
+                out.write = out.write +| e.value;
             }
         }
         return out;
@@ -144,11 +144,21 @@ pub const Stats = struct {
     }
 };
 
+/// A float from an engine cannot be trusted to fit a counter. Negative, NaN
+/// and infinite values read as zero; values past `u64` clamp to the maximum
+/// instead of trapping in a safety build or wrapping in a release one.
+fn clampedU64(value: f64) u64 {
+    if (!(value > 0)) return 0;
+    const limit: f64 = @floatFromInt(std.math.maxInt(u64));
+    if (value >= limit) return std.math.maxInt(u64);
+    return @intFromFloat(value);
+}
+
 fn jsonU64(v: ?std.json.Value) u64 {
     const value = v orelse return 0;
     return switch (value) {
         .integer => |i| @intCast(@max(@as(i64, 0), i)),
-        .float => |f| @intFromFloat(@max(@as(f64, 0), f)),
+        .float => |f| clampedU64(f),
         else => 0,
     };
 }
@@ -418,4 +428,34 @@ test "pids are a number or unknown, never a silent zero" {
     const without = try std.json.parseFromSlice(Stats, std.testing.allocator, "{}", .{ .ignore_unknown_fields = true });
     defer without.deinit();
     try std.testing.expectEqual(@as(?u32, null), without.value.pidsCurrent());
+}
+
+test "huge and negative engine figures clamp instead of trapping" {
+    const json =
+        \\{"memory_stats":{"usage":1000,"limit":2000,"stats":{"inactive_file":1e300}},
+        \\ "networks":{"eth0":{"rx_bytes":1e300,"tx_bytes":-1e300},
+        \\             "eth1":{"rx_bytes":1e300,"tx_bytes":1e300}},
+        \\ "blkio_stats":{"io_service_bytes_recursive":[
+        \\   {"op":"read","value":18446744073709551615},
+        \\   {"op":"read","value":18446744073709551615},
+        \\   {"op":"write","value":1}]}}
+    ;
+    var parsed = try std.json.parseFromSlice(Stats, std.testing.allocator, json, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+    // The cache is larger than usage, which still means the whole working set
+    // is reclaimable — zero, never a wrapped subtraction.
+    try std.testing.expectEqual(@as(u64, 0), parsed.value.memUsed());
+
+    const net = parsed.value.netTotals();
+    try std.testing.expectEqual(std.math.maxInt(u64), net.rx);
+    try std.testing.expectEqual(std.math.maxInt(u64), net.tx);
+
+    const disk = parsed.value.diskTotals();
+    try std.testing.expectEqual(std.math.maxInt(u64), disk.read);
+    try std.testing.expectEqual(@as(u64, 1), disk.write);
+
+    // A plain integer that is too large for the field must not be narrowed.
+    const negative = try std.json.parseFromSlice(Stats, std.testing.allocator, "{\"networks\":{\"eth0\":{\"rx_bytes\":-1}}}", .{ .ignore_unknown_fields = true });
+    defer negative.deinit();
+    try std.testing.expectEqual(@as(u64, 0), negative.value.netTotals().rx);
 }

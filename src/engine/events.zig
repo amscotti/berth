@@ -57,6 +57,8 @@ pub const Feed = struct {
     /// The newest event already shown. The first load sets it without
     /// notifying, so launching berth does not replay old exits as toasts.
     last_seen: i64 = 0,
+    /// The engine's words for the last failed interval, when it gave any.
+    error_text: []const u8 = "",
 };
 
 pub const Merge = struct {

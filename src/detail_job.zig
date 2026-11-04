@@ -42,6 +42,7 @@ pub const Job = struct {
     log_text: []const u8 = "",
     inspect_ok: bool = false,
     inspect_text: []const u8 = "",
+    inspect_truncated: bool = false,
     inspect_error: []const u8 = "",
     thread: ?std.Thread = null,
     /// Tests join the worker and call `finish` themselves.
@@ -274,8 +275,9 @@ pub fn run(job: *Job) void {
     if (job.fetch_inspect) {
         if (inspect.fetch(&client, job.inspect_kind, id, page)) |raw| {
             defer page.free(raw);
-            if (inspect.pretty(page, raw, 256 * 1024)) |text| {
-                job.inspect_text = text;
+            if (inspect.pretty(page, raw, 256 * 1024)) |pretty| {
+                job.inspect_text = pretty.text;
+                job.inspect_truncated = pretty.truncated;
                 job.inspect_ok = true;
             } else |_| {
                 job.inspect_error = page.dupe(u8, "could not read the inspect JSON") catch "";
@@ -382,6 +384,7 @@ fn apply(s: *app.State, job: *Job) void {
         s.clearInspectJson();
         if (job.inspect_ok) {
             s.inspect_buf = if (job.inspect_text.len > 0) @constCast(job.inspect_text) else null;
+            s.inspect_truncated = job.inspect_truncated;
             job.inspect_text = ""; // owned by the state now
         }
         s.inspect_loading = false;

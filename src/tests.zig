@@ -3,6 +3,7 @@ test {
     _ = @import("engine/http_uds.zig");
     _ = @import("engine/api.zig");
     _ = @import("engine/api_tests.zig");
+    _ = @import("engine/guards.zig");
     _ = @import("engine/stats.zig");
     _ = @import("engine/discovery.zig");
     _ = @import("engine/socket_path.zig");
@@ -36,6 +37,7 @@ test {
     _ = @import("auto_tick.zig");
     _ = @import("engine/inspect.zig");
     _ = @import("engine/lifetime.zig");
+    _ = @import("engine/lifetime_tests.zig");
     _ = @import("tabs.zig");
     _ = @import("settings.zig");
     _ = @import("session.zig");

@@ -79,6 +79,7 @@ pub fn view(s: *app.State, c: *ui.Context) void {
     }).cleared) s.redraw();
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
+    if (s.events.error_text.len > 0) widgets.errorBanner(c, s.events.error_text);
     if (s.events.items.len == 0) {
         if (first == .failed or s.error_text.len > 0) {
             _ = widgets.emptyStateAction(c, "list.bullet", "Engine not answering", widgets.engine_help, null);

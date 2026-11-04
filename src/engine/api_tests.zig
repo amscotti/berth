@@ -2,6 +2,7 @@
 //! the implementation stays inside the 600-line rule.
 const std = @import("std");
 const api = @import("api.zig");
+const guards = @import("guards.zig");
 const image_ops = @import("image_ops.zig");
 const volumes_mod = @import("volumes.zig");
 const Io = std.Io;
@@ -51,6 +52,12 @@ const OneShot = struct {
         if (self.failure) |e| return e;
     }
 };
+
+/// A complete HTTP response around one JSON body, with the length the client
+/// needs. Kept here so endpoint tests can script a large answer.
+fn okResponse(gpa: std.mem.Allocator, body: []const u8) ![]u8 {
+    return std.fmt.allocPrint(gpa, "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
+}
 
 test "a 304 is an action success but not a body-parsing success" {
     var tmp = std.testing.tmpDir(.{});
@@ -300,6 +307,20 @@ test "published ports dedup by host port across address families" {
     try std.testing.expectEqualStrings("192.168.1.5", out[1].ip); // a specific binding is kept
 }
 
+test "browser hosts are validated IP literals or localhost" {
+    try std.testing.expectEqualStrings("localhost", api.safeBrowserHost(""));
+    try std.testing.expectEqualStrings("127.0.0.1", api.safeBrowserHost("127.0.0.1"));
+    try std.testing.expectEqualStrings("::1", api.safeBrowserHost("::1"));
+
+    // Schemes, hostnames, paths and shell fragments are not bindings we can
+    // safely hand to the browser.
+    try std.testing.expectEqualStrings("localhost", api.safeBrowserHost("https://evil.example"));
+    try std.testing.expectEqualStrings("localhost", api.safeBrowserHost("127.0.0.1; open /tmp/pwn"));
+    try std.testing.expectEqualStrings("localhost", api.safeBrowserHost("$(open x)"));
+    try std.testing.expectEqualStrings("localhost", api.safeBrowserHost("example.com"));
+    try std.testing.expectEqualStrings("localhost", api.safeBrowserHost("127.0.0.1:80"));
+}
+
 test "published ports cap at the buffer and keep counting past it" {
     var ports: [24]api.Port = undefined;
     for (&ports, 0..) |*p, i| {
@@ -380,4 +401,182 @@ test "volume sizes fall back to the df document" {
     try std.testing.expectEqual(@as(i64, 2048), volumes[0].UsageData.?.Size);
     // An existing measurement is not overwritten by a later guess.
     try std.testing.expectEqual(@as(i64, 7), volumes[1].UsageData.?.Size);
+}
+
+test "a synthetic list above the container cap is rejected before parsing" {
+    const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try body.append(gpa, '[');
+    for (0..guards.max_containers + 1) |i| {
+        if (i > 0) try body.append(gpa, ',');
+        try body.appendSlice(gpa, "{}");
+    }
+    try body.append(gpa, ']');
+    const response = try std.fmt.allocPrint(
+        gpa,
+        "HTTP/1.1 200 OK\r\nContent-Length: {d}\r\n\r\n{s}",
+        .{ body.items.len, body.items },
+    );
+    defer gpa.free(response);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var client = api.Client.init(std.testing.io, std.testing.allocator, path);
+    client.alloc = arena.allocator();
+
+    var engine: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = response };
+    try engine.start();
+    defer engine.finish() catch {};
+    try std.testing.expectError(error.EngineError, client.containers());
+    try engine.finish();
+    try std.testing.expect(std.mem.indexOf(u8, client.err_body, "more than") != null);
+    try std.testing.expect(std.mem.indexOf(u8, client.err_body, "5000") != null);
+}
+
+test "images, volumes, networks and df refuse oversized arrays too" {
+    const gpa = std.testing.allocator;
+    var root: std.ArrayList(u8) = .empty;
+    defer root.deinit(gpa);
+    try root.append(gpa, '[');
+    for (0..guards.max_images + 1) |i| {
+        if (i > 0) try root.append(gpa, ',');
+        try root.appendSlice(gpa, "{}");
+    }
+    try root.append(gpa, ']');
+    // One root array serves images/networks; wrap it for the object-shaped
+    // volumes and df answers. The nested decoy and escaped root key are the
+    // bypass shapes the structural guard must reject.
+    const volumes_body = try std.fmt.allocPrint(gpa, "{{\"X\":{{\"Volumes\":[]}},\"\\u0056olumes\":{s}}}", .{root.items});
+    defer gpa.free(volumes_body);
+    const df_body = try std.fmt.allocPrint(gpa, "{{\"X\":{{\"Images\":[]}},\"\\u0049mages\":{s}}}", .{root.items});
+    defer gpa.free(df_body);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var client = api.Client.init(std.testing.io, std.testing.allocator, path);
+    client.alloc = arena.allocator();
+
+    const bodies = [_][]const u8{ root.items, volumes_body, df_body, root.items };
+    for (bodies, 0..) |body, i| {
+        const response = try okResponse(gpa, body);
+        defer gpa.free(response);
+        var engine: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = response };
+        try engine.start();
+        defer engine.finish() catch {};
+        switch (i) {
+            0 => try std.testing.expectError(error.EngineError, client.images()),
+            1 => try std.testing.expectError(error.EngineError, client.volumes()),
+            2 => try std.testing.expectError(error.EngineError, client.df()),
+            else => try std.testing.expectError(error.EngineError, client.networks()),
+        }
+        try engine.finish();
+        try std.testing.expect(std.mem.indexOf(u8, client.err_body, "availability limit") != null);
+    }
+}
+
+test "info, stats and events inherit the generic JSON depth guard" {
+    const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try body.appendSlice(gpa, "{\"ID\":\"a\",\"Nested\":");
+    for (0..guards.max_depth + 8) |_| try body.append(gpa, '[');
+    try body.append(gpa, '0');
+    for (0..guards.max_depth + 8) |_| try body.append(gpa, ']');
+    try body.append(gpa, '}');
+    const response = try okResponse(gpa, body.items);
+    defer gpa.free(response);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var client = api.Client.init(std.testing.io, std.testing.allocator, path);
+    client.alloc = arena.allocator();
+
+    var engine: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = response };
+    try engine.start();
+    defer engine.finish() catch {};
+    try std.testing.expectError(error.EngineError, client.info());
+    try engine.finish();
+    try std.testing.expect(std.mem.indexOf(u8, client.err_body, "nested deeper") != null);
+
+    var stats_engine: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = response };
+    try stats_engine.start();
+    defer stats_engine.finish() catch {};
+    try std.testing.expectError(error.EngineError, client.stats("abc"));
+    try stats_engine.finish();
+
+    var events_engine: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = response };
+    try events_engine.start();
+    defer events_engine.finish() catch {};
+    try std.testing.expectError(error.EngineError, client.events(0, 1));
+    try events_engine.finish();
+}
+
+test "a deeply nested single container is refused by the endpoint guard" {
+    const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    try body.appendSlice(gpa, "[{\"Id\":\"a\",\"Labels\":{\"x\":");
+    for (0..guards.max_depth + 8) |_| try body.append(gpa, '[');
+    try body.append(gpa, '0');
+    for (0..guards.max_depth + 8) |_| try body.append(gpa, ']');
+    try body.appendSlice(gpa, "}}]");
+    const response = try okResponse(gpa, body.items);
+    defer gpa.free(response);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var client = api.Client.init(std.testing.io, std.testing.allocator, path);
+    client.alloc = arena.allocator();
+
+    var engine: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = response };
+    try engine.start();
+    defer engine.finish() catch {};
+    try std.testing.expectError(error.EngineError, client.containers());
+    try engine.finish();
+    try std.testing.expect(std.mem.indexOf(u8, client.err_body, "nested deeper") != null);
 }

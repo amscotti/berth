@@ -48,7 +48,10 @@ pub fn pane(s: *app.State, c: *ui.Context) void {
         if (smallAction(c, "Copy", "doc.on.doc")) {
             if (s.inspect_buf) |text| {
                 nanoui.clipboard.writeText(text);
-                s.notify("Inspect JSON copied", false);
+                s.notify(if (s.inspect_truncated)
+                    "Inspect JSON copied · truncated"
+                else
+                    "Inspect JSON copied", false);
             }
         }
         if (smallAction(c, "Refresh", "arrow.clockwise")) s.reloadInspect();
@@ -194,7 +197,10 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
             if (life.run_cmd) |cmd| {
                 if (verb(c, "Copy run command", "doc.on.doc")) {
                     nanoui.clipboard.writeText(cmd);
-                    s.notify("Run command copied", false);
+                    s.notify(if (life.run_redacted)
+                        "Run command copied · some env values redacted"
+                    else
+                        "Run command copied", false);
                 }
             }
         }

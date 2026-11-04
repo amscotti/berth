@@ -15,7 +15,7 @@ pub const Bytes = struct {
     build_cache: i64 = 0,
 
     pub fn total(self: Bytes) i64 {
-        return self.images + self.containers + self.volumes + self.build_cache;
+        return self.images +| self.containers +| self.volumes +| self.build_cache;
     }
 };
 
@@ -27,7 +27,7 @@ pub const Reclaimable = struct {
     build_cache: i64 = 0,
 
     pub fn total(self: Reclaimable) i64 {
-        return self.images + self.containers + self.volumes + self.build_cache;
+        return self.images +| self.containers +| self.volumes +| self.build_cache;
     }
 };
 
@@ -66,14 +66,14 @@ pub const Df = struct {
             // count shared layers again.
             out.images = @intCast(@min(self.LayersSize, @as(u64, std.math.maxInt(i64))));
         } else if (self.Images) |list| {
-            for (list) |i| out.images += @intCast(@min(i.Size, @as(u64, std.math.maxInt(i64))));
+            for (list) |i| out.images = out.images +| @as(i64, @intCast(@min(i.Size, @as(u64, std.math.maxInt(i64)))));
         }
 
         if (self.ContainerUsage) |u| {
             out.containers = u.TotalSize;
         } else if (self.Containers) |list| {
             for (list) |ct| {
-                if (ct.SizeRw > 0) out.containers += ct.SizeRw;
+                if (ct.SizeRw > 0) out.containers = out.containers +| ct.SizeRw;
             }
         }
 
@@ -83,7 +83,7 @@ pub const Df = struct {
             for (list) |v| {
                 if (v.UsageData) |d| {
                     // -1 means "not measured"; adding it would shrink the total.
-                    if (d.Size > 0) out.volumes += d.Size;
+                    if (d.Size > 0) out.volumes = out.volumes +| d.Size;
                 }
             }
         }
@@ -94,7 +94,7 @@ pub const Df = struct {
             for (list) |b| {
                 // Shared records are referenced by other cache entries and
                 // are not storage this store owns on its own.
-                if (!b.Shared and b.Size > 0) out.build_cache += b.Size;
+                if (!b.Shared and b.Size > 0) out.build_cache = out.build_cache +| b.Size;
             }
         }
         return out;
@@ -116,13 +116,13 @@ pub const Df = struct {
                 var used: i64 = 0;
                 for (list, 0..) |image, index| {
                     if (image.Containers <= 0 or repeatedImageId(list, index)) continue;
-                    used += uniqueImageBytes(image);
+                    used = used +| uniqueImageBytes(image);
                 }
-                out.images = @max(0, layers - used);
+                out.images = @max(0, layers -| used);
             } else {
                 for (list, 0..) |image, index| {
                     if (image.Containers != 0 or repeatedImageId(list, index)) continue;
-                    out.images += uniqueImageBytes(image);
+                    out.images = out.images +| uniqueImageBytes(image);
                 }
             }
         }
@@ -132,7 +132,7 @@ pub const Df = struct {
         } else if (self.Containers) |list| {
             for (list) |ct| {
                 // Paused and restarting containers are not prunable either.
-                if (!ct.isUp() and ct.SizeRw > 0) out.containers += ct.SizeRw;
+                if (!ct.isUp() and ct.SizeRw > 0) out.containers = out.containers +| ct.SizeRw;
             }
         }
 
@@ -141,7 +141,7 @@ pub const Df = struct {
         } else if (self.Volumes) |list| {
             for (list) |v| {
                 if (v.UsageData) |d| {
-                    if (d.RefCount == 0 and d.Size > 0) out.volumes += d.Size;
+                    if (d.RefCount == 0 and d.Size > 0) out.volumes = out.volumes +| d.Size;
                 }
             }
         }
@@ -150,7 +150,7 @@ pub const Df = struct {
             out.build_cache = u.Reclaimable;
         } else if (self.BuildCache) |list| {
             for (list) |b| {
-                if (!b.Shared and !b.InUse and b.Size > 0) out.build_cache += b.Size;
+                if (!b.Shared and !b.InUse and b.Size > 0) out.build_cache = out.build_cache +| b.Size;
             }
         }
         return out;
@@ -180,7 +180,7 @@ pub const Df = struct {
         const containers = @max(0, store.containers);
         const volumes = @max(0, store.volumes);
         const cache = @max(0, store.build_cache);
-        const total = images + containers + volumes + cache;
+        const total = images +| containers +| volumes +| cache;
         if (total <= 0) return .{};
         const f: f32 = @floatFromInt(total);
         return .{
@@ -210,7 +210,7 @@ pub const Shares = struct {
 fn uniqueImageBytes(image: api.Image) i64 {
     const size = @as(i64, @intCast(@min(image.Size, @as(u64, std.math.maxInt(i64)))));
     const shared = if (image.SharedSize > 0) image.SharedSize else 0;
-    return @max(0, size - shared);
+    return @max(0, size -| shared);
 }
 
 /// Multi-tag images can appear more than once with the same Id; counting each
@@ -240,4 +240,46 @@ test "store shares are proportional to the bytes each store holds" {
     // No measured bytes means no segments, not four equal zero-width slivers.
     const empty: Df = .{};
     try std.testing.expectEqual(@as(f32, 0), empty.shares().total());
+}
+
+test "store totals saturate instead of overflowing on hostile figures" {
+    var images = [_]api.Image{
+        .{ .Size = std.math.maxInt(u64), .Containers = 0 },
+        .{ .Size = std.math.maxInt(u64), .Containers = 0 },
+    };
+    var containers = [_]api.Container{
+        .{ .SizeRw = std.math.maxInt(i64) },
+        .{ .SizeRw = std.math.maxInt(i64) },
+    };
+    var volumes = [_]api.Volume{
+        .{ .UsageData = .{ .Size = std.math.maxInt(i64), .RefCount = 0 } },
+        .{ .UsageData = .{ .Size = std.math.maxInt(i64), .RefCount = 0 } },
+    };
+    var cache = [_]Df.BuildCacheItem{
+        .{ .Size = std.math.maxInt(i64) },
+        .{ .Size = std.math.maxInt(i64) },
+    };
+    const df = Df{
+        .Images = &images,
+        .Containers = &containers,
+        .Volumes = &volumes,
+        .BuildCache = &cache,
+    };
+    const stores = df.stores();
+    try std.testing.expectEqual(std.math.maxInt(i64), stores.images);
+    try std.testing.expectEqual(std.math.maxInt(i64), stores.containers);
+    try std.testing.expectEqual(std.math.maxInt(i64), stores.volumes);
+    try std.testing.expectEqual(std.math.maxInt(i64), stores.build_cache);
+    try std.testing.expectEqual(std.math.maxInt(i64), stores.total());
+
+    const free = df.reclaimableByStore();
+    try std.testing.expectEqual(std.math.maxInt(i64), free.images);
+    try std.testing.expectEqual(std.math.maxInt(i64), free.total());
+
+    // A negative summary must stay negative, not wrap to a huge positive.
+    const negative = Df{
+        .ImageUsage = .{ .TotalSize = std.math.minInt(i64) },
+        .ContainerUsage = .{ .TotalSize = std.math.minInt(i64) },
+    };
+    try std.testing.expectEqual(std.math.minInt(i64), negative.totalBytes());
 }

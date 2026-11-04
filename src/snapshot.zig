@@ -22,6 +22,8 @@ pub const Snapshot = struct {
     /// The interval was attempted and failed. The ring can still hold older
     /// events; an empty ring must not claim the engine has nothing to say.
     events_error: bool = false,
+    /// The engine's own words for that failed interval, when it gave any.
+    events_error_text: []const u8 = "",
     logs: []const u8 = &.{},
     logs_id: []const u8 = &.{},
     logs_timestamps: bool = false,
@@ -29,6 +31,8 @@ pub const Snapshot = struct {
     /// `/system/df` was attempted and failed. A null `df` with this false is
     /// "not read yet"; with it true it is "could not be read".
     df_error: bool = false,
+    /// The engine's own words for the failed df, when it gave any.
+    df_error_text: []const u8 = "",
     /// The engine's host-process RSS, or null when this pass could not read it.
     engine_rss: ?u64 = null,
 

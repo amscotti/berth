@@ -6,6 +6,7 @@
 //! for the same reason.
 const std = @import("std");
 const http = @import("http_uds.zig");
+const guards = @import("guards.zig");
 
 const stats_mod = @import("stats.zig");
 
@@ -107,26 +108,55 @@ pub const Client = struct {
 
     /// Parses a JSON answer into `T`, then frees the bytes.
     pub fn getOpts(self: *Client, comptime T: type, p: []const u8, raw: bool) !T {
-        return self.getOptsTimeout(T, p, raw, http.Conn.io_timeout_sec);
+        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, raw, http.Conn.io_timeout_sec, false);
+        defer self.gpa.free(body);
+        return self.parseBody(T, body);
     }
 
-    fn getOptsTimeout(self: *Client, comptime T: type, p: []const u8, raw: bool, seconds: isize) !T {
-        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, raw, seconds, false);
-        defer self.gpa.free(body);
-        const parsed = std.json.parseFromSliceLeaky(T, self.alloc, body, .{
+    /// Parse into the snapshot arena and name the failure: a parse error and
+    /// an HTTP error are different problems and both used to read as “could not”.
+    fn parseBody(self: *Client, comptime T: type, body: []const u8) !T {
+        if (guards.nestingExceeds(body, guards.max_depth)) return self.depthFailure();
+        return std.json.parseFromSliceLeaky(T, self.alloc, body, .{
             .ignore_unknown_fields = true,
             .allocate = .alloc_always,
         }) catch |e| {
-            // Name the failure: a parse error and an HTTP error are very
-            // different problems and both used to read as "could not".
             self.err_body = self.alloc.dupe(u8, @errorName(e)) catch "";
             return error.EngineError;
         };
-        return parsed;
     }
 
-    pub fn get(self: *Client, comptime T: type, p: []const u8) !T {
-        return self.getOpts(T, p, false);
+    fn depthFailure(self: *Client) error{EngineError} {
+        self.err_body = std.fmt.allocPrint(
+            self.alloc,
+            "engine response is nested deeper than {d} levels; refusing to parse (availability limit)",
+            .{guards.max_depth},
+        ) catch "";
+        self.err_status = 0;
+        return error.EngineError;
+    }
+
+    /// A list/df answer goes through the cheap limits before the recursive
+    /// parser sees it: millions of `{}` or a deeply nested Labels object must
+    /// not turn one request into hundreds of megabytes of snapshot.
+    fn getGuarded(self: *Client, comptime T: type, p: []const u8, shape: guards.Shape, seconds: isize) !T {
+        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, false, seconds, false);
+        defer self.gpa.free(body);
+        if (guards.violation(body, shape)) |v| {
+            switch (v.kind) {
+                .too_deep => return self.depthFailure(),
+                .too_many => {
+                    self.err_body = std.fmt.allocPrint(
+                        self.alloc,
+                        "engine returned more than {d} {s}; refusing to parse (availability limit — retry when the engine has fewer)",
+                        .{ v.cap, v.noun },
+                    ) catch "";
+                    self.err_status = 0;
+                    return error.EngineError;
+                },
+            }
+        }
+        return self.parseBody(T, body);
     }
 
     /// `/version` is deliberately un-prefixed: it is the call that tells us
@@ -144,49 +174,50 @@ pub const Client = struct {
     }
 
     pub fn info(self: *Client) !Info {
-        return self.get(Info, "/info");
+        return self.getOpts(Info, "/info", false);
     }
 
     pub fn containers(self: *Client) ![]Container {
-        return self.get([]Container, "/containers/json?all=1");
+        return self.getGuarded([]Container, "/containers/json?all=1", .containers, http.Conn.io_timeout_sec);
     }
 
     pub fn images(self: *Client) ![]Image {
-        return self.get([]Image, "/images/json?all=0");
+        return self.getGuarded([]Image, "/images/json?all=0", .images, http.Conn.io_timeout_sec);
     }
 
     pub fn volumes(self: *Client) !ListResponse(Volume) {
-        return self.get(ListResponse(Volume), "/volumes");
+        return self.getGuarded(ListResponse(Volume), "/volumes", .volumes, http.Conn.io_timeout_sec);
     }
 
     pub fn networks(self: *Client) ![]Network {
-        return self.get([]Network, "/networks");
+        return self.getGuarded([]Network, "/networks", .networks, http.Conn.io_timeout_sec);
     }
 
-    /// The events of an interval, one JSON object per line. `until` is what
-    /// keeps this from turning into the streaming endpoint.
+    /// The events of an interval, one JSON object per line; `until` keeps this
+    /// from turning into the streaming endpoint.
     pub fn events(self: *Client, since: i64, until: i64) ![]const u8 {
         const p = try std.fmt.allocPrint(self.gpa, "/events?since={d}&until={d}", .{ since, until });
         defer self.gpa.free(p);
         // Short: a VM whose clock trails the host can hold this open until it
         // catches up, and that must cost one pass, not the whole chain.
-        return self.callOptsTimeout("GET", p, "", 4 << 20, false, 3, false);
+        const body = try self.callOptsTimeout("GET", p, "", 4 << 20, false, 3, false);
+        errdefer self.gpa.free(body);
+        if (guards.nestingExceeds(body, guards.max_depth)) return self.depthFailure();
+        return body;
     }
 
     pub fn df(self: *Client) !Df {
         // Shorter than the default: df walks every store, and on a stalled
-        // forwarder it is the call that used to freeze the window. Missing
-        // disk figures for one refresh is better than a hung monitor.
-        return self.getOptsTimeout(Df, "/system/df", false, 3);
+        // forwarder it is the call that used to freeze the window.
+        return self.getGuarded(Df, "/system/df", .df, 3);
     }
 
     /// One stats sample, with `precpu` populated: `stream=false` alone waits
-    /// two collection cycles (~2 s) and that wait is what the number needs.
-    /// `one-shot=true` would be faster and wrong.
+    /// two collection cycles (~2 s), and `one-shot=true` would be wrong.
     pub fn stats(self: *Client, id: []const u8) !Stats {
         const p = try std.fmt.allocPrint(self.gpa, "/containers/{s}/stats?stream=false", .{id});
         defer self.gpa.free(p);
-        return self.get(Stats, p);
+        return self.getOpts(Stats, p, false);
     }
 
     /// The last `tail` lines. Logs go through the arena like everything else,
@@ -202,7 +233,7 @@ pub const Client = struct {
     pub fn inspect(self: *Client, id: []const u8) !ContainerDetail {
         const p = try std.fmt.allocPrint(self.gpa, "/containers/{s}/json", .{id});
         defer self.gpa.free(p);
-        return self.get(ContainerDetail, p);
+        return self.getOpts(ContainerDetail, p, false);
     }
 
     /// Lifecycle and maintenance; only this call treats 304 as "already there".
@@ -282,6 +313,15 @@ pub const HostBinding = struct {
     /// the wildcard; empty means "any", which is `localhost` to a browser.
     ip: []const u8 = "",
 };
+
+/// The address a browser may be sent to. Anything that is not an IP literal
+/// falls back to localhost: a hostile or confused engine must not get to pick
+/// a URL scheme/host, and a hostname is not a binding this command can trust.
+pub fn safeBrowserHost(ip: []const u8) []const u8 {
+    if (ip.len == 0) return "localhost";
+    _ = std.Io.net.IpAddress.parse(ip, 0) catch return "localhost";
+    return ip;
+}
 
 fn bindingLessThan(_: void, a: HostBinding, b: HostBinding) bool {
     return a.port < b.port;

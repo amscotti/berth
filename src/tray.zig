@@ -7,6 +7,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const format = @import("ui/format.zig");
+const stats_pool = @import("stats_pool.zig");
 const widgets = @import("ui/widgets.zig");
 
 pub fn create(s: *app.State) void {
@@ -57,10 +58,7 @@ pub fn update(s: *app.State) void {
     else if (!live)
         "berth · engine down"
     else blk: {
-        var mem: u64 = 0;
-        for (s.stats) |sample| {
-            if (sample.sampled) mem += sample.mem;
-        }
+        const mem = stats_pool.memoryUsed(s.containers, s.stats);
         var bytes_buf: [32]u8 = undefined;
         // A partial sum is not current memory: say unknown until every up
         // container answered, matching the overview card.

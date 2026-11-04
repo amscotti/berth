@@ -159,6 +159,8 @@ pub const State = struct {
     df: ?api.Df = null,
     /// The last completed pass could not read `/system/df`.
     df_error: bool = false,
+    /// The engine's message for that failed df; cleared by a successful one.
+    df_error_text: []const u8 = "",
     /// A df may survive one arena rotation; drop it on the next failed pass.
     df_stale: bool = false,
 
@@ -183,6 +185,8 @@ pub const State = struct {
     /// The detail pane's mode: curated facts, or the engine's own JSON.
     pane_inspect: bool = false,
     inspect_buf: ?[]u8 = null,
+    /// JSON was cut at the pane's cap; the copy toast says so.
+    inspect_truncated: bool = false,
     /// Restarts and the exact start time for the selected container, read from
     /// one inspect on selection — not per refresh, which would double requests.
     detail_lifetime: ?lifetime.Lifetime = null,
@@ -291,13 +295,12 @@ pub const State = struct {
     /// One point for the graphs: what the containers are using, how many are
     /// up, and how much disk the engine holds.
     pub fn sample(s: *State) void {
-        var mem: f32 = 0;
         var running: f32 = 0;
-        for (s.containers, 0..) |ct, i| {
+        for (s.containers) |ct| {
             if (!ct.isUp()) continue;
             running += 1;
-            if (i < s.stats.len and s.stats[i].sampled) mem += @floatFromInt(s.stats[i].mem);
         }
+        const mem: f32 = @floatFromInt(stats_pool.memoryUsed(s.containers, s.stats));
         var disk: f32 = 0;
         if (s.df) |df| disk = @floatFromInt(@max(@as(i64, 0), df.totalBytes()));
         // The table's CPU column is per core (docker stats style). The
@@ -398,6 +401,7 @@ pub const State = struct {
         // is owned here afterwards, so the matching free is the page one.
         if (s.inspect_buf) |buf| std.heap.page_allocator.free(buf);
         s.inspect_buf = null;
+        s.inspect_truncated = false;
     }
 
     pub fn clearInspect(s: *State) void {
@@ -431,6 +435,7 @@ pub const State = struct {
         s.events_error = false;
         s.df = null;
         s.df_error = false;
+        s.df_error_text = "";
         s.df_stale = false;
         s.history.clearEngine();
         s.bulk.clear();
@@ -536,12 +541,18 @@ pub const State = struct {
 
     /// Opens a container's published port in the default browser. A binding on
     /// a specific address goes there; the wildcard is localhost. The engine has
-    /// no scheme hint, so 443 is https and everything else is http.
+    /// no scheme hint, so 443 is https and everything else is http. The address
+    /// is validated first: an engine-supplied string must not choose the URL.
     pub fn openPort(s: *State, binding: api.HostBinding) void {
-        const where = if (binding.ip.len > 0) binding.ip else "localhost";
-        var buf: [80]u8 = undefined;
+        const where = api.safeBrowserHost(binding.ip);
+        var host_buf: [64]u8 = undefined;
+        const host_text = if (std.mem.indexOfScalar(u8, where, ':') != null)
+            std.fmt.bufPrint(&host_buf, "[{s}]", .{where}) catch return
+        else
+            where;
+        var buf: [96]u8 = undefined;
         const scheme: []const u8 = if (binding.port == 443 or binding.port == 8443) "https" else "http";
-        const url = std.fmt.bufPrint(&buf, "{s}://{s}:{d}", .{ scheme, where, binding.port }) catch return;
+        const url = std.fmt.bufPrint(&buf, "{s}://{s}:{d}", .{ scheme, host_text, binding.port }) catch return;
         if (!nanoui.shell.openUrl(url)) s.notify("could not open the browser", true);
     }
 

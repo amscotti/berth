@@ -391,7 +391,13 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !Found {
         if (client.info()) |info| {
             rt.info = info;
             rt.info_read = true;
-        } else |_| {}
+        } else |_| {
+            gpa.free(rt.error_text);
+            rt.error_text = try gpa.dupe(u8, if (client.err_body.len > 0)
+                client.err_body
+            else
+                "could not read engine info");
+        }
         if (client.err_body.len > 0) {
             gpa.free(client.err_body);
             client.err_body = "";
