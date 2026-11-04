@@ -7,6 +7,7 @@ const app = @import("app.zig");
 const api = @import("engine/api.zig");
 const discovery = @import("engine/discovery.zig");
 const refresh_mod = @import("refresh.zig");
+const auto_tick = @import("auto_tick.zig");
 const runtimes_mod = @import("runtimes.zig");
 const settings = @import("settings.zig");
 const tray = @import("tray.zig");
@@ -406,10 +407,10 @@ pub fn @"resume"(s: *app.State) void {
     armAutoTick(s);
 }
 
-/// The queue's timer entry point; the tick body and its token live beside the
-/// refresh completion that owns the cadence.
+/// The queue's timer entry point. The timer and its ownership live in
+/// `auto_tick.zig`; the cadence decision stays beside the refresh completion.
 pub fn armAutoTick(s: *app.State) void {
-    refresh_mod.armAutoTick(s);
+    auto_tick.arm(s);
 }
 
 /// Two seconds: probes run together and candidates are filtered to sockets

@@ -7,6 +7,8 @@ pub const Sample = struct {
     mem_total: u64 = 0,
     mem_used: u64 = 0,
     cpu_percent: f32 = 0,
+    /// False until there are two tick readings to subtract.
+    cpu_known: bool = false,
     /// What the engine's own processes hold. On Linux the containers are
     /// siblings of the daemon, not children of it, so this is genuinely
     /// "engine overhead" and not "everything the engine runs".
@@ -149,7 +151,10 @@ pub const Sampler = struct {
         if (readProc(io, gpa, "/proc/stat")) |text| {
             defer gpa.free(text);
             if (parseStat(text)) |ticks| {
-                if (self.prev) |prev| out.cpu_percent = percentBetween(prev, ticks);
+                if (self.prev) |prev| {
+                    out.cpu_percent = percentBetween(prev, ticks);
+                    out.cpu_known = true;
+                }
                 self.prev = ticks;
             }
         } else |_| {}

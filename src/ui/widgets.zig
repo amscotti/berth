@@ -4,10 +4,16 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const format = @import("format.zig");
+const theme = @import("theme.zig");
 
 pub const muted = 12.5;
 pub const body = 13.0;
 pub const title = 22.0;
+
+/// Where a monitor with no answer can actually be repaired. The rail no
+/// longer carries a refresh button, so telling someone to use it is a dead
+/// end; these are the two controls that exist.
+pub const engine_help = "Open Runtimes to check the engine, or Settings \u{2192} Maintenance to refresh";
 
 /// "1 image", "2 images": a count that reads like a sentence, not a label.
 pub fn count(c: *ui.Context, n: usize, one: []const u8, many: []const u8) []const u8 {
@@ -131,12 +137,13 @@ pub fn tableHeader(c: *ui.Context, cols: []const Col, sort: ?*Sort) void {
         defer head_cell.end();
 
         const active = col.key != 0 and sort != null and sort.?.key == col.key;
+        const active_color = theme.accentText(c.theme);
         ui.text(c, col.name, .{
             .size = 11,
             .weight = .medium,
-            .color = if (active) c.theme.accent else c.theme.muted,
+            .color = if (active) active_color else c.theme.muted,
         });
-        if (active) ui.text(c, if (sort.?.desc) "▼" else "▲", .{ .size = 8, .color = c.theme.accent });
+        if (active) ui.text(c, if (sort.?.desc) "▼" else "▲", .{ .size = 8, .color = active_color });
 
         if (col.key != 0 and sort != null and head_cell.clicked()) sort.?.pick(col.key);
     }
@@ -196,15 +203,43 @@ pub fn chip(c: *ui.Context, icon: []const u8, color: ui.Color, size: f32) void {
     ui.icon(c, icon, .{ .size = size * 0.58, .color = color });
 }
 
-pub fn statusColor(c: *ui.Context, state: []const u8) ui.Color {
-    const th = c.theme;
-    if (std.mem.eql(u8, state, "running") or std.mem.eql(u8, state, "healthy")) return th.success;
-    if (std.mem.eql(u8, state, "exited") or std.mem.eql(u8, state, "stopped")) return th.muted;
+pub const StatusTone = enum { success, warning, danger, accent, muted };
+
+pub fn statusTone(state: []const u8) StatusTone {
+    if (std.mem.eql(u8, state, "running") or std.mem.eql(u8, state, "healthy")) return .success;
+    if (std.mem.eql(u8, state, "exited") or std.mem.eql(u8, state, "stopped")) return .muted;
     if (std.mem.eql(u8, state, "paused") or std.mem.eql(u8, state, "restarting") or
-        std.mem.eql(u8, state, "starting")) return .hex(0xff9f0a);
-    if (std.mem.eql(u8, state, "dead") or std.mem.eql(u8, state, "unhealthy")) return th.danger;
-    if (std.mem.eql(u8, state, "created")) return th.accent;
-    return th.muted;
+        std.mem.eql(u8, state, "starting")) return .warning;
+    if (std.mem.eql(u8, state, "dead") or std.mem.eql(u8, state, "unhealthy")) return .danger;
+    if (std.mem.eql(u8, state, "created")) return .accent;
+    return .muted;
+}
+
+/// Pills are text first: every tone has a light-theme text variant that
+/// survives its own 14% wash over an alternate, hovered or selected row.
+pub fn statusColorFor(t: ui.Theme, state: []const u8) ui.Color {
+    return switch (statusTone(state)) {
+        .success => theme.successText(t),
+        .warning => theme.warning(t),
+        .danger => theme.dangerText(t),
+        .accent => theme.accentText(t),
+        .muted => theme.mutedText(t),
+    };
+}
+
+pub fn statusColor(c: *ui.Context, state: []const u8) ui.Color {
+    return statusColorFor(c.theme, state);
+}
+
+/// What a page can say before its first snapshot commits. "No events" and
+/// "no disk figures" are claims about the engine's contents; before a snapshot
+/// lands they describe nothing, and after a failed first pass the honest
+/// answer is that the engine is not answering.
+pub const FirstRead = enum { reading, failed, ready };
+
+pub fn firstRead(last_update: i64, error_text: []const u8) FirstRead {
+    if (last_update != 0) return .ready;
+    return if (error_text.len > 0) .failed else .reading;
 }
 
 /// The four states every view implements, in one place.
@@ -240,10 +275,11 @@ pub fn loadingRows(c: *ui.Context, rows: usize) void {
 
 /// The banner a view shows when something failed, with the reason kept.
 pub fn errorBanner(c: *ui.Context, text: []const u8) void {
-    const box = ui.div(c).row().wFull().itemsCenter().gap(8).px(12).py(8).rounded(8).bg(c.theme.danger.alpha(0.12));
+    const color = theme.dangerText(c.theme);
+    const box = ui.div(c).row().wFull().itemsCenter().gap(8).px(12).py(8).rounded(8).bg(color.alpha(0.12));
     defer box.end();
-    ui.icon(c, "xmark", .{ .size = 14, .color = c.theme.danger });
-    ui.text(c, text, .{ .size = body, .color = c.theme.danger });
+    ui.icon(c, "xmark", .{ .size = 14, .color = color });
+    ui.text(c, text, .{ .size = body, .color = color });
 }
 
 /// Published ports as clickable pills: the host port, opening it in the
@@ -290,7 +326,7 @@ pub fn portPills(c: *ui.Context, ct: *const @import("../engine/api.zig").Contain
         ui.text(c, label, .{
             .size = 10.5,
             .weight = .medium,
-            .color = c.theme.accent,
+            .color = theme.accentText(c.theme),
             .tabular = true,
         });
         host.end();
@@ -356,4 +392,69 @@ test "a new sort column starts ascending and the same one flips" {
     sort.pick(3);
     try std.testing.expectEqual(@as(u8, 3), sort.key);
     try std.testing.expect(!sort.desc);
+}
+
+test "first-read separates reading, a failed first pass and a snapshot" {
+    try std.testing.expectEqual(FirstRead.reading, firstRead(0, ""));
+    try std.testing.expectEqual(FirstRead.failed, firstRead(0, "engine stopped answering"));
+    try std.testing.expectEqual(FirstRead.ready, firstRead(123, ""));
+    // A later failure keeps the stale snapshot on screen; it is not a failed
+    // first read and the views must not replace their rows with a skeleton.
+    try std.testing.expectEqual(FirstRead.ready, firstRead(123, "could not read stats"));
+}
+
+test "every status pill clears 4.7:1 on every light-theme row background" {
+    const t = theme.of(ui.Theme.light);
+    const rows = [_]ui.Color{
+        t.surface,
+        t.surface.mix(t.surface_hover, 0.35), // alternate row on a card
+        t.background.mix(t.surface_hover, 0.35), // alternate row on the page
+        t.surface_hover, // hovered row
+        t.background.mix(t.accent, 0.10), // selected row on the page
+        t.surface.mix(t.accent, 0.10), // selected row on a card
+        t.background,
+    };
+    const states = [_][]const u8{
+        "running",  "healthy", "exited",    "stopped", "paused",   "restarting",
+        "starting", "dead",    "unhealthy", "created", "removing",
+    };
+    for (states) |state| {
+        const color = statusColorFor(t, state);
+        for (rows) |row| {
+            // The pill's own 14% wash sits on the row, not on the page.
+            try std.testing.expect(theme.contrastRatio(color, row.mix(color, 0.14)) >= 4.7);
+        }
+    }
+}
+
+test "dark status pills keep the theme's own values" {
+    const t = theme.of(ui.Theme.dark_theme);
+    try std.testing.expectEqual(t.success, statusColorFor(t, "running"));
+    try std.testing.expectEqual(theme.warning_fill, statusColorFor(t, "paused"));
+    try std.testing.expectEqual(t.danger, statusColorFor(t, "dead"));
+    try std.testing.expectEqual(t.accent, statusColorFor(t, "created"));
+    try std.testing.expectEqual(t.muted, statusColorFor(t, "exited"));
+}
+
+test "accent text survives the tints used by pills and toggles" {
+    const t = theme.of(ui.Theme.light);
+    const color = theme.accentText(t);
+    const rows = [_]ui.Color{
+        t.surface,
+        t.background,
+        t.surface_hover,
+        t.surface.mix(t.surface_hover, 0.35),
+        t.background.mix(t.surface_hover, 0.35),
+        t.background.mix(t.accent, 0.10),
+        t.surface.mix(t.accent, 0.10),
+    };
+    // Port pills sit at 12%, Follow/Times and filter chips at 16%.
+    for ([_]f32{ 0.12, 0.16 }) |tint| {
+        for (rows) |row| {
+            try std.testing.expect(theme.contrastRatio(color, row.mix(t.accent, tint)) >= 4.5);
+        }
+    }
+    // The CPU card label and active sort header sit on bare surfaces.
+    try std.testing.expect(theme.contrastRatio(color, t.surface) >= 4.5);
+    try std.testing.expect(theme.contrastRatio(color, t.background) >= 4.5);
 }

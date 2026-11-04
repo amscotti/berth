@@ -81,10 +81,6 @@ pub const Job = struct {
 /// Returns whether the worker started; a failed start leaves the caller's
 /// selection alone so the user can retry.
 pub fn start(s: *app.State, route: Route, ids: []const []const u8, project: []const u8) bool {
-    // Any queued confirmation is about a set this batch is replacing.
-    s.bulk.pending = null;
-    s.bulk.pending_batch.count = 0;
-    s.bulk.project_len = 0;
     if (s.mutating()) {
         s.notify("wait for the current engine operation to finish", true);
         return false;
@@ -123,6 +119,12 @@ pub fn start(s: *app.State, route: Route, ids: []const []const u8, project: []co
         s.notify("could not start the bulk action", true);
         return false;
     };
+    // Any queued confirmation is about a set this batch is replacing. Only
+    // clear it once the worker is actually running, or a refused request would
+    // close the dialog the user is still deciding on.
+    s.bulk.pending = null;
+    s.bulk.pending_batch.count = 0;
+    s.bulk.project_len = 0;
     s.bulk.job = job;
     s.bulk.canceling = false;
     s.redraw();
@@ -283,6 +285,26 @@ fn fakeJob(state: *app.State) !*Job {
         .count = 3,
     };
     return job;
+}
+
+test "a refused batch leaves the open confirmation in place" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = undefined,
+    };
+    state.bulk.pending = .{ .route = .stop };
+    state.bulk.pending_batch.count = 2;
+    state.bulk.project_len = 4;
+    @memcpy(state.bulk.project[0..4], "shop");
+
+    // No client is a refusal before the worker exists; the dialog must survive
+    // so the user can pick an engine or retry, not vanish under the pointer.
+    try std.testing.expect(!start(&state, .stop, &.{"abc"}, "shop"));
+    try std.testing.expect(state.bulk.pending != null);
+    try std.testing.expectEqual(@as(usize, 2), state.bulk.pending_batch.count);
+    try std.testing.expectEqual(@as(usize, 4), state.bulk.project_len);
 }
 
 test "a canceled job is retired once and a stale callback cannot adopt a newer one" {

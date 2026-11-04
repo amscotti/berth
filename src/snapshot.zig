@@ -19,10 +19,16 @@ pub const Snapshot = struct {
     events: []events.Event = &.{},
     events_since: i64 = 0,
     events_until: i64 = 0,
+    /// The interval was attempted and failed. The ring can still hold older
+    /// events; an empty ring must not claim the engine has nothing to say.
+    events_error: bool = false,
     logs: []const u8 = &.{},
     logs_id: []const u8 = &.{},
     logs_timestamps: bool = false,
     df: ?api.Df = null,
+    /// `/system/df` was attempted and failed. A null `df` with this false is
+    /// "not read yet"; with it true it is "could not be read".
+    df_error: bool = false,
     /// The engine's host-process RSS, or null when this pass could not read it.
     engine_rss: ?u64 = null,
 

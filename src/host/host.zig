@@ -22,3 +22,8 @@ pub fn engineRss(io: std.Io, gpa: std.mem.Allocator) ?u64 {
         else => null,
     };
 }
+
+test "a fresh host sample has no cpu delta yet" {
+    const sample: Sample = .{};
+    try std.testing.expect(!sample.cpu_known);
+}

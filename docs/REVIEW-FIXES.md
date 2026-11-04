@@ -33,14 +33,14 @@ reviewer; findings are fixed before the next item starts.
 - [x] Stats pool concurrency / two-cycle cost
 
 ## 5. UX truth and polish
-- [ ] Overview disk bar proportional; shared colour tokens
-- [ ] Log follow scrolls to the end
-- [ ] First-paint false zeros and missing error states
+- [x] Overview disk bar proportional; shared colour tokens
+- [x] Log follow scrolls to the end
+- [x] First-paint false zeros and missing error states
 - [ ] Rail labels/tooltips/accessibility at 960
 - [ ] Modal confirmations, Escape, engine stop/restart confirmation
 - [ ] Inline validation in create/pull/run
-- [ ] Light-theme contrast for status text
-- [ ] Prune opt-ins reset; Stacks health and clickable rows; AGE sort
+- [x] Light-theme contrast for status text
+- [ ] Prune opt-ins reset (Stacks health/clickable and AGE sort done)
 - [ ] Select all/none; inspector unknown facts
 
 ## 6. Scale and performance

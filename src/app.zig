@@ -10,6 +10,7 @@ const detail_job = @import("detail_job.zig");
 const lifetime = @import("engine/lifetime.zig");
 const stats_pool = @import("stats_pool.zig");
 const refresh_mod = @import("refresh.zig");
+const auto_tick = @import("auto_tick.zig");
 const discovery = @import("engine/discovery.zig");
 const events = @import("engine/events.zig");
 const format = @import("ui/format.zig");
@@ -151,7 +152,12 @@ pub const State = struct {
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
     events: events.Feed = .{},
+    /// The last completed pass could not read `/events`; distinct from an
+    /// empty ring, which means the engine really has nothing to show.
+    events_error: bool = false,
     df: ?api.Df = null,
+    /// The last completed pass could not read `/system/df`.
+    df_error: bool = false,
     /// A df may survive one arena rotation; drop it on the next failed pass.
     df_stale: bool = false,
 
@@ -217,6 +223,9 @@ pub const State = struct {
     /// One automatic pass is already scheduled; another resume must not stack
     /// a second timer that would fire behind the same refresh.
     auto_tick_pending: bool = false,
+    /// Timers handed to the main queue and not yet fired. The queue has no
+    /// cancel, so the state owns them until the callback or teardown frees one.
+    auto_ticks: std.ArrayList(*auto_tick.Tick) = .empty,
     /// Identifies the tick currently armed. A pass, switch or scan that starts
     /// later bumps this, so an older callback stands down instead of firing
     /// seconds after the chain it belongs to was replaced.
@@ -415,7 +424,9 @@ pub const State = struct {
         s.volumes = &.{};
         s.networks = &.{};
         s.events = .{};
+        s.events_error = false;
         s.df = null;
+        s.df_error = false;
         s.df_stale = false;
         s.history.clearEngine();
         s.clearPending();

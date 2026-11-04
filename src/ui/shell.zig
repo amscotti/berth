@@ -130,7 +130,7 @@ fn railItem(s: *app.State, c: *ui.Context, tab: app.Tab, narrow: bool) void {
     if (figure.len > 0) ui.text(c, figure, .{
         .size = 10.5,
         .mono = true,
-        .color = if (selected) c.theme.accent_text.alpha(0.8) else c.theme.muted,
+        .color = if (selected) c.theme.accent_text else c.theme.muted,
     });
 }
 
@@ -224,11 +224,11 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
     defer status.end();
 
     const line = ui.div(c).row().itemsCenter().gap(if (narrow) 5 else 7);
-    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (scanning or live) .hex(0xff9f0a) else c.theme.danger);
+    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (scanning or live) theme.warning_fill else c.theme.danger);
     dot.end();
     ui.text(c, label, .{
         .size = if (narrow) 9.5 else 11,
-        .color = if (warn) .hex(0xff9f0a) else if (scanning or live) c.theme.muted else c.theme.danger,
+        .color = if (warn) theme.warning(c.theme) else if (scanning or live) c.theme.muted else theme.dangerText(c.theme),
     });
     line.end();
 
@@ -236,7 +236,7 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         if (s.toast) |t| {
             ui.text(c, t.text, .{
                 .size = 9.5,
-                .color = if (t.bad) c.theme.danger else c.theme.success,
+                .color = if (t.bad) theme.dangerText(c.theme) else theme.successText(c.theme),
                 .wrap = true,
             });
         }
@@ -255,13 +255,13 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         "no engine found";
     ui.text(c, engine_line, .{
         .size = 10.5,
-        .color = if (warn) .hex(0xff9f0a) else c.theme.muted,
+        .color = if (warn) theme.warning(c.theme) else c.theme.muted,
         .truncate = .middle,
     });
     if (s.toast) |t| {
         ui.text(c, t.text, .{
             .size = 10,
-            .color = if (t.bad) c.theme.danger else c.theme.success,
+            .color = if (t.bad) theme.dangerText(c.theme) else theme.successText(c.theme),
             .truncate = .middle,
         });
     }
@@ -308,7 +308,7 @@ fn body(s: *app.State, c: *ui.Context) void {
 pub fn confirmDialog(s: *app.State, c: *ui.Context, verb: []const u8, target: []const u8) void {
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.danger);
     defer box.end();
-    ui.text(c, verb, .{ .size = 13, .weight = .semibold, .color = c.theme.danger });
+    ui.text(c, verb, .{ .size = 13, .weight = .semibold, .color = theme.dangerText(c.theme) });
     const line = c.print("{s} — {s}", .{ target, verb });
     ui.text(c, line, .{ .size = 12, .color = c.theme.muted });
     const row = ui.div(c).row().wFull().justifyEnd().gap(8);

@@ -23,9 +23,31 @@ pub const Event = struct {
     pub fn matches(self: Event, q: []const u8) bool {
         if (q.len == 0) return true;
         return contains(self.kind, q) or contains(self.action, q) or
-            contains(self.name, q) or contains(self.image, q) or contains(self.id, q);
+            contains(self.name, q) or contains(self.image, q) or contains(self.id, q) or
+            contains(self.exit_code, q) or containsExit(self, q);
     }
 };
+
+/// The table renders an exit as `exit <code>`; searching for that composed
+/// phrase must find the row even though only the code is stored. This is a
+/// substring search over the virtual concatenation, not just a prefix, so
+/// "exit 13" matches a 137 exit the way the rendered text would.
+fn containsExit(event: Event, q: []const u8) bool {
+    if (event.exit_code.len == 0 or q.len == 0) return false;
+    const prefix = "exit ";
+    const total = prefix.len + event.exit_code.len;
+    if (q.len > total) return false;
+    var i: usize = 0;
+    outer: while (i + q.len <= total) : (i += 1) {
+        for (q, 0..) |n, j| {
+            const at = i + j;
+            const h = if (at < prefix.len) prefix[at] else event.exit_code[at - prefix.len];
+            if (std.ascii.toLower(h) != std.ascii.toLower(n)) continue :outer;
+        }
+        return true;
+    }
+    return false;
+}
 
 pub const Feed = struct {
     /// Newest first, in the current snapshot arena.
@@ -215,8 +237,12 @@ test "the ring keeps newest first and counts duplicates once" {
 }
 
 test "search matches the fields the table shows" {
-    const event = Event{ .kind = "container", .action = "die", .name = "web", .image = "nginx" };
+    const event = Event{ .kind = "container", .action = "die", .name = "web", .image = "nginx", .exit_code = "137" };
     try std.testing.expect(event.matches("WEB"));
     try std.testing.expect(event.matches("nginx"));
+    try std.testing.expect(event.matches("137"));
+    try std.testing.expect(event.matches("exit 137"));
+    try std.testing.expect(event.matches("EXIT 13"));
+    try std.testing.expect(!event.matches("exit 138"));
     try std.testing.expect(!event.matches("redis"));
 }

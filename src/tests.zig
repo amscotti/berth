@@ -30,6 +30,7 @@ test {
     _ = @import("detail_job_tests.zig");
     _ = @import("logs_tests.zig");
     _ = @import("refresh_tests.zig");
+    _ = @import("auto_tick.zig");
     _ = @import("engine/inspect.zig");
     _ = @import("engine/lifetime.zig");
     _ = @import("tabs.zig");
@@ -50,6 +51,7 @@ test {
     _ = @import("ui/format.zig");
     _ = @import("ui/widgets.zig");
     _ = @import("ui/theme.zig");
+    _ = @import("ui/graph.zig");
     _ = @import("host/host.zig");
     _ = @import("ui/history.zig");
 }

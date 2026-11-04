@@ -48,7 +48,9 @@ pub const ImageSort = struct {
             1 => std.ascii.orderIgnoreCase(x.label(), y.label()),
             2 => std.ascii.orderIgnoreCase(x.Id, y.Id),
             3 => numOrder(@floatFromInt(x.Size), @floatFromInt(y.Size)),
-            4 => numOrder(@floatFromInt(x.Created), @floatFromInt(y.Created)),
+            // AGE is now − Created, so ascending age is descending creation
+            // time: the newest image has the smallest age.
+            4 => numOrder(@floatFromInt(y.Created), @floatFromInt(x.Created)),
             5 => std.ascii.orderIgnoreCase(if (x.dangling()) "dangling" else "ready", if (y.dangling()) "dangling" else "ready"),
             else => .eq,
         };
@@ -158,6 +160,20 @@ test "image sorting follows tag, size and dangling state" {
 
     const status = ImageSort{ .items = items[0..], .key = 5, .desc = false };
     try std.testing.expect(status.lessThan(2, 0)); // dangling < ready
+}
+
+test "image AGE sorts newest first when ascending" {
+    const items = [_]api.Image{
+        .{ .Id = "old", .Created = 1000 },
+        .{ .Id = "new", .Created = 3000 },
+        .{ .Id = "mid", .Created = 2000 },
+    };
+    const age = ImageSort{ .items = items[0..], .key = 4, .desc = false };
+    try std.testing.expect(age.lessThan(1, 2)); // newest before mid
+    try std.testing.expect(age.lessThan(2, 0)); // mid before oldest
+    try std.testing.expect(!age.lessThan(0, 2));
+    const flip = ImageSort{ .items = items[0..], .key = 4, .desc = true };
+    try std.testing.expect(flip.lessThan(0, 2)); // oldest first when reversed
 }
 
 test "volume sorting handles size, use and missing usage data" {

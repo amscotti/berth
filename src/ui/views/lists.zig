@@ -15,13 +15,14 @@ const create = @import("create.zig");
 const create_mod = @import("../../create.zig");
 const sorting = @import("sorting.zig");
 const shell = @import("../shell.zig");
+const theme = @import("../theme.zig");
 
 const ROW = 44.0;
 
 fn loaded(s: *app.State) bool {
     // A failed first pass is still a finished pass: show its error, not a
     // skeleton that would never end.
-    return s.last_update != 0 or s.error_text.len > 0;
+    return widgets.firstRead(s.last_update, s.error_text) != .reading;
 }
 
 /// The search field shrinks with the room the table has. At the smallest size
@@ -83,7 +84,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         ui.text(c, option.label(), .{
             .size = 11.5,
             .weight = if (on) .medium else .regular,
-            .color = if (on) c.theme.accent else c.theme.text,
+            .color = if (on) theme.accentText(c.theme) else c.theme.text,
         });
         if (chip.clicked()) {
             s.filter = option;
@@ -95,7 +96,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     ui.text(c, "Select", .{
         .size = 11.5,
         .weight = if (s.bulk.enabled) .medium else .regular,
-        .color = if (s.bulk.enabled) c.theme.accent else c.theme.text,
+        .color = if (s.bulk.enabled) theme.accentText(c.theme) else c.theme.text,
     });
     if (select_chip.clicked() and !s.bulk.running()) {
         s.bulk.toggleMode();
@@ -112,7 +113,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     if (n == 0) {
         if (s.containers.len == 0) {
             if (s.error_text.len > 0) {
-                _ = widgets.emptyStateAction(c, "cube", "Engine not answering", "Check the engine, then refresh from the rail", null);
+                _ = widgets.emptyStateAction(c, "cube", "Engine not answering", widgets.engine_help, null);
             } else {
                 _ = widgets.emptyStateAction(c, "cube", "No containers yet", "docker run --rm -it alpine sh", null);
             }
@@ -211,7 +212,7 @@ fn bulkBar(s: *app.State, c: *ui.Context) void {
         ui.text(c, label, .{
             .size = 11.5,
             .weight = .medium,
-            .color = .hex(0xff9f0a),
+            .color = theme.warning(c.theme),
         });
         if (!s.bulk.canceling) {
             ui.spacer(c);
@@ -284,7 +285,7 @@ fn actions(s: *app.State, c: *ui.Context, ct: *const @import("../../engine/api.z
 }
 
 fn smallButton(c: *ui.Context, label: []const u8, danger: bool) bool {
-    const color = if (danger) c.theme.danger else c.theme.text;
+    const color = if (danger) theme.dangerText(c.theme) else c.theme.text;
     const box = ui.div(c).row().h(20).px(7).itemsCenter().rounded(10).bg(c.theme.surface_hover);
     defer box.end();
     ui.text(c, label, .{ .size = 10.5, .color = color });
@@ -331,7 +332,7 @@ pub fn images(s: *app.State, c: *ui.Context) void {
     if (s.error_text.len > 0 and s.images.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.images.len == 0) {
         if (s.error_text.len > 0) {
-            _ = widgets.emptyStateAction(c, "doc", "Engine not answering", "Check the engine, then refresh from the rail", null);
+            _ = widgets.emptyStateAction(c, "doc", "Engine not answering", widgets.engine_help, null);
         } else {
             _ = widgets.emptyStateAction(c, "doc", "No images", "Pull a reference in the card above", null);
         }
@@ -421,7 +422,7 @@ pub fn volumes(s: *app.State, c: *ui.Context) void {
     if (s.error_text.len > 0 and s.volumes.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.volumes.len == 0) {
         if (s.error_text.len > 0) {
-            _ = widgets.emptyStateAction(c, "folder", "Engine not answering", "Check the engine, then refresh from the rail", null);
+            _ = widgets.emptyStateAction(c, "folder", "Engine not answering", widgets.engine_help, null);
         } else {
             _ = widgets.emptyStateAction(c, "folder", "No volumes", "Create one above, or run a container that declares one", null);
         }
@@ -514,7 +515,7 @@ pub fn networks(s: *app.State, c: *ui.Context) void {
     if (s.error_text.len > 0 and s.networks.len == 0) widgets.errorBanner(c, s.error_text);
     if (s.networks.len == 0) {
         if (s.error_text.len > 0) {
-            _ = widgets.emptyStateAction(c, "network", "Engine not answering", "Check the engine, then refresh from the rail", null);
+            _ = widgets.emptyStateAction(c, "network", "Engine not answering", widgets.engine_help, null);
         } else {
             _ = widgets.emptyStateAction(c, "network", "No networks", "Create one above", null);
         }

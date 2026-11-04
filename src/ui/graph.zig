@@ -26,6 +26,25 @@ pub const Options = struct {
     grid: bool = false,
 };
 
+/// A scale for a count graph: the whole fleet is the top of the chart, so one
+/// running container is one unit rather than half the card. The container
+/// count changes when the fleet does, not when a peak sample ages out.
+pub fn countScale(total: usize) f32 {
+    return @max(1, @as(f32, @floatFromInt(total)));
+}
+
+/// Rounds a peak up to the next 1/2/5 × 10^n ceiling. A fixed ceiling keeps a
+/// flat series at one height while its oldest samples leave the ring; scaling
+/// to `peak * 1.6` re-scaled the chart every time a spike fell off.
+pub fn ceiling(peak: f32) f32 {
+    if (!(peak > 0)) return 1;
+    if (peak == std.math.inf(f32)) return peak;
+    const magnitude = std.math.pow(f32, 10, std.math.floor(std.math.log10(peak)));
+    const n = peak / magnitude;
+    const step: f32 = if (n <= 1) 1 else if (n <= 2) 2 else if (n <= 5) 5 else 10;
+    return @max(1, step * magnitude);
+}
+
 /// Draws `series` stacked in columns, newest on the right.
 pub fn cellGraph(c: *ui.Context, series: []const Series, opts: Options) void {
     // `clip` is load-bearing: the dots are absolute leaves and a stale or
@@ -126,4 +145,19 @@ pub fn cellGraph(c: *ui.Context, series: []const Series, opts: Options) void {
             }, .none, null);
         }
     }
+}
+
+test "a count graph scales to the fleet, not to twice its busiest sample" {
+    try std.testing.expectEqual(@as(f32, 40), countScale(40));
+    try std.testing.expectEqual(@as(f32, 1), countScale(0));
+}
+
+test "a rounded ceiling keeps a flat series stable" {
+    try std.testing.expectEqual(@as(f32, 1), ceiling(0));
+    try std.testing.expectEqual(@as(f32, 5), ceiling(3.2));
+    try std.testing.expectEqual(@as(f32, 10), ceiling(8));
+    try std.testing.expectEqual(@as(f32, 10), ceiling(9.6));
+    try std.testing.expectEqual(@as(f32, 10), ceiling(10));
+    try std.testing.expectEqual(@as(f32, 20), ceiling(11));
+    try std.testing.expectEqual(@as(f32, 2), ceiling(1.1));
 }

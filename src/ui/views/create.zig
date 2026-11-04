@@ -7,6 +7,7 @@ const ui = nanoui.ui;
 const app = @import("../../app.zig");
 const image_tasks = @import("../../image_tasks.zig");
 const widgets = @import("../widgets.zig");
+const theme = @import("../theme.zig");
 
 pub fn card(s: *app.State, c: *ui.Context) void {
     const box = ui.div(c).column().wFull().gap(8).p(14).rounded(10)
@@ -17,9 +18,9 @@ pub fn card(s: *app.State, c: *ui.Context) void {
     ui.text(c, "Get and run images", .{ .size = 13, .weight = .semibold });
     ui.spacer(c);
     if (s.image_tasks.pulling()) {
-        ui.text(c, "Pulling…", .{ .size = 11, .weight = .medium, .color = .hex(0xff9f0a) });
+        ui.text(c, "Pulling…", .{ .size = 11, .weight = .medium, .color = theme.warning(c.theme) });
     } else if (s.image_tasks.running()) {
-        ui.text(c, "Starting…", .{ .size = 11, .weight = .medium, .color = .hex(0xff9f0a) });
+        ui.text(c, "Starting…", .{ .size = 11, .weight = .medium, .color = theme.warning(c.theme) });
     }
     if (!open) {
         ui.text(c, "Pull an image, or run one", .{ .size = 11.5, .color = c.theme.muted });

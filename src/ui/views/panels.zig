@@ -9,12 +9,15 @@ const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const graph = @import("../graph.zig");
 const history = @import("../history.zig");
+const theme = @import("../theme.zig");
 
 pub fn overview(s: *app.State, c: *ui.Context) void {
     const rt = s.activeRuntime();
     // Reading lasts until the first snapshot commits, not just until adoption:
     // there is a client but no data for the moment in between.
-    const reading = s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0);
+    const first = widgets.firstRead(s.last_update, s.error_text);
+    const reading = first == .reading;
+    const ready = first == .ready;
     const subtitle = if (reading and rt == null)
         "Reading engine…"
     else if (rt) |r|
@@ -38,15 +41,51 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     const cpu_share = stats_pool.aggregateCpuPercent(s.containers, s.stats, cores);
     const connected = if (rt) |r| r.reachable else false;
     const unknown = "—";
-    const mem_value = if (connected and s.stats_complete) format.bytes(c, mem_sum) else unknown;
+    const mem_value = if (ready and connected and s.stats_complete) format.bytes(c, mem_sum) else unknown;
     const mem_note = if (reading)
         "reading engine…"
+    else if (!ready)
+        // A failed first pass has no sample to call partial.
+        "no figures yet"
     else if (!connected)
         "no engine answering"
     else if (s.stats_complete)
         c.print("of {s}", .{format.bytes(c, info.MemTotal)})
     else
         "partial sample";
+    const cpu_value = if (ready and connected and s.stats_complete and cpu_share != null)
+        format.percent(c, cpu_share.?)
+    else
+        unknown;
+    const cpu_note = if (!ready)
+        (if (reading) "reading engine…" else "no figures yet")
+    else if (!connected)
+        "no engine answering"
+    else if (!s.stats_complete)
+        "partial sample"
+    else if (cpu_share == null)
+        "no CPU sample"
+    else
+        c.print("of {d:.0} cores", .{cores});
+    const running_value = if (ready and connected) c.print("{d}", .{app.runningCount(s)}) else unknown;
+    const running_note = if (!ready)
+        (if (reading) "reading engine…" else "no figures yet")
+    else if (connected)
+        c.print("of {d} containers", .{s.containers.len})
+    else
+        "no engine answering";
+    const disk_note = if (reading)
+        "reading engine…"
+    else if (!ready)
+        "no figures yet"
+    else if (s.df_error)
+        "could not read disk figures"
+    else if (!connected)
+        "no engine answering"
+    else if (s.df) |df|
+        c.print("reclaimable {s}", .{format.bytesSigned(c, df.reclaimable())})
+    else
+        "no figures yet";
     // Two equal columns: `grow` hands out leftover space after each card's
     // intrinsic content, which made the CPU card narrower than Memory.
     const col_w = (s.layout.content - 12) / 2;
@@ -57,10 +96,11 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         c,
         "cpu",
         "Containers · CPU",
-        if (connected and cpu_share != null) format.percent(c, cpu_share.?) else unknown,
-        if (connected) c.print("of {d:.0} cores", .{cores}) else if (reading) "reading engine…" else "no engine answering",
+        cpu_value,
+        cpu_note,
         .cpu,
-        c.theme.accent,
+        theme.accentFill(c.theme),
+        theme.accentText(c.theme),
         100,
         col_w,
     );
@@ -73,6 +113,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         mem_note,
         .mem,
         c.theme.success,
+        theme.successText(c.theme),
         @floatFromInt(@max(info.MemTotal, 1)),
         col_w,
     );
@@ -85,11 +126,14 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         c,
         "square.grid.3x3",
         "Containers Running",
-        if (connected) c.print("{d}", .{app.runningCount(s)}) else unknown,
-        if (connected) c.print("of {d} containers", .{s.containers.len}) else if (reading) "reading engine…" else "no engine answering",
+        running_value,
+        running_note,
         .running,
         .hex(0xd9a441),
-        @max(s.history.peak(.running) * 2, 4),
+        theme.runningText(c.theme),
+        // The whole fleet is the scale: one running container is one unit,
+        // not half the card, and the height does not move as a peak ages out.
+        graph.countScale(s.containers.len),
         col_w,
     );
     graphCard(
@@ -97,11 +141,14 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         c,
         "internaldrive",
         "Disk",
-        if (connected and s.df != null) format.bytes(c, disk_bytes) else unknown,
-        if (s.df) |df| c.print("reclaimable {s}", .{format.bytesSigned(c, df.reclaimable())}) else if (reading) "reading engine…" else "no figures yet",
+        if (ready and connected and s.df != null) format.bytes(c, disk_bytes) else unknown,
+        disk_note,
         .disk,
         c.theme.muted,
-        @max(s.history.peak(.disk) * 1.6, 1),
+        c.theme.muted,
+        // A rounded ceiling rather than `peak * 1.6`: a flat store keeps one
+        // height while old samples fall off the ring.
+        graph.ceiling(s.history.peak(.disk)),
         col_w,
     );
     bottom.end();
@@ -164,7 +211,12 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: ?u64) void {
     ui.text(c, format.bytes(c, used), .{ .size = 18, .weight = .semibold, .tabular = true });
     ui.text(c, c.print("of {s} in use", .{format.bytes(c, total)}), .{ .size = 11.5, .color = c.theme.muted });
     ui.spacer(c);
-    ui.text(c, c.print("CPU {s}", .{format.percent(c, s.host_sample.cpu_percent)}), .{
+    // The first sample has no previous tick count, so its zero is not "idle";
+    // it is "no delta yet". Sampling once per refresh means it is unknown for
+    // one pass only.
+    ui.text(c, c.print("CPU {s}", .{
+        if (s.host_sample.cpu_known) format.percent(c, s.host_sample.cpu_percent) else "—",
+    }), .{
         .size = 11.5,
         .color = c.theme.muted,
         .tabular = true,
@@ -188,8 +240,8 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: ?u64) void {
     const elsewhere = used - in_containers - engine;
     const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track).clip();
     const parts = [_]struct { bytes: u64, color: ui.Color }{
-        .{ .bytes = in_containers, .color = c.theme.accent },
-        .{ .bytes = engine, .color = .hex(0xff9f0a) },
+        .{ .bytes = in_containers, .color = theme.accentFill(c.theme) },
+        .{ .bytes = engine, .color = theme.warning_fill },
         .{ .bytes = elsewhere, .color = c.theme.muted },
     };
     // Each share grows into the track, so the bar is the whole machine at any
@@ -225,6 +277,7 @@ fn graphCard(
     note: []const u8,
     which: history.Which,
     color: ui.Color,
+    text_color: ui.Color,
     scale: ?f32,
     width: f32,
 ) void {
@@ -232,8 +285,8 @@ fn graphCard(
     defer card.end();
 
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
-    widgets.chip(c, icon, color, 20);
-    ui.text(c, label, .{ .size = 12.5, .weight = .semibold, .color = color });
+    widgets.chip(c, icon, text_color, 20);
+    ui.text(c, label, .{ .size = 12.5, .weight = .semibold, .color = text_color });
     ui.spacer(c);
     ui.text(c, "recent", .{ .size = 9.5, .color = c.theme.muted.alpha(0.8) });
     head.end();
@@ -254,34 +307,43 @@ fn diskBar(c: *ui.Context, df: api.Df, heading: []const u8) void {
     const conts = store.containers;
     const vols = store.volumes;
     const cache = store.build_cache;
-    const total = store.total();
-    if (total <= 0) return;
+    // The same clamped shares the Disk page draws decide whether there is a
+    // bar at all; a negative engine sentinel must not hide a store that the
+    // other view would render.
+    const shares = df.shares();
+    if (shares.total() <= 0) return;
 
     const box = ui.div(c).column().wFull().gap(8).p(16).rounded(10).bg(c.theme.surface).border(c.theme.border);
     defer box.end();
     ui.text(c, heading, .{ .size = 15, .weight = .semibold });
 
-    const f = @as(f32, @floatFromInt(total));
     const segs = [_]widgets.Segment{
-        .{ .fraction = @as(f32, @floatFromInt(imgs)) / f, .color = c.theme.accent },
-        .{ .fraction = @as(f32, @floatFromInt(conts)) / f, .color = c.theme.success },
-        .{ .fraction = @as(f32, @floatFromInt(vols)) / f, .color = .hex(0xff9f0a) },
-        .{ .fraction = @as(f32, @floatFromInt(cache)) / f, .color = c.theme.muted },
+        .{ .fraction = shares.images, .color = theme.accentFill(c.theme) },
+        .{ .fraction = shares.containers, .color = c.theme.success },
+        .{ .fraction = shares.volumes, .color = theme.store_volume },
+        .{ .fraction = shares.build_cache, .color = c.theme.muted },
     };
-    const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track);
+    const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track).clip();
+    // Weighted leaves, not one `grow` flag per segment: equal grow flags made
+    // every non-empty store the same width. The unused share is explicit for
+    // the same reason as the host bar — a lone weighted child takes the track.
+    var used: f32 = 0;
     for (segs) |seg| {
         if (seg.fraction <= 0) continue;
-        const piece = ui.div(c).grow().h(8).rounded(4).bg(seg.color);
-        defer piece.end();
+        used += seg.fraction;
+        _ = c.leaf(.{ .grow = seg.fraction, .height = .{ .px = 8 }, .radius = 4, .background = seg.color }, .none, null);
+    }
+    if (used < 1) {
+        _ = c.leaf(.{ .grow = 1 - used, .height = .{ .px = 8 }, .background = c.theme.track }, .none, null);
     }
     bar.end(); // before the legend, or the legend is drawn inside the bar
 
     // The swatches above the words, so the bar is readable without guessing
     // which colour is which store.
     const legend = ui.div(c).row().wFull().gap(16);
-    legendItem(c, "images", format.bytes(c, @as(u64, @intCast(@max(0, imgs)))), c.theme.accent);
+    legendItem(c, "images", format.bytes(c, @as(u64, @intCast(@max(0, imgs)))), theme.accentFill(c.theme));
     legendItem(c, "containers", format.bytes(c, @as(u64, @intCast(@max(0, conts)))), c.theme.success);
-    legendItem(c, "volumes", format.bytes(c, @as(u64, @intCast(@max(0, vols)))), .hex(0xd9a441));
+    legendItem(c, "volumes", format.bytes(c, @as(u64, @intCast(@max(0, vols)))), theme.store_volume);
     legendItem(c, "build cache", format.bytes(c, @as(u64, @intCast(@max(0, cache)))), c.theme.muted);
     legend.end();
 }
@@ -295,9 +357,29 @@ fn legendItem(c: *ui.Context, label: []const u8, value: []const u8, color: ui.Co
 }
 
 pub fn disk(s: *app.State, c: *ui.Context) void {
-    widgets.pageHeader(c, "Disk", "as of the last refresh");
+    const first = widgets.firstRead(s.last_update, s.error_text);
+    if (first == .reading) {
+        widgets.pageHeader(c, "Disk", "Reading engine…");
+        widgets.loadingRows(c, 3);
+        return;
+    }
+    if (first == .failed) {
+        widgets.pageHeader(c, "Disk", "engine not answering");
+        widgets.errorBanner(c, s.error_text);
+        widgets.emptyState(c, "internaldrive", "Engine not answering", widgets.engine_help);
+        return;
+    }
+    const disk_subtitle = if (s.df_error and s.df != null) "last disk read failed" else "as of the last refresh";
+    widgets.pageHeader(c, "Disk", disk_subtitle);
+    if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
     const df = s.df orelse {
-        widgets.emptyState(c, "internaldrive", "No disk figures yet", "They arrive with the first completed refresh");
+        if (s.error_text.len > 0) {
+            widgets.emptyState(c, "internaldrive", "Engine not answering", widgets.engine_help);
+        } else if (s.df_error) {
+            widgets.emptyState(c, "internaldrive", "Could not read disk figures", "The engine answered, but /system/df did not");
+        } else {
+            widgets.emptyState(c, "internaldrive", "No disk figures yet", "They arrive with the first completed refresh");
+        }
         return;
     };
     const row = ui.div(c).row().wFull().gap(12).pb(12);
@@ -320,27 +402,25 @@ pub fn disk(s: *app.State, c: *ui.Context) void {
     // The four stores as one strip, so the view answers "how is it split"
     // and not only "how much". Widths are shares of the total, and an empty
     // store is skipped rather than drawn as a zero-width sliver.
-    const total: u64 = @as(u64, @intCast(@max(0, imgs))) + @as(u64, @intCast(@max(0, conts))) +
-        @as(u64, @intCast(@max(0, vols))) + @as(u64, @intCast(@max(0, cache)));
-    if (total > 0) {
+    const shares = df.shares();
+    if (shares.total() > 0) {
         const strip = ui.div(c).row().wFull().h(10).rounded(5).bg(c.theme.track).clip();
-        const parts = [_]struct { bytes: u64, color: ui.Color }{
-            .{ .bytes = @intCast(@max(0, imgs)), .color = c.theme.accent },
-            .{ .bytes = @intCast(@max(0, conts)), .color = c.theme.success },
-            .{ .bytes = @intCast(@max(0, vols)), .color = .hex(0xff9f0a) },
-            .{ .bytes = @intCast(@max(0, cache)), .color = c.theme.muted },
+        const parts = [_]struct { fraction: f32, color: ui.Color }{
+            .{ .fraction = shares.images, .color = theme.accentFill(c.theme) },
+            .{ .fraction = shares.containers, .color = c.theme.success },
+            .{ .fraction = shares.volumes, .color = theme.store_volume },
+            .{ .fraction = shares.build_cache, .color = c.theme.muted },
         };
         for (parts) |part| {
-            if (part.bytes == 0) continue;
-            const frac = @as(f32, @floatFromInt(part.bytes)) / @as(f32, @floatFromInt(total));
-            _ = c.leaf(.{ .grow = frac, .height = .{ .px = 10 }, .radius = 5, .background = part.color }, .none, null);
+            if (part.fraction <= 0) continue;
+            _ = c.leaf(.{ .grow = part.fraction, .height = .{ .px = 10 }, .radius = 5, .background = part.color }, .none, null);
         }
         strip.end();
 
         const legend = ui.div(c).row().wFull().gap(18).pt(8).pb(12);
-        legendItem(c, "images", "", c.theme.accent);
+        legendItem(c, "images", "", theme.accentFill(c.theme));
         legendItem(c, "containers", "", c.theme.success);
-        legendItem(c, "volumes", "", .hex(0xd9a441));
+        legendItem(c, "volumes", "", theme.store_volume);
         legendItem(c, "build cache", "", c.theme.muted);
         legend.end();
     }

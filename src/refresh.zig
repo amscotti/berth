@@ -3,7 +3,6 @@
 //! posts one `done` callback to the main queue. The window never waits on an
 //! engine request; it keeps painting the previous snapshot until the swap.
 const std = @import("std");
-const builtin = @import("builtin");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
@@ -193,7 +192,11 @@ fn load(job: *Job) void {
     loadLogs(job, &client);
     if (stopRequested(canceled)) return;
 
-    job.snapshot.df = client.df() catch null;
+    if (client.df()) |df| {
+        job.snapshot.df = df;
+    } else |_| {
+        job.snapshot.df_error = true;
+    }
     if (stopRequested(canceled)) return;
 
     // Engine helper memory: `ps` on macOS, a /proc walk on Linux. Sampled here
@@ -215,7 +218,9 @@ fn load(job: *Job) void {
         job.snapshot.events = fresh;
         job.snapshot.events_since = since;
         job.snapshot.events_until = until_events;
-    } else |_| {}
+    } else |_| {
+        job.snapshot.events_error = true;
+    }
 }
 
 fn done(ctx: ?*anyopaque) callconv(.c) void {
@@ -342,6 +347,8 @@ fn commit(s: *app.State, job: *Job) void {
     if (s.client) |*client| client.alloc = s.arena.allocator();
 
     refresh_selection.resolve(s);
+    s.events_error = snap.events_error;
+    s.df_error = snap.df_error;
     events_feed.commit(s, snap.events_since, snap.events_until, snap.events);
     logs.commitSnapshot(s, snap.logs, snap.logs_id, snap.logs_timestamps);
     s.error_text = "";
@@ -396,38 +403,11 @@ pub fn pendingAct(s: *app.State) bool {
     return false;
 }
 
-const Tick = struct {
-    state: *app.State,
-    token: u64,
-};
-
-/// Arms the one automatic pass timer. The flag is set even under the test
-/// runner, which has no event loop; it lets tests prove repeated resumes do
-/// not stack timers without scheduling a callback against a stack state.
-pub fn armAutoTick(s: *app.State) void {
-    if (!s.auto_refresh or s.auto_tick_pending) return;
-    s.auto_tick_pending = true;
-    if (builtin.is_test) return;
-    const tick = s.gpa.create(Tick) catch {
-        s.auto_tick_pending = false;
-        return;
-    };
-    tick.* = .{ .state = s, .token = s.auto_tick_token };
-    nanoui.App.after(5000, tick, tickBridge);
-}
-
-fn tickBridge(ctx: ?*anyopaque) callconv(.c) void {
-    const tick: *Tick = @ptrCast(@alignCast(ctx.?));
-    const s = tick.state;
-    const token = tick.token;
-    s.gpa.destroy(tick);
-    autoTick(s, token);
-}
-
 /// One refresh, then one timer: scheduled from the end of a pass, never on top
 /// of one that is still running. `token` proves this callback belongs to the
 /// current chain; an older one stands down and lets the replacement arm.
 pub fn autoTick(s: *app.State, token: u64) void {
+    if (s.closing) return;
     if (token != s.auto_tick_token) {
         session.@"resume"(s);
         return;
@@ -452,6 +432,19 @@ test "a canceled pass reports stop before the next step" {
     try std.testing.expect(!stopRequested(&canceled));
     canceled.store(true, .release);
     try std.testing.expect(stopRequested(&canceled));
+}
+
+test "a closing state ignores a queued tick" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = undefined,
+        .closing = true,
+        .auto_tick_pending = true,
+    };
+    autoTick(&state, state.auto_tick_token);
+    try std.testing.expect(state.auto_tick_pending);
 }
 
 test "a canceled load stops before the next request" {

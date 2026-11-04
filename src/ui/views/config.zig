@@ -7,6 +7,7 @@ const discovery = @import("../../engine/discovery.zig");
 const ops = @import("../../ops.zig");
 const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
+const theme = @import("../theme.zig");
 const prefs = @import("../../settings.zig");
 
 const KINDS = [_]discovery.Kind{
@@ -32,12 +33,12 @@ pub fn runtimes(s: *app.State, c: *ui.Context) void {
 
     const bar = ui.div(c).row().wFull().itemsCenter().gap(8).pb(8);
     if (s.ops.running()) {
-        ui.text(c, s.ops.label(), .{ .size = 11.5, .weight = .medium, .color = .hex(0xff9f0a), .truncate = .ellipsis });
+        ui.text(c, s.ops.label(), .{ .size = 11.5, .weight = .medium, .color = theme.warning(c.theme), .truncate = .ellipsis });
         ui.spacer(c);
     } else if (s.discovery_job != null) {
         // Keep the existing cards on screen while a rescan probes; they are
         // still the engine being read until the result is adopted.
-        ui.text(c, "Probing sockets…", .{ .size = 11.5, .weight = .medium, .color = .hex(0xff9f0a), .truncate = .ellipsis });
+        ui.text(c, "Probing sockets…", .{ .size = 11.5, .weight = .medium, .color = theme.warning(c.theme), .truncate = .ellipsis });
         ui.spacer(c);
     } else {
         ui.text(c, "Sockets are probed in parallel. Choose one, or add a path below.", .{ .size = 11.5, .color = c.theme.muted, .truncate = .ellipsis });
@@ -112,7 +113,7 @@ fn kindCard(s: *app.State, c: *ui.Context, kind: discovery.Kind) void {
     const head = ui.div(c).row().wFull().itemsCenter().gap(10);
     widgets.chip(c, "desktopcomputer", if (active) c.theme.accent else c.theme.muted, 24);
     ui.text(c, kind.label(), .{ .size = 13, .weight = .medium });
-    if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = c.theme.accent });
+    if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = theme.accentText(c.theme) });
     ui.spacer(c);
     ui.text(c, c.print("{d} answering", .{live}), .{ .size = 11, .color = c.theme.muted });
     if (total > 1) {
@@ -148,7 +149,7 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
     ui.text(c, rt.socket, .{ .size = 10, .mono = true, .color = c.theme.muted, .truncate = .middle });
     text.end();
 
-    if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = c.theme.accent });
+    if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = theme.accentText(c.theme) });
     if (ops.supported(rt.kind) and !s.ops.running()) {
         if (!rt.reachable) {
             if (settingButton(c, "Start", false)) ops.start(s, .start, rt.kind, rt.socket);
@@ -199,7 +200,7 @@ pub fn settings(s: *app.State, c: *ui.Context) void {
         ui.text(c, option.label(), .{
             .size = 12,
             .weight = if (on) .medium else .regular,
-            .color = if (on) c.theme.accent else c.theme.text,
+            .color = if (on) theme.accentText(c.theme) else c.theme.text,
         });
         if (button.clicked()) s.setAppearance(option);
         button.end();
@@ -244,7 +245,7 @@ fn engineCard(s: *app.State, c: *ui.Context) void {
         ui.text(c, r.name, .{ .size = 12.5, .weight = .medium });
         ui.text(c, if (r.reachable) c.print("v{s} · API {s}", .{ r.version.Version, r.version.ApiVersion }) else "not answering", .{
             .size = 11.5,
-            .color = if (r.reachable) c.theme.muted else c.theme.danger,
+            .color = if (r.reachable) c.theme.muted else theme.dangerText(c.theme),
         });
         ui.text(c, r.socket, .{ .size = 11, .mono = true, .color = c.theme.muted, .wrap = true });
     } else if (scanning) {
@@ -270,7 +271,7 @@ fn engineCard(s: *app.State, c: *ui.Context) void {
             ui.text(c, rt.socket, .{ .size = 10, .mono = true, .color = c.theme.muted, .truncate = .middle });
             text.end();
             if (i == s.active) {
-                ui.text(c, "active", .{ .size = 10.5, .color = c.theme.accent });
+                ui.text(c, "active", .{ .size = 10.5, .color = theme.accentText(c.theme) });
             } else if (settingButton(c, "Use", false)) {
                 s.selectRuntime(i);
                 s.engine_menu_open = false;

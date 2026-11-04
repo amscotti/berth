@@ -12,6 +12,9 @@ pub const Sample = struct {
     mem_total: u64 = 0,
     mem_used: u64 = 0,
     cpu_percent: f32 = 0,
+    /// False until a previous CPU tick count exists. The first sample has no
+    /// delta, and its zero must read "unknown", not "idle".
+    cpu_known: bool = false,
     engine_rss: u64 = 0,
 };
 
@@ -147,7 +150,10 @@ pub const Sampler = struct {
         var cpu: CpuLoad = std.mem.zeroes(CpuLoad);
         var cpu_len = cpu_info_count;
         if (host_statistics(self.host, HOST_CPU_LOAD_INFO, &cpu, &cpu_len) == 0) {
-            if (self.prev) |prev| out.cpu_percent = percentBetween(prev, cpu.cpu_ticks);
+            if (self.prev) |prev| {
+                out.cpu_percent = percentBetween(prev, cpu.cpu_ticks);
+                out.cpu_known = true;
+            }
             self.prev = cpu.cpu_ticks;
         }
         return out;

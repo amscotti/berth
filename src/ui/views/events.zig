@@ -50,7 +50,8 @@ fn columns(width: f32) Cols {
 }
 
 pub fn view(s: *app.State, c: *ui.Context) void {
-    if (s.last_update == 0 and s.error_text.len == 0) {
+    const first = widgets.firstRead(s.last_update, s.error_text);
+    if (first == .reading) {
         _ = widgets.pageHeaderSearch(c, "Events", "Reading engine…", null);
         widgets.loadingRows(c, 6);
         return;
@@ -61,7 +62,13 @@ pub fn view(s: *app.State, c: *ui.Context) void {
     for (s.events.items) |event| {
         if (event.matches(q)) shown += 1;
     }
-    const subtitle = if (q.len > 0 and shown < s.events.items.len)
+    const subtitle = if (first == .failed or (s.error_text.len > 0 and s.events.items.len == 0))
+        "engine not answering"
+    else if (s.events_error and s.events.items.len == 0)
+        "could not read events"
+    else if (s.events_error)
+        "last event read failed"
+    else if (q.len > 0 and shown < s.events.items.len)
         c.print("{d} of {d} shown", .{ shown, s.events.items.len })
     else
         widgets.count(c, s.events.items.len, "event", "events");
@@ -73,7 +80,11 @@ pub fn view(s: *app.State, c: *ui.Context) void {
 
     if (s.error_text.len > 0) widgets.errorBanner(c, s.error_text);
     if (s.events.items.len == 0) {
-        if (q.len > 0) {
+        if (first == .failed or s.error_text.len > 0) {
+            _ = widgets.emptyStateAction(c, "list.bullet", "Engine not answering", widgets.engine_help, null);
+        } else if (s.events_error) {
+            _ = widgets.emptyStateAction(c, "list.bullet", "Could not read events", "The engine answered, but /events did not", null);
+        } else if (q.len > 0) {
             if (widgets.emptyStateAction(c, "list.bullet", c.print("No results for \u{201c}{s}\u{201d}", .{q}), "Clear the search to see every event", "Clear search")) {
                 s.search.events.clear();
                 s.redraw();

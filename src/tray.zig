@@ -7,6 +7,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const format = @import("ui/format.zig");
+const widgets = @import("ui/widgets.zig");
 
 pub fn create(s: *app.State) void {
     const template = [_]nanoui.MenuItem{
@@ -47,7 +48,9 @@ pub fn update(s: *app.State) void {
     const live = runtime != null and runtime.?.reachable and s.error_text.len == 0;
     // Reading lasts until the first snapshot commits; "engine down" would
     // report a failure that has not happened while the client is connecting.
-    const reading = s.last_update == 0 and (s.discovery_job != null or s.error_text.len == 0);
+    // The pages use the same three-way decision, so a rescan after a failed
+    // first pass reads as "down" here and as "not answering" there.
+    const reading = widgets.firstRead(s.last_update, s.error_text) == .reading;
     var title_buf: [96]u8 = undefined;
     const title = if (reading)
         "berth · reading engine…"

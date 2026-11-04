@@ -5,6 +5,7 @@ pub const Sample = struct {
     mem_total: u64 = 0,
     mem_used: u64 = 0,
     cpu_percent: f32 = 0,
+    cpu_known: bool = false,
     engine_rss: u64 = 0,
 };
 

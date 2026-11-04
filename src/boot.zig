@@ -4,6 +4,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const refresh = @import("refresh.zig");
+const auto_tick = @import("auto_tick.zig");
 const runtimes = @import("runtimes.zig");
 const ops = @import("ops.zig");
 const logs = @import("logs.zig");
@@ -43,6 +44,7 @@ pub fn destroy(s: *app.State) void {
     actions.discard(s);
     image_tasks.cancel(s);
     if (s.job) |job| refresh.discard(s, job);
+    auto_tick.discard(s);
     detail_job.cancel(s);
     s.clearPending();
     s.prune_open = false;

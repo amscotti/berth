@@ -12,6 +12,7 @@ const terminal = @import("../terminal.zig");
 const logs = @import("../logs.zig");
 const format = @import("format.zig");
 const widgets = @import("widgets.zig");
+const theme = @import("theme.zig");
 
 /// The pane's label column: facts line up on their values instead of starting
 /// wherever the longest label happens to end.
@@ -73,7 +74,7 @@ pub fn pane(s: *app.State, c: *ui.Context) void {
 fn tab(c: *ui.Context, label: []const u8, icon_name: []const u8, active: bool) bool {
     const pill = ui.div(c).row().h(24).px(9).itemsCenter().gap(5).rounded(12)
         .bg(if (active) c.theme.accent.alpha(0.16) else c.theme.surface_hover).control();
-    const color = if (active) c.theme.accent else c.theme.muted;
+    const color = if (active) theme.accentText(c.theme) else c.theme.muted;
     ui.icon(c, icon_name, .{ .size = 10, .color = color });
     ui.text(c, label, .{
         .size = 11,
@@ -146,19 +147,24 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
                 else
                     format.bytes(c, st.mem);
                 facts(c, "Memory", mem);
+                facts(c, "Network", c.print("↓ {s} · ↑ {s}", .{
+                    format.bytes(c, st.net_rx),
+                    format.bytes(c, st.net_tx),
+                }));
+                facts(c, "Disk", c.print("read {s} · wrote {s}", .{
+                    format.bytes(c, st.blk_read),
+                    format.bytes(c, st.blk_write),
+                }));
+                if (st.pids) |n| facts(c, "PIDs", c.print("{d}", .{n}));
             } else {
+                // A container whose stats never arrived has no I/O figures
+                // either; the zeroed sample would draw four honest-looking
+                // "0 B" facts.
                 facts(c, "CPU", "—");
                 facts(c, "Memory", "—");
+                facts(c, "Network", "↓ — · ↑ —");
+                facts(c, "Disk", "read — · wrote —");
             }
-            facts(c, "Network", c.print("↓ {s} · ↑ {s}", .{
-                format.bytes(c, st.net_rx),
-                format.bytes(c, st.net_tx),
-            }));
-            facts(c, "Disk", c.print("read {s} · wrote {s}", .{
-                format.bytes(c, st.blk_read),
-                format.bytes(c, st.blk_write),
-            }));
-            if (st.pids) |n| facts(c, "PIDs", c.print("{d}", .{n}));
         }
         if (s.detail_lifetime) |life| {
             facts(c, "Restarts", c.print("{d}", .{life.restarts}));
@@ -220,7 +226,17 @@ fn containerDetail(s: *app.State, c: *ui.Context) void {
     });
     log_tools.end();
 
-    ui.scroll(c, .{ .width = .fill, .height = .fill, .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 }, .radius = 8, .background = c.theme.background });
+    ui.scroll(c, .{
+        .width = .fill,
+        .height = .fill,
+        .padding = .{ .left = 10, .right = 10, .top = 8, .bottom = 8 },
+        .radius = 8,
+        .background = c.theme.background,
+        // Follow keeps the newest line in view; the framework pauses following
+        // while the user has scrolled up, then resumes when they return to the
+        // end, so reading old output is not fought by every refresh.
+        .follow_end = s.log_opts.follow,
+    });
     defer ui.end(c);
     if (s.logs_loading) {
         ui.text(c, "Reading…", .{ .size = 11.5, .color = c.theme.muted });
@@ -243,7 +259,7 @@ fn logToggle(c: *ui.Context, label: []const u8, on: bool) bool {
     ui.text(c, label, .{
         .size = 10.5,
         .weight = if (on) .medium else .regular,
-        .color = if (on) c.theme.accent else c.theme.muted,
+        .color = if (on) theme.accentText(c.theme) else c.theme.muted,
     });
     const clicked = pill.clicked();
     pill.end();
@@ -324,9 +340,10 @@ fn verb(c: *ui.Context, label: []const u8, icon_name: []const u8) bool {
 }
 
 fn action(s: *app.State, c: *ui.Context, label: []const u8, id: []const u8, name: []const u8, verb_text: []const u8, method: []const u8, comptime path_fmt: []const u8) void {
-    const box = ui.div(c).row().h(26).px(10).itemsCenter().gap(5).rounded(13).bg(c.theme.danger.alpha(0.14)).control();
-    ui.icon(c, "trash", .{ .size = 10, .color = c.theme.danger });
-    ui.text(c, label, .{ .size = 12, .weight = .medium, .color = c.theme.danger });
+    const color = theme.dangerText(c.theme);
+    const box = ui.div(c).row().h(26).px(10).itemsCenter().gap(5).rounded(13).bg(color.alpha(0.14)).control();
+    ui.icon(c, "trash", .{ .size = 10, .color = color });
+    ui.text(c, label, .{ .size = 12, .weight = .medium, .color = color });
     if (box.clicked()) s.confirm(id, name, verb_text, method, path_fmt);
     box.end();
 }

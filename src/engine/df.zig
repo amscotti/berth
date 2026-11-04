@@ -170,6 +170,38 @@ pub const Df = struct {
     pub fn reclaimable(self: Df) i64 {
         return self.reclaimableByStore().total();
     }
+
+    /// Each store as a share of the four that are drawn, clamped at zero the
+    /// way the bars are. The fractions come from one place so a legend and its
+    /// segment cannot disagree about either the colour or the width.
+    pub fn shares(self: Df) Shares {
+        const store = self.stores();
+        const images = @max(0, store.images);
+        const containers = @max(0, store.containers);
+        const volumes = @max(0, store.volumes);
+        const cache = @max(0, store.build_cache);
+        const total = images + containers + volumes + cache;
+        if (total <= 0) return .{};
+        const f: f32 = @floatFromInt(total);
+        return .{
+            .images = @as(f32, @floatFromInt(images)) / f,
+            .containers = @as(f32, @floatFromInt(containers)) / f,
+            .volumes = @as(f32, @floatFromInt(volumes)) / f,
+            .build_cache = @as(f32, @floatFromInt(cache)) / f,
+        };
+    }
+};
+
+/// The four store shares, in the order the bars and legends draw them.
+pub const Shares = struct {
+    images: f32 = 0,
+    containers: f32 = 0,
+    volumes: f32 = 0,
+    build_cache: f32 = 0,
+
+    pub fn total(self: Shares) f32 {
+        return self.images + self.containers + self.volumes + self.build_cache;
+    }
 };
 
 /// The bytes an image holds that no other image shares. `SharedSize` is -1 on
@@ -190,4 +222,22 @@ fn repeatedImageId(images: []const api.Image, at: usize) bool {
         if (std.mem.eql(u8, earlier.Id, id)) return true;
     }
     return false;
+}
+
+test "store shares are proportional to the bytes each store holds" {
+    const df = Df{
+        .ImageUsage = .{ .TotalSize = 50 },
+        .ContainerUsage = .{ .TotalSize = 30 },
+        .VolumeUsage = .{ .TotalSize = 20 },
+    };
+    const shares = df.shares();
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), shares.images, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.3), shares.containers, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.2), shares.volumes, 0.0001);
+    try std.testing.expectEqual(@as(f32, 0), shares.build_cache);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), shares.total(), 0.0001);
+
+    // No measured bytes means no segments, not four equal zero-width slivers.
+    const empty: Df = .{};
+    try std.testing.expectEqual(@as(f32, 0), empty.shares().total());
 }
