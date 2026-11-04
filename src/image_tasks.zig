@@ -5,8 +5,10 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
+const discovery = @import("engine/discovery.zig");
 const image_ops = @import("engine/image_ops.zig");
 const refs = @import("image_refs.zig");
+const session = @import("session.zig");
 
 pub const Pending = enum { none, pull, run };
 
@@ -90,7 +92,10 @@ pub fn prepareRun(s: *app.State, image: []const u8) void {
 }
 
 pub fn startRun(s: *app.State) void {
-    if (s.image_tasks.running()) return;
+    if (s.mutating()) {
+        s.notify("wait for the current engine operation to finish", true);
+        return;
+    }
     var client = s.client orelse {
         s.notify("no engine is selected", true);
         return;
@@ -331,7 +336,10 @@ fn runDone(s: *app.State, job: *RunJob) void {
         s.notifyFmt("{s}", .{refs.firstLine(if (error_text.len > 0) error_text else "could not start the container")}, true);
     }
     if (error_text.len > 0) s.gpa.free(error_text);
-    s.refresh();
+    // Run is a mutation: refresh the new row, unless a queued switch or rescan
+    // supersedes it.
+    s.refresh_wanted = true;
+    session.@"resume"(s);
     s.redraw();
 }
 
@@ -448,6 +456,41 @@ fn jobWith(image: []const u8, name: []const u8, ports: []const u8, volumes: []co
     copyFixed(&job.volumes, &job.volumes_len, volumes);
     copyFixed(&job.env, &job.env_len, env);
     return job;
+}
+
+test "an image run completion refreshes with nothing queued" {
+    const Hook = struct {
+        var starts: usize = 0;
+        fn refresh(_: *app.State) void {
+            starts += 1;
+        }
+        fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !discovery.Found {
+            _ = io;
+            _ = preferred;
+            return .{ .runtimes = try gpa.alloc(discovery.Runtime, 0) };
+        }
+    };
+    Hook.starts = 0;
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+        .auto_refresh = false,
+        .discovery_test = .{ .scan = Hook.scan, .start_refresh = Hook.refresh },
+    };
+    defer state.arena.deinit();
+    defer state.create_dialog.deinit();
+    state.client = api.Client.init(state.io, state.gpa, "/nonexistent/run-refresh.sock");
+
+    const job = try state.gpa.create(RunJob);
+    job.* = .{ .io = state.io, .owner = &state, .ok = true };
+    state.image_tasks.run_job = job;
+    runDone(&state, job);
+
+    try std.testing.expect(state.image_tasks.run_job == null);
+    try std.testing.expect(!state.refresh_wanted);
+    try std.testing.expectEqual(@as(usize, 1), Hook.starts);
 }
 
 test "the create body says only what was asked for" {

@@ -8,6 +8,7 @@ const runtimes = @import("runtimes.zig");
 const ops = @import("ops.zig");
 const logs = @import("logs.zig");
 const bulk = @import("bulk.zig");
+const actions = @import("actions.zig");
 const image_tasks = @import("image_tasks.zig");
 
 pub fn create(gpa: std.mem.Allocator, io: std.Io, nanoapp: *nanoui.App) !*app.State {
@@ -38,6 +39,7 @@ pub fn destroy(s: *app.State) void {
     s.socket_input.deinit();
     ops.cancel(s);
     bulk.discard(s);
+    actions.discard(s);
     image_tasks.cancel(s);
     if (s.job) |job| refresh.discard(s, job);
     s.clearPending();

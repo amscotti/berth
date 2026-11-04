@@ -38,13 +38,15 @@ adopt scan ◄── dispatch main ──────┘
 |---|---|
 | `main.zig` | process entry, window creation, `BERTH_*` harness flags |
 | `boot.zig` | state construction and teardown |
-| `app.zig` | `State`, selection, actions, cleanup, host sampling |
+| `app.zig` | `State`, selection, host sampling, action entry points |
 | `session.zig` | discovery job, runtime choice, socket preference, refresh start |
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
 | `refresh_selection.zig` | re-resolve the inspector selection by id after a snapshot swap |
+| `actions.zig` | one background job for container actions, create and prune |
+| `cleanup.zig` | the cleanup sheet's run, delegating to the action job |
 | `image_tasks.zig` | pull/create/start as background jobs, the create body |
 | `image_refs.zig` | reference, name and port parsing for the creation card |
-| `create.zig` | the volume/network create dialog and its POSTs |
+| `create.zig` | the volume/network create dialog and name validation |
 | `terminal.zig` | the socket-pinned exec command and terminal launch |
 | `tray.zig` | the menu-bar mini-monitor |
 | `snapshot.zig` | a complete engine snapshot and its arena |
@@ -163,10 +165,13 @@ sections of `app.zig`.
 - Formatting, history windows, tab/filter parsing, settings JSON, sorting
   comparators for all four tables, stack grouping, theme choices, prune routes.
 
-Not unit-tested: the full worker lifecycle (spawn/commit/timer), real socket
-scans, real engine actions/prune, and pixel output. Those are exercised by the
-headless `BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT`/`BERTH_PULL`/`BERTH_RUN_*`
-harness and by running against a live engine. `docs/ui/` is the visual evidence.
+Action jobs are tested against the mock engine: a one-shot success and engine
+error, a refused second mutation, create completion on success and failure, and
+prune accumulation when a middle step fails. Not unit-tested: the full worker
+lifecycle (spawn/commit/timer), real socket scans, real engine mutations, and
+pixel output. Those are exercised by the headless
+`BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT`/`BERTH_PULL`/`BERTH_RUN_*` harness and by
+running against a live engine. `docs/ui/` is the visual evidence.
 
 ## Review findings
 
@@ -184,15 +189,19 @@ harness and by running against a live engine. `docs/ui/` is the visual evidence.
 |---|---|---|---|
 | 1 | Stats spawn one thread per running container, capped at 64, every pass | Bounded per pass, but still thread churn on every refresh | Persistent sampler if thread creation shows up in profiles |
 | 2 | Unix-domain `connect` has no deadline | A full listener backlog can hold a worker before the request budget starts | Add a connect deadline where the platform exposes one |
-| 3 | Actions and prune run synchronously on the UI thread | A slow daemon or build-cache prune can stall a frame | Put both behind the job/status pattern |
-| 4 | No pixel-regression test in CI | Visual regressions still need a human to look | Snapshot every view as an artifact; add a diff gate when stable |
-| 5 | macOS guest RAM belongs to no attributable process | The engine segment is helper-only; the VM's RAM (which holds the containers) sits in "elsewhere" | Documented limitation; Virtualization.framework exposes no per-VM accounting |
+| 3 | No pixel-regression test in CI | Visual regressions still need a human to look | Snapshot every view as an artifact; add a diff gate when stable |
+| 4 | macOS guest RAM belongs to no attributable process | The engine segment is helper-only; the VM's RAM (which holds the containers) sits in "elsewhere" | Documented limitation; Virtualization.framework exposes no per-VM accounting |
 
 Fixed during this review: discovery used to scan sockets on the UI thread, so
 startup or a rescan could block for `3s × stale candidates`; it now runs on a
 worker and the window opens with skeletons. A failed images/volumes/networks
 fetch used to commit an empty list; it now aborts the snapshot and keeps the
-previous one.
+previous one. Container actions, create and prune used to POST from the click
+handler; they now share one action job, and actions, bulk work, image runs and
+engine commands refuse to overlap. An engine switch or rescan waits for any of
+those mutating jobs. Every mutation completion refreshes and then resumes the
+queued switch, rescan or pass through one state machine; the create dialog
+stays open until the engine answers.
 Stats used to top out at eight threads, so nine running containers stretched a
 pass past the refresh period; the pool now runs up to 64 and cancels between
 requests when the job is discarded. Socket reads now share one deadline per

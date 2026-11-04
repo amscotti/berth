@@ -2,6 +2,7 @@
 //! the framework's key-value store is NSUserDefaults on Apple only and keeps
 //! nothing across launches on Linux.
 const std = @import("std");
+const builtin = @import("builtin");
 const nanoui = @import("nanoui");
 
 /// What the user asked for; `.system` follows the desktop.
@@ -57,6 +58,10 @@ pub fn load(gpa: std.mem.Allocator, io: std.Io) Data {
 }
 
 pub fn save(gpa: std.mem.Allocator, io: std.Io, data: Data) !void {
+    // Tests have no isolated data directory; a suite must never overwrite the
+    // developer's real settings just because a state-machine test switches
+    // engines. Production writes normally.
+    if (builtin.is_test) return;
     const path = filePath(gpa, io) catch return error.NoPath;
     defer gpa.free(path);
 

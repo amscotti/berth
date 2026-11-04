@@ -3,6 +3,7 @@
 //! posts one `done` callback to the main queue. The window never waits on an
 //! engine request; it keeps painting the previous snapshot until the swap.
 const std = @import("std");
+const builtin = @import("builtin");
 const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
@@ -17,6 +18,7 @@ const bulk = @import("bulk.zig");
 const refresh_selection = @import("refresh_selection.zig");
 const tray = @import("tray.zig");
 const image_tasks = @import("image_tasks.zig");
+const session = @import("session.zig");
 const host = @import("host/host.zig");
 const Snapshot = @import("snapshot.zig").Snapshot;
 const Stat = stats_pool.Sample;
@@ -52,12 +54,14 @@ pub fn start(s: *app.State) void {
     const socket = s.gpa.dupe(u8, client.socket) catch {
         s.error_text = "out of memory preparing a refresh";
         s.redraw();
+        session.armAutoTick(s);
         return;
     };
     const job = s.gpa.create(Job) catch {
         s.gpa.free(socket);
         s.error_text = "out of memory preparing a refresh";
         s.redraw();
+        session.armAutoTick(s);
         return;
     };
     const completion = s.gpa.create(Completion) catch {
@@ -65,6 +69,7 @@ pub fn start(s: *app.State) void {
         s.gpa.free(socket);
         s.error_text = "out of memory preparing a refresh";
         s.redraw();
+        session.armAutoTick(s);
         return;
     };
     completion.* = .{ .gpa = s.gpa, .job = job };
@@ -91,7 +96,7 @@ pub fn start(s: *app.State) void {
         s.gpa.destroy(job);
         s.error_text = "could not start a refresh";
         s.redraw();
-        if (s.auto_refresh) nanoui.App.after(5000, s, autoTick);
+        session.armAutoTick(s);
         return;
     };
     s.job = job;
@@ -249,7 +254,9 @@ fn done(ctx: ?*anyopaque) callconv(.c) void {
         const spec = s.pending_act;
         s.pending_act = "";
         s.pending_act_saved = spec;
-        if (pendingAct(s)) return; // it started its own refresh
+        // The action job starts its own refresh when it finishes; arming a
+        // second timer here would run a redundant pass over the top of it.
+        if (pendingAct(s)) return;
     }
     scheduleNext(s);
     s.redraw();
@@ -262,27 +269,11 @@ fn cleanup(job: *Job) void {
 }
 
 /// A click that asked for a refresh during this pass gets one immediately;
-/// otherwise the next pass is five seconds after this one finished.
+/// otherwise the next pass is five seconds after this one finished. Queued
+/// engine switches and rescans go through the same state machine as a
+/// mutation's completion.
 fn scheduleNext(s: *app.State) void {
-    if (s.select_wanted) |index| {
-        s.select_wanted = null;
-        s.refresh_wanted = false;
-        s.selectRuntime(index);
-        return;
-    }
-    if (s.discover_wanted) {
-        s.discover_wanted = false;
-        s.refresh_wanted = false;
-        s.discover();
-        return;
-    }
-    if (s.refresh_wanted and s.client != null) {
-        s.refresh_wanted = false;
-        s.refresh();
-        return;
-    }
-    s.refresh_wanted = false;
-    if (s.auto_refresh) nanoui.App.after(5000, s, autoTick);
+    session.@"resume"(s);
 }
 
 /// Stop a job at shutdown: the worker may be inside a socket read, so join it
@@ -398,10 +389,46 @@ pub fn pendingAct(s: *app.State) bool {
     return false;
 }
 
+const Tick = struct {
+    state: *app.State,
+    token: u64,
+};
+
+/// Arms the one automatic pass timer. The flag is set even under the test
+/// runner, which has no event loop; it lets tests prove repeated resumes do
+/// not stack timers without scheduling a callback against a stack state.
+pub fn armAutoTick(s: *app.State) void {
+    if (!s.auto_refresh or s.auto_tick_pending) return;
+    s.auto_tick_pending = true;
+    if (builtin.is_test) return;
+    const tick = s.gpa.create(Tick) catch {
+        s.auto_tick_pending = false;
+        return;
+    };
+    tick.* = .{ .state = s, .token = s.auto_tick_token };
+    nanoui.App.after(5000, tick, tickBridge);
+}
+
+fn tickBridge(ctx: ?*anyopaque) callconv(.c) void {
+    const tick: *Tick = @ptrCast(@alignCast(ctx.?));
+    const s = tick.state;
+    const token = tick.token;
+    s.gpa.destroy(tick);
+    autoTick(s, token);
+}
+
 /// One refresh, then one timer: scheduled from the end of a pass, never on top
-/// of one that is still running.
-pub fn autoTick(ctx: ?*anyopaque) callconv(.c) void {
-    const s: *app.State = @ptrCast(@alignCast(ctx.?));
+/// of one that is still running. `token` proves this callback belongs to the
+/// current chain; an older one stands down and lets the replacement arm.
+pub fn autoTick(s: *app.State, token: u64) void {
+    if (token != s.auto_tick_token) {
+        session.@"resume"(s);
+        return;
+    }
+    s.auto_tick_pending = false;
+    // A mutation owns the next step; its finish refreshes and arms the next
+    // tick, so a pass started here would only validate the pre-mutation state.
+    if (s.mutating()) return;
     // A scan in flight owns the next step; its completion starts the refresh
     // (or schedules the retry). Starting another scan from this timer would
     // replace the first refresh after adoption with a redundant rescan.

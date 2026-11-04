@@ -5,7 +5,6 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const api = @import("engine/api.zig");
-const prune = @import("engine/prune.zig");
 const cleanup_mod = @import("cleanup.zig");
 const inspect = @import("engine/inspect.zig");
 const lifetime = @import("engine/lifetime.zig");
@@ -23,6 +22,7 @@ const tabs = @import("tabs.zig");
 const session = @import("session.zig");
 const ops = @import("ops.zig");
 const bulk = @import("bulk.zig");
+const actions = @import("actions.zig");
 const logs = @import("logs.zig");
 const image_tasks = @import("image_tasks.zig");
 const settings = @import("settings.zig");
@@ -54,13 +54,7 @@ pub const tabFromName = tabs.tabFromName;
 pub const DetailKind = enum { container, image, volume, network };
 
 /// What a cleanup run may remove; volumes and networks are opt-in.
-pub const PruneOptions = struct {
-    containers: bool = true,
-    images: bool = true,
-    volumes: bool = false,
-    networks: bool = false,
-    build_cache: bool = true,
-};
+pub const PruneOptions = actions.PruneOptions;
 
 /// One container's live figures, from a single stats sample.
 pub const Stat = stats_pool.Sample;
@@ -70,13 +64,7 @@ pub const Toast = struct {
     bad: bool = false,
 };
 
-pub const Pending = struct {
-    id: []const u8,
-    name: []const u8,
-    method: []const u8,
-    path: []const u8,
-    verb: []const u8,
-};
+pub const Pending = actions.Pending;
 
 pub const State = struct {
     gpa: std.mem.Allocator,
@@ -94,6 +82,8 @@ pub const State = struct {
     ops: ops.State = .{},
     /// Container checkbox mode and its pending bulk action.
     bulk: bulk.State = .{},
+    /// The one engine mutation in flight, if any.
+    actions: actions.State = .{},
     /// The menu-bar mini-monitor, where the platform has one.
     tray: ?*nanoui.Tray = null,
     /// Pull and run image jobs and their dialog text.
@@ -206,6 +196,13 @@ pub const State = struct {
     host_sample: host.Sample = .{},
     /// Keep sampling on a timer, so the graphs move without a click.
     auto_refresh: bool = true,
+    /// One automatic pass is already scheduled; another resume must not stack
+    /// a second timer that would fire behind the same refresh.
+    auto_tick_pending: bool = false,
+    /// Identifies the tick currently armed. A pass, switch or scan that starts
+    /// later bumps this, so an older callback stands down instead of firing
+    /// seconds after the chain it belongs to was replaced.
+    auto_tick_token: u64 = 0,
 
     error_text: []const u8 = "",
     /// Backs an error copied out of a finished job's arena.
@@ -218,6 +215,13 @@ pub const State = struct {
     pending: ?Pending = null,
     prune_open: bool = false,
     prune_opts: PruneOptions = .{},
+
+    /// True while any background job is changing the engine. Pulling an image
+    /// is a read, so it deliberately does not count; the rest cannot overlap
+    /// without making the toast and follow-up refresh describe the wrong one.
+    pub fn mutating(s: *const State) bool {
+        return s.actions.running() or s.bulk.running() or s.image_tasks.running() or s.ops.running();
+    }
 
     /// The theme to open a window with. `null` means "follow the system",
     /// which the framework does live on macOS; Linux has no such notification
@@ -458,7 +462,9 @@ pub const State = struct {
     pub fn notify(s: *State, text: []const u8, bad: bool) void {
         s.toast = .{ .text = text, .bad = bad };
         s.toast_until = format.now() + 4;
-        nanoui.App.after(4000, s, expireToast);
+        // Tests have no event loop to run the expiry, and the callback would
+        // outlive the state they put on the stack.
+        if (!builtin.is_test) nanoui.App.after(4000, s, expireToast);
         s.redraw();
     }
 
@@ -482,6 +488,10 @@ pub const State = struct {
     }
 
     pub fn openPrune(s: *State) void {
+        if (s.actions.running()) {
+            s.notify(if (actions.pruning(s)) "cleanup is running" else "wait for the current engine operation to finish", true);
+            return;
+        }
         s.prune_open = true;
         s.redraw();
     }
@@ -491,9 +501,8 @@ pub const State = struct {
         s.redraw();
     }
 
-    /// Runs the selected prune endpoints; containers first, then their leavings.
-    /// Lives in `cleanup.zig` beside its dialog; this indirection keeps the
-    /// state machine inside the 600-line rule.
+    /// Starts the cleanup job; containers first, then their leavings. The run
+    /// itself is in `actions.zig` so it cannot hold a frame.
     pub fn runPrune(s: *State) void {
         cleanup_mod.runPrune(s);
     }
@@ -509,74 +518,27 @@ pub const State = struct {
         if (!nanoui.shell.openUrl(url)) s.notify("could not open the browser", true);
     }
 
-    /// Runs one action against the engine, then refreshes. `path` must already
-    /// carry the container's id — `actFmt` formats it. Returns whether a
-    /// refresh was actually started, so a caller that also owns the timer does
-    /// not re-arm it over the top of the new pass.
+    /// Runs one action on the action worker. Returns whether the job started,
+    /// so the refresh harness does not arm a timer over the pass the action
+    /// will request when it finishes.
     pub fn act(s: *State, method: []const u8, path: []const u8, verb: []const u8) bool {
-        var client = s.client orelse return false;
-        client.action(method, path) catch {
-            // The engine usually names the problem ("cannot pause a stopped
-            // container"); show its words rather than a generic failure.
-            if (client.err_body.len > 0) {
-                s.notifyFmt("{s}", .{client.err_body}, true);
-            } else {
-                s.notify("action failed", true);
-            }
-            return false;
-        };
-        s.notify(verb, false);
-        s.refresh();
-        return true;
+        return actions.act(s, method, path, verb);
     }
 
-    /// `act` with the path formatted at the call site, the way `confirm` does:
-    /// a literal `"{s}"` passed through `act` would reach the engine unexpanded.
     pub fn actFmt(s: *State, method: []const u8, comptime path_fmt: []const u8, id: []const u8, verb: []const u8) bool {
-        var buf: [160]u8 = undefined;
-        const path = std.fmt.bufPrint(&buf, path_fmt, .{id}) catch return false;
-        return s.act(method, path, verb);
+        return actions.actFmt(s, method, path_fmt, id, verb);
     }
 
     pub fn confirm(s: *State, id: []const u8, name: []const u8, verb: []const u8, method: []const u8, comptime path_fmt: []const u8) void {
-        const path = std.fmt.allocPrint(s.gpa, path_fmt, .{id}) catch return;
-        const id_copy = s.gpa.dupe(u8, id) catch {
-            s.gpa.free(path);
-            return;
-        };
-        const name_copy = s.gpa.dupe(u8, name) catch {
-            s.gpa.free(path);
-            s.gpa.free(id_copy);
-            return;
-        };
-        s.clearPending();
-        s.pending = .{
-            .id = id_copy,
-            .name = name_copy,
-            .method = method,
-            .path = path,
-            .verb = verb,
-        };
-        s.redraw();
+        actions.confirm(s, id, name, verb, method, path_fmt);
     }
 
     pub fn clearPending(s: *State) void {
-        const p = s.pending orelse return;
-        s.pending = null;
-        s.gpa.free(p.id);
-        s.gpa.free(p.name);
-        s.gpa.free(p.path);
+        actions.clearPending(s);
     }
 
     pub fn resolvePending(s: *State, ok: bool) void {
-        const p = s.pending orelse return;
-        s.pending = null;
-        if (ok) {
-            _ = s.act(p.method, p.path, p.verb);
-        } else s.redraw();
-        s.gpa.free(p.id);
-        s.gpa.free(p.name);
-        s.gpa.free(p.path);
+        actions.resolvePending(s, ok);
     }
 };
 

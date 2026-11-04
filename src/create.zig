@@ -5,6 +5,7 @@ const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("app.zig");
+const actions = @import("actions.zig");
 const create_ops = @import("engine/create.zig");
 const widgets = @import("ui/widgets.zig");
 
@@ -13,6 +14,9 @@ pub const Kind = enum { volume, network };
 pub const State = struct {
     open: ?Kind = null,
     name: ui.TextBuffer = .{},
+    /// Rises on every open/close so a job can tell whether it still owns the
+    /// form it submitted, rather than closing a newer one that looks alike.
+    generation: u64 = 0,
 
     pub fn deinit(self: *State) void {
         self.name.deinit();
@@ -26,6 +30,7 @@ pub fn open(s: *app.State, kind: Kind) void {
     s.bulk.project_len = 0;
     s.prune_open = false;
     s.create_dialog.open = kind;
+    s.create_dialog.generation +%= 1;
     s.create_dialog.name.clear();
     s.create_dialog.name.focus();
     s.redraw();
@@ -33,15 +38,16 @@ pub fn open(s: *app.State, kind: Kind) void {
 
 pub fn close(s: *app.State) void {
     s.create_dialog.open = null;
+    s.create_dialog.generation +%= 1;
     s.redraw();
 }
 
 pub fn submit(s: *app.State) void {
     const kind = s.create_dialog.open orelse return;
-    var client = s.client orelse {
+    if (s.client == null) {
         s.notify("no engine is selected", true);
         return;
-    };
+    }
     const name = s.create_dialog.name.text();
     if (!create_ops.validName(name)) {
         s.notifyFmt("a {s} name is 2–128 letters, digits, dot, dash or underscore, starting with a letter or digit", .{noun(kind)}, true);
@@ -57,21 +63,12 @@ pub fn submit(s: *app.State) void {
             }
         }
     }
-    const result = switch (kind) {
-        .volume => create_ops.volume(&client, name),
-        .network => create_ops.network(&client, name),
-    };
-    result catch {
-        s.notifyFmt("could not create the {s}: {s}", .{
-            noun(kind),
-            if (client.err_body.len > 0) client.err_body else "the engine did not answer",
-        }, true);
-        return;
-    };
-    s.create_dialog.open = null;
-    s.notifyFmt("{s} {s} created", .{ if (kind == .volume) "Volume" else "Network", name }, false);
-    s.refresh();
-    s.redraw();
+    // The dialog stays open until the worker reports: a success closes it, a
+    // failure leaves the typed name in place to correct or retry.
+    _ = actions.create(s, switch (kind) {
+        .volume => .volume,
+        .network => .network,
+    }, name);
 }
 
 fn noun(kind: Kind) []const u8 {
@@ -108,8 +105,25 @@ pub fn dialog(s: *app.State, c: *ui.Context) void {
     buttons.end();
 }
 
-
 test "the dialog names its target" {
     try std.testing.expectEqualStrings("volume", noun(.volume));
     try std.testing.expectEqualStrings("network", noun(.network));
+}
+
+test "opening and closing a form advances its generation" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+    defer state.create_dialog.deinit();
+
+    open(&state, .volume);
+    const first = state.create_dialog.generation;
+    close(&state);
+    try std.testing.expectEqual(first + 1, state.create_dialog.generation);
+    open(&state, .network);
+    try std.testing.expectEqual(first + 2, state.create_dialog.generation);
 }

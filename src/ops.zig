@@ -6,6 +6,7 @@ const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const command = @import("engine/command.zig");
 const discovery = @import("engine/discovery.zig");
+const session = @import("session.zig");
 
 /// GUI apps inherit a minimal PATH; the container tools live in Homebrew and
 /// Podman's own prefix. `env` resolves the tool against this list.
@@ -62,8 +63,8 @@ pub fn supported(kind: discovery.Kind) bool {
 }
 
 pub fn start(s: *app.State, verb: Verb, kind: discovery.Kind, socket: []const u8) void {
-    if (s.ops.running()) {
-        s.notify("An engine command is already running", true);
+    if (s.mutating()) {
+        s.notify("wait for the current engine operation to finish", true);
         return;
     }
 
@@ -147,9 +148,18 @@ fn finish(ctx: ?*anyopaque) callconv(.c) void {
 
     if (restart_after_stop and ok) {
         start(s, .start, s.ops.target_kind, restartSocket(s));
+        // If the second half could not spawn, still rescan and release any
+        // switch or scan queued behind the restart.
+        if (s.ops.job == null) {
+            s.discover_wanted = true;
+            session.@"resume"(s);
+        }
         return;
     }
-    s.discover();
+    // An engine command always invalidates the scan; queue it through the
+    // same resume path so a pending switch or refresh is not overtaken.
+    s.discover_wanted = true;
+    session.@"resume"(s);
 }
 
 fn firstLine(text: []const u8) []const u8 {

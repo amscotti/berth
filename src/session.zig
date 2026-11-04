@@ -47,6 +47,12 @@ pub const Job = struct {
 
 pub fn selectRuntime(s: *app.State, index: usize) void {
     if (index >= s.runtimes.len) return;
+    if (s.mutating()) {
+        // The mutation still talks to the engine on screen. Switch after it
+        // finishes, through the resume that its completion runs.
+        s.select_wanted = index;
+        return;
+    }
     if (s.discovery_job != null) {
         s.notify("Wait for engine discovery to finish", true);
         return;
@@ -81,6 +87,12 @@ pub fn selectRuntime(s: *app.State, index: usize) void {
 /// every rescan. The old runtimes and client stay usable until the result is
 /// adopted, so a rescan keeps painting the current engine.
 pub fn discover(s: *app.State) void {
+    if (s.mutating()) {
+        // Adopting a different engine would move the client under the job in
+        // flight. Run the scan once that job has reported.
+        s.discover_wanted = true;
+        return;
+    }
     if (s.job != null or s.discovery_job != null) {
         // A rescan/forget clicked mid-pass runs as soon as that pass ends.
         s.discover_wanted = true;
@@ -91,6 +103,9 @@ pub fn discover(s: *app.State) void {
 }
 
 fn start(s: *app.State) void {
+    // A scan is a new chain; an armed automatic pass belongs to the old one.
+    s.auto_tick_token +%= 1;
+    s.auto_tick_pending = false;
     const preferred = s.gpa.dupe(u8, s.preferred_socket orelse "") catch {
         startFailed(s, "out of memory preparing a scan");
         return;
@@ -167,6 +182,16 @@ pub fn done(ctx: ?*anyopaque) callconv(.c) void {
         return;
     }
     s.discovery_job = null;
+    if (s.mutating()) {
+        // The scan is stale the moment a mutation starts: keep the engine on
+        // screen until it reports, then scan again rather than moving its
+        // toast and refresh onto a different engine.
+        s.discover_wanted = true;
+        cleanup(job);
+        tray.update(s);
+        s.redraw();
+        return;
+    }
     adopt(s, job);
     cleanup(job);
     tray.update(s);
@@ -340,6 +365,9 @@ pub fn refresh(s: *app.State) void {
         s.refresh_wanted = true;
         return;
     }
+    // A new pass replaces whatever tick was waiting on the old chain.
+    s.auto_tick_token +%= 1;
+    s.auto_tick_pending = false;
     if (s.discovery_test) |hook| {
         if (hook.start_refresh) |start_refresh| {
             start_refresh(s);
@@ -347,6 +375,41 @@ pub fn refresh(s: *app.State) void {
         }
     }
     refresh_mod.start(s);
+}
+
+/// Runs whatever a finished mutation or pass left queued, in priority order:
+/// an engine switch, then a rescan, then a refresh. A mutation or pass that is
+/// still running keeps the queue and calls this again when it finishes, so a
+/// deferred choice is not lost and no second timer is armed. With nothing
+/// queued, this is the one place that arms the next automatic pass.
+pub fn @"resume"(s: *app.State) void {
+    if (s.mutating()) return; // that mutation's finish calls resume
+    if (s.job != null or s.discovery_job != null) return; // their done calls resume
+    if (s.select_wanted) |index| {
+        s.select_wanted = null;
+        s.refresh_wanted = false;
+        selectRuntime(s, index);
+        return;
+    }
+    if (s.discover_wanted) {
+        s.discover_wanted = false;
+        s.refresh_wanted = false;
+        discover(s);
+        return;
+    }
+    if (s.refresh_wanted and s.client != null) {
+        s.refresh_wanted = false;
+        refresh(s);
+        return;
+    }
+    s.refresh_wanted = false;
+    armAutoTick(s);
+}
+
+/// The queue's timer entry point; the tick body and its token live beside the
+/// refresh completion that owns the cadence.
+pub fn armAutoTick(s: *app.State) void {
+    refresh_mod.armAutoTick(s);
 }
 
 /// Two seconds: probes run together and candidates are filtered to sockets

@@ -7,6 +7,8 @@ const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
 const bulk_batch = @import("bulk_batch.zig");
+const discovery = @import("engine/discovery.zig");
+const session = @import("session.zig");
 
 const max = bulk_batch.max;
 const id_len = bulk_batch.id_len;
@@ -83,7 +85,10 @@ pub fn start(s: *app.State, route: Route, ids: []const []const u8, project: []co
     s.bulk.pending = null;
     s.bulk.pending_batch.count = 0;
     s.bulk.project_len = 0;
-    if (s.bulk.running()) return false;
+    if (s.mutating()) {
+        s.notify("wait for the current engine operation to finish", true);
+        return false;
+    }
     if (ids.len == 0 or ids.len > max) return false;
     var client = s.client orelse {
         s.notify("no engine is selected", true);
@@ -229,7 +234,10 @@ fn finish(job: *Job) void {
         s.notifyFmt("{s} {d} of {d} containers", .{ done.route.verb(), done.done, done.total }, true);
         if (done.error_text.len > 0) s.notifyFmt("{s}", .{firstLine(done.error_text)}, true);
     }
-    s.refresh();
+    // Even with nothing queued, the rows just changed; resume must refresh,
+    // not merely arm the next automatic tick.
+    s.refresh_wanted = true;
+    session.@"resume"(s);
     s.redraw();
 }
 
@@ -332,6 +340,40 @@ test "canceling still completes; only teardown goes quiet" {
     // Teardown is the only reason to stay quiet.
     job.abandoned.store(true, .release);
     try std.testing.expect(!completionWanted(job));
+}
+
+test "a bulk completion refreshes with nothing queued" {
+    const Hook = struct {
+        var starts: usize = 0;
+        fn refresh(_: *app.State) void {
+            starts += 1;
+        }
+        fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !discovery.Found {
+            _ = io;
+            _ = preferred;
+            return .{ .runtimes = try gpa.alloc(discovery.Runtime, 0) };
+        }
+    };
+    Hook.starts = 0;
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+        .auto_refresh = false,
+        .discovery_test = .{ .scan = Hook.scan, .start_refresh = Hook.refresh },
+    };
+    defer state.arena.deinit();
+    defer state.create_dialog.deinit();
+    state.client = api.Client.init(state.io, state.gpa, "/nonexistent/bulk-refresh.sock");
+
+    const job = try fakeJob(&state);
+    state.bulk.job = job;
+    finish(job);
+
+    try std.testing.expect(state.bulk.job == null);
+    try std.testing.expect(!state.refresh_wanted);
+    try std.testing.expectEqual(@as(usize, 1), Hook.starts);
 }
 
 test "teardown drops the job without leaving a Canceling bar" {
