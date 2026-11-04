@@ -20,7 +20,7 @@ pub fn volume(client: *api.Client, name: []const u8) !void {
     const body = try std.fmt.bufPrint(&buf, "{{\"Name\":\"{s}\"}}", .{name});
     // Same budget as a single action: a create on a healthy engine is
     // milliseconds, and the dialog must not hold the frame for longer.
-    const response = try client.callOptsTimeout("POST", "/volumes/create", body, 1 << 20, false, 5);
+    const response = try client.callOptsTimeout("POST", "/volumes/create", body, 1 << 20, false, 5, false);
     client.gpa.free(response);
 }
 
@@ -29,7 +29,7 @@ pub fn network(client: *api.Client, name: []const u8) !void {
     // CheckDuplicate turns a second create with the same name into the
     // engine's own 409 instead of a silently duplicated bridge network.
     const body = try std.fmt.bufPrint(&buf, "{{\"Name\":\"{s}\",\"CheckDuplicate\":true}}", .{name});
-    const response = try client.callOptsTimeout("POST", "/networks/create", body, 1 << 20, false, 5);
+    const response = try client.callOptsTimeout("POST", "/networks/create", body, 1 << 20, false, 5, false);
     client.gpa.free(response);
 }
 

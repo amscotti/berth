@@ -19,7 +19,7 @@ pub fn pullPath(buf: []u8, from: []const u8, tag: []const u8) ![]const u8 {
 pub fn pull(client: *api.Client, from: []const u8, tag: []const u8) ![]const u8 {
     var buf: [320]u8 = undefined;
     const p = try pullPath(&buf, from, tag);
-    return client.callOptsTimeout("POST", p, "", 4 << 20, false, 900);
+    return client.callOptsTimeout("POST", p, "", 4 << 20, false, 900, false);
 }
 
 pub fn create(client: *api.Client, name: []const u8, body: []const u8) !Created {
@@ -31,7 +31,7 @@ pub fn create(client: *api.Client, name: []const u8, body: []const u8) !Created 
     else
         try client.gpa.dupe(u8, "/containers/create");
     defer client.gpa.free(p);
-    const response = try client.callOptsTimeout("POST", p, body, 1 << 20, false, 30);
+    const response = try client.callOptsTimeout("POST", p, body, 1 << 20, false, 30, false);
     defer client.gpa.free(response);
     // The parsed Id must outlive `response`, which is freed above: without
     // alloc_always it would point into the freed buffer.
@@ -44,7 +44,8 @@ pub fn create(client: *api.Client, name: []const u8, body: []const u8) !Created 
 pub fn start(client: *api.Client, id: []const u8) !void {
     const p = try std.fmt.allocPrint(client.gpa, "/containers/{s}/start", .{id});
     defer client.gpa.free(p);
-    const body = try client.callOptsTimeout("POST", p, "", 1 << 20, false, 30);
+    // This is a lifecycle call: an already-running container answers 304.
+    const body = try client.callOptsTimeout("POST", p, "", 1 << 20, false, 30, true);
     client.gpa.free(body);
 }
 

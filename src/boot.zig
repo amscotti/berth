@@ -28,7 +28,7 @@ pub fn destroy(s: *app.State) void {
     if (s.last_engine_socket) |p| s.gpa.free(p);
     s.socket_input.deinit();
     ops.cancel(s);
-    bulk.cancel(s);
+    bulk.discard(s);
     image_tasks.cancel(s);
     if (s.job) |job| refresh.discard(job);
     s.clearPending();

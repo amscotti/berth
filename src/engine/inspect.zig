@@ -27,7 +27,7 @@ pub fn path(buf: []u8, kind: Kind, id: []const u8) ![]const u8 {
 pub fn fetch(client: *api.Client, kind: Kind, id: []const u8, gpa: std.mem.Allocator) ![]u8 {
     var buf: [320]u8 = undefined;
     const p = try path(&buf, kind, id);
-    const body = try client.callOptsTimeout("GET", p, "", 1 << 20, false, 3);
+    const body = try client.callOptsTimeout("GET", p, "", 1 << 20, false, 3, false);
     defer gpa.free(body);
     return gpa.dupe(u8, body);
 }

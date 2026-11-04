@@ -2,7 +2,97 @@
 //! the implementation stays inside the 600-line rule.
 const std = @import("std");
 const api = @import("api.zig");
+const image_ops = @import("image_ops.zig");
 const volumes_mod = @import("volumes.zig");
+const Io = std.Io;
+
+/// One-shot engine socket: accepts one connection, reads its request head,
+/// writes `response`, and closes. Engines answer 304 with no body, so status
+/// handling can be exercised without a running daemon.
+const OneShot = struct {
+    io: Io,
+    listener: *Io.net.Server,
+    response: []const u8,
+    failure: ?anyerror = null,
+    thread: ?std.Thread = null,
+
+    fn serve(self: *OneShot) void {
+        const stream = self.listener.accept(self.io) catch |e| {
+            self.failure = e;
+            return;
+        };
+        defer stream.socket.close(self.io);
+        var head: [2048]u8 = undefined;
+        var len: usize = 0;
+        while (std.mem.indexOf(u8, head[0..len], "\r\n\r\n") == null) {
+            if (len == head.len) break;
+            const n = std.posix.read(stream.socket.handle, head[len..]) catch |e| {
+                self.failure = e;
+                return;
+            };
+            if (n == 0) break;
+            len += n;
+        }
+        const file = Io.File{ .handle = stream.socket.handle, .flags = .{ .nonblocking = false } };
+        file.writeStreamingAll(self.io, self.response) catch |e| {
+            self.failure = e;
+        };
+    }
+
+    fn start(self: *OneShot) !void {
+        self.thread = try std.Thread.spawn(.{}, serve, .{self});
+    }
+
+    fn finish(self: *OneShot) !void {
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
+        }
+        if (self.failure) |e| return e;
+    }
+};
+
+test "a 304 is an action success but not a body-parsing success" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var client = api.Client.init(std.testing.io, std.testing.allocator, path);
+    client.alloc = arena.allocator();
+
+    const not_modified = "HTTP/1.1 304 Not Modified\r\n\r\n";
+
+    var strict: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = not_modified };
+    try strict.start();
+    defer strict.finish() catch {};
+    try std.testing.expectError(
+        error.EngineError,
+        client.callOptsTimeout("POST", "/images/create?fromImage=x", "", 1 << 20, false, 3, false),
+    );
+    try strict.finish();
+
+    var action: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = not_modified };
+    try action.start();
+    defer action.finish() catch {};
+    try client.action("POST", "/containers/abc/start");
+    try action.finish();
+
+    // The Run dialog starts the container it just created through image_ops.
+    var run: OneShot = .{ .io = std.testing.io, .listener = &listener, .response = not_modified };
+    try run.start();
+    defer run.finish() catch {};
+    try image_ops.start(&client, "def");
+    try run.finish();
+}
 
 test "a container's compose labels" {
     const json =

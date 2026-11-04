@@ -13,6 +13,7 @@ const stats_pool = @import("stats_pool.zig");
 const engine_events = @import("engine/events.zig");
 const events_feed = @import("events_feed.zig");
 const logs = @import("logs.zig");
+const bulk = @import("bulk.zig");
 const tray = @import("tray.zig");
 const image_tasks = @import("image_tasks.zig");
 const host = @import("host/host.zig");
@@ -263,6 +264,9 @@ fn commit(s: *app.State, job: *Job) void {
     snap.arena = .init(job.gpa); // the arena now belongs to the state
 
     s.containers = snap.containers;
+    // Once per snapshot, not once per frame: a checkbox tick that survives
+    // the refresh must still name a row the engine lists.
+    s.bulk.retain(s.containers);
     s.stats = snap.stats;
     s.images = snap.images;
     s.volumes = snap.volumes;

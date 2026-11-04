@@ -48,10 +48,9 @@ pub const Client = struct {
         return std.fmt.allocPrint(gpa, "/{s}{s}", .{ self.api, p });
     }
 
-    /// One request, one response, connection closed. The body is owned.
-    /// `p` is prefixed with the negotiated API version unless `raw` is set.
+    /// One request, one response, connection closed; body owned. `p` gets the API prefix unless `raw`.
     pub fn callOpts(self: *Client, method: []const u8, p: []const u8, body: []const u8, max: usize, raw: bool) ![]u8 {
-        return self.callOptsTimeout(method, p, body, max, raw, http.Conn.io_timeout_sec);
+        return self.callOptsTimeout(method, p, body, max, raw, http.Conn.io_timeout_sec, false);
     }
 
     pub fn callOptsTimeout(
@@ -62,6 +61,7 @@ pub const Client = struct {
         max: usize,
         raw: bool,
         seconds: isize,
+        allow_not_modified: bool, // lifecycle calls: 304 means "already there"
     ) ![]u8 {
         var conn = try http.Conn.openTimeout(self.io, self.socket, seconds);
         defer conn.close();
@@ -73,7 +73,7 @@ pub const Client = struct {
         }
         defer self.gpa.free(full);
         const res = try conn.request(self.gpa, method, full, body, max);
-        if (!res.ok()) {
+        if (!res.okFor(method, allow_not_modified)) {
             // Keep what the engine said: it is usually the whole diagnosis
             // ("client version 1.43 is too old"). Engines wrap it as
             // {"message":"…"}; unwrap when they do so the UI shows words, not
@@ -106,7 +106,7 @@ pub const Client = struct {
     }
 
     fn getOptsTimeout(self: *Client, comptime T: type, p: []const u8, raw: bool, seconds: isize) !T {
-        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, raw, seconds);
+        const body = try self.callOptsTimeout("GET", p, "", 8 * 1024 * 1024, raw, seconds, false);
         defer self.gpa.free(body);
         const parsed = std.json.parseFromSliceLeaky(T, self.alloc, body, .{
             .ignore_unknown_fields = true,
@@ -165,7 +165,7 @@ pub const Client = struct {
         defer self.gpa.free(p);
         // Short: a VM whose clock trails the host can hold this open until it
         // catches up, and that must cost one pass, not the whole chain.
-        return self.callOptsTimeout("GET", p, "", 4 << 20, false, 3);
+        return self.callOptsTimeout("GET", p, "", 4 << 20, false, 3, false);
     }
 
     pub fn df(self: *Client) !Df {
@@ -200,9 +200,9 @@ pub const Client = struct {
         return self.get(ContainerDetail, p);
     }
 
-    /// Lifecycle and maintenance. Returns the engine's message on failure.
+    /// Lifecycle and maintenance; only this call treats 304 as "already there".
     pub fn action(self: *Client, method: []const u8, p: []const u8) !void {
-        const body = self.call(method, p, "", 1 << 20) catch |e| return e;
+        const body = self.callOptsTimeout(method, p, "", 1 << 20, false, http.Conn.io_timeout_sec, true) catch |e| return e;
         self.gpa.free(body);
     }
 };

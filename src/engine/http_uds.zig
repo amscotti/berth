@@ -35,6 +35,16 @@ pub const Response = struct {
     pub fn ok(self: Response) bool {
         return self.status >= 200 and self.status < 300;
     }
+
+    /// A lifecycle POST answers 304 when the container is already in the state
+    /// the call asks for ("already started"), which is the outcome the user
+    /// wanted. Only callers that pass `allow_not_modified` accept it: a 304
+    /// carries no body, so a body-parsing call must keep treating it as an
+    /// error rather than parse nothing as data.
+    pub fn okFor(self: Response, method: []const u8, allow_not_modified: bool) bool {
+        if (self.ok()) return true;
+        return allow_not_modified and self.status == 304 and std.mem.eql(u8, method, "POST");
+    }
 };
 
 /// One connection to an engine socket. Not thread safe; one per request, or
@@ -276,6 +286,26 @@ test "a bare status line is a valid empty response" {
     defer res.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 304), res.status);
     try std.testing.expectEqualStrings("", res.body);
+}
+
+test "a 304 succeeds only for an opted-in action POST" {
+    // Engines answer this for "already started" / "already stopped".
+    const not_modified = try decode(std.testing.allocator, "HTTP/1.1 304 Not Modified\r\n\r\n", 1024);
+    defer not_modified.deinit(std.testing.allocator);
+    try std.testing.expect(not_modified.okFor("POST", true));
+    // A body-parsing POST has nothing to parse here, and a GET never has a
+    // representation to fall back on.
+    try std.testing.expect(!not_modified.okFor("POST", false));
+    try std.testing.expect(!not_modified.okFor("GET", true));
+    try std.testing.expect(!not_modified.okFor("DELETE", true));
+
+    const no_content = try decode(std.testing.allocator, "HTTP/1.1 204 No Content\r\n\r\n", 1024);
+    defer no_content.deinit(std.testing.allocator);
+    try std.testing.expect(no_content.okFor("GET", false));
+
+    const conflict = try decode(std.testing.allocator, "HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\n\r\n", 1024);
+    defer conflict.deinit(std.testing.allocator);
+    try std.testing.expect(!conflict.okFor("POST", true));
 }
 
 test "content-length wins over trailing bytes" {

@@ -7,41 +7,17 @@ const ui = nanoui.ui;
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
 const widgets = @import("ui/widgets.zig");
+const bulk_batch = @import("bulk_batch.zig");
+const bulk_action = @import("bulk_action.zig");
 
-pub const max = 512;
-const id_len = 64;
+pub const max = bulk_batch.max;
+const id_len = bulk_batch.id_len;
 
-pub const Route = enum {
-    start,
-    stop,
-    delete,
-
-    pub fn verb(self: Route) []const u8 {
-        return switch (self) {
-            .start => "Started",
-            .stop => "Stopped",
-            .delete => "Deleted",
-        };
-    }
-
-    pub fn word(self: Route) []const u8 {
-        return switch (self) {
-            .start => "Start",
-            .stop => "Stop",
-            .delete => "Delete",
-        };
-    }
-
-    fn method(self: Route) []const u8 {
-        return switch (self) {
-            .start, .stop => "POST",
-            .delete => "DELETE",
-        };
-    }
-};
+pub const Route = bulk_action.Route;
+const Job = bulk_action.Job;
+const plural = bulk_action.plural;
 
 pub const Pending = struct {
-    count: usize,
     route: Route,
 };
 
@@ -51,7 +27,11 @@ pub const State = struct {
     lens: [max]u8 = undefined,
     count: usize = 0,
     pending: ?Pending = null,
+    /// Frozen when a confirmation opens; later ticks or a refresh cannot change it.
+    pending_batch: bulk_batch.Batch = .{},
     job: ?*Job = null,
+    /// Set by Cancel while the worker stops between items; the bar reads it.
+    canceling: bool = false,
     /// The project a pending start/stop-all belongs to, copied so a refresh
     /// that rotates the label arena cannot make the dialog point at freed
     /// text before the user confirms.
@@ -71,6 +51,9 @@ pub const State = struct {
     }
 
     pub fn toggle(self: *State, container_id: []const u8) void {
+        // An open confirmation names a frozen set: a tick behind the inline
+        // dialog would make its count and the Confirm button disagree.
+        if (self.pending != null) return;
         for (0..self.count) |i| {
             if (!std.mem.eql(u8, self.id(i), container_id)) continue;
             const last = self.count - 1;
@@ -88,16 +71,32 @@ pub const State = struct {
         self.count += 1;
     }
 
-    /// Leaves selection mode; a Cancel and an engine switch both use it.
-    pub fn clear(self: *State) void {
-        self.enabled = false;
+    /// Turns checkbox mode on or off. Leaving it drops the batch, as Cancel
+    /// does; entering it starts empty so ids from an earlier batch cannot come
+    /// back without being ticked again.
+    pub fn setEnabled(self: *State, on: bool) void {
+        self.enabled = on;
         self.count = 0;
         self.pending = null;
+        self.pending_batch.count = 0;
         self.project_len = 0;
     }
 
+    /// The Select chip. It must not go through `clear`, which would turn the
+    /// mode back off on the same click.
+    pub fn toggleMode(self: *State) void {
+        self.setEnabled(!self.enabled);
+    }
+
+    /// Leaves selection mode; a Cancel and an engine switch both use it.
+    pub fn clear(self: *State) void {
+        self.setEnabled(false);
+    }
+
     /// Drop selections that no longer exist, so a refresh cannot leave the
-    /// toolbar promising to stop a container the engine no longer has.
+    /// toolbar promising to stop a container the engine no longer has. The
+    /// open confirmation shrinks with them, so its count cannot promise a row
+    /// that resolve will then have to skip.
     pub fn retain(self: *State, containers: []const api.Container) void {
         var kept: usize = 0;
         for (0..self.count) |i| {
@@ -117,6 +116,7 @@ pub const State = struct {
             kept += 1;
         }
         self.count = kept;
+        self.pending_batch.retain(containers);
     }
 
     pub fn running(self: *const State) bool {
@@ -134,42 +134,33 @@ pub fn runningLabel(state: *const State) []const u8 {
     };
 }
 
-const Job = struct {
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    route: Route,
-    total: usize,
-    done: usize = 0,
-    socket: [512]u8 = undefined,
-    socket_len: usize = 0,
-    api_version: [16]u8 = undefined,
-    api_len: usize = 0,
-    ids: [max][id_len]u8 = undefined,
-    lens: [max]u8 = undefined,
-    count: usize,
-    first_error: []const u8 = "",
-    /// The Compose project this batch belongs to, for the completion toast.
-    project: [128]u8 = undefined,
-    project_len: usize = 0,
-    thread: ?std.Thread = null,
-    canceled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-};
-
 pub fn startSelected(s: *app.State) void {
-    var ids: [max][]const u8 = undefined;
-    const n = selection(s, &ids);
-    if (startBatch(s, .start, ids[0..n], "")) s.bulk.clear();
+    if (runSelected(s, .start)) s.bulk.clear();
 }
 
 pub fn stopSelected(s: *app.State) void {
+    var ids: [max][]const u8 = undefined;
+    const n = selectedIds(s.containers, &s.bulk, .stop, &ids);
+    if (n == 0) {
+        noChange(s, .stop);
+        return;
+    }
     s.bulk.project_len = 0;
-    s.bulk.pending = .{ .count = s.bulk.count, .route = .stop };
+    s.bulk.pending_batch.snapshot(ids[0..n]);
+    s.bulk.pending = .{ .route = .stop };
     s.redraw();
 }
 
 pub fn deleteSelected(s: *app.State) void {
+    var ids: [max][]const u8 = undefined;
+    const n = selectedIds(s.containers, &s.bulk, .delete, &ids);
+    if (n == 0) {
+        noChange(s, .delete);
+        return;
+    }
     s.bulk.project_len = 0;
-    s.bulk.pending = .{ .count = s.bulk.count, .route = .delete };
+    s.bulk.pending_batch.snapshot(ids[0..n]);
+    s.bulk.pending = .{ .route = .delete };
     s.redraw();
 }
 
@@ -178,7 +169,7 @@ pub fn deleteSelected(s: *app.State) void {
 pub fn startProject(s: *app.State, project: []const u8) void {
     var ids: [max][]const u8 = undefined;
     const n = projectIds(s.containers, project, .start, &ids);
-    _ = startBatch(s, .start, ids[0..n], project);
+    _ = bulk_action.start(s, .start, ids[0..n], project);
 }
 
 /// "Stop all" goes through the confirmation: it changes several containers at
@@ -190,7 +181,7 @@ pub fn stopProject(s: *app.State, project: []const u8) void {
     if (n == 0) return;
     s.bulk.project_len = project.len;
     @memcpy(s.bulk.project[0..s.bulk.project_len], project);
-    s.bulk.pending = .{ .count = n, .route = .stop };
+    s.bulk.pending = .{ .route = .stop };
     s.redraw();
 }
 
@@ -211,7 +202,7 @@ pub fn resolve(s: *app.State, ok: bool) void {
             s.notifyFmt("nothing to {s} in {s}", .{ pending.route.word(), project }, true);
             return;
         }
-        _ = startBatch(s, pending.route, ids[0..n], project);
+        _ = bulk_action.start(s, pending.route, ids[0..n], project);
         return;
     }
     startJob(s, pending.route);
@@ -224,24 +215,54 @@ pub fn countProject(s: *app.State, project: []const u8, route: Route) usize {
     return projectIds(s.containers, project, route, &ids);
 }
 
-fn selection(s: *app.State, out: *[max][]const u8) usize {
-    const n = @min(s.bulk.count, max);
-    for (0..n) |i| out[i] = s.bulk.id(i);
+/// The selected rows the route would actually change, in selection order.
+/// Rows the engine no longer lists are skipped, like `retain` would have done.
+fn selectedIds(containers: []const api.Container, state: *const State, route: Route, out: *[max][]const u8) usize {
+    var n: usize = 0;
+    for (0..state.count) |i| {
+        const id = state.id(i);
+        const ct = findContainer(containers, id) orelse continue;
+        if (!route.changes(ct.isUp())) continue;
+        out[n] = id;
+        n += 1;
+    }
     return n;
 }
 
-/// The project's containers that the route would actually change; a stopped
-/// container cannot be stopped again, and one that is up cannot be started.
-/// Paused counts as up, exactly as the engine reports it.
+fn findContainer(containers: []const api.Container, id: []const u8) ?*const api.Container {
+    for (containers) |*ct| {
+        if (std.mem.eql(u8, ct.Id, id)) return ct;
+    }
+    return null;
+}
+
+/// A batch with nothing to change is not a failure, so it does not flash
+/// "Started 0 containers" in red. The reason stays neutral: paused and
+/// vanished rows are not "already running" or "already stopped".
+fn noChange(s: *app.State, route: Route) void {
+    s.notifyFmt("nothing to {s}: no selected container needs it", .{@tagName(route)}, false);
+}
+
+/// Sends the selection through the worker, filtered to what the route changes.
+fn runSelected(s: *app.State, route: Route) bool {
+    var ids: [max][]const u8 = undefined;
+    const n = selectedIds(s.containers, &s.bulk, route, &ids);
+    if (n == 0) {
+        noChange(s, route);
+        return false;
+    }
+    return bulk_action.start(s, route, ids[0..n], "");
+}
+
+/// The project's containers that the route would actually change. Paused
+/// counts as up, exactly as the engine reports it.
 fn projectIds(containers: []const api.Container, project: []const u8, route: Route, out: *[max][]const u8) usize {
     var n: usize = 0;
     for (containers) |ct| {
         if (ct.Id.len == 0 or ct.Id.len > id_len) continue;
         const p = ct.project() orelse continue;
         if (!std.mem.eql(u8, p, project)) continue;
-        const up = ct.isUp();
-        if (route == .start and up) continue;
-        if (route == .stop and !up) continue;
+        if (!route.changes(ct.isUp())) continue;
         out[n] = ct.Id;
         n += 1;
         if (n == max) break;
@@ -249,152 +270,37 @@ fn projectIds(containers: []const api.Container, project: []const u8, route: Rou
     return n;
 }
 
+/// Runs the batch the confirmation named, not today's live selection.
 fn startJob(s: *app.State, route: Route) void {
     var ids: [max][]const u8 = undefined;
-    const n = selection(s, &ids);
-    if (startBatch(s, route, ids[0..n], "")) s.bulk.clear();
-}
-
-/// Returns whether the worker started; a failed start leaves the caller's
-/// selection alone so the user can retry.
-fn startBatch(s: *app.State, route: Route, ids: []const []const u8, project: []const u8) bool {
-    // Any queued confirmation is about a set this batch is replacing.
-    s.bulk.pending = null;
-    s.bulk.project_len = 0;
-    if (s.bulk.running()) return false;
-    if (ids.len == 0 or ids.len > max) return false;
-    var client = s.client orelse {
-        s.notify("no engine is selected", true);
-        return false;
-    };
-
-    const job = s.gpa.create(Job) catch {
-        s.notify("could not start the bulk action", true);
-        return false;
-    };
-    job.* = .{
-        .gpa = s.gpa,
-        .io = s.io,
-        .route = route,
-        .total = ids.len,
-        .count = ids.len,
-    };
-    job.socket_len = @min(client.socket.len, job.socket.len);
-    @memcpy(job.socket[0..job.socket_len], client.socket[0..job.socket_len]);
-    job.api_len = @min(client.api.len, job.api_version.len);
-    @memcpy(job.api_version[0..job.api_len], client.api[0..job.api_len]);
-    job.project_len = @min(project.len, job.project.len);
-    @memcpy(job.project[0..job.project_len], project[0..job.project_len]);
-    for (ids, 0..) |id, i| {
-        job.lens[i] = @intCast(@min(id.len, id_len));
-        @memcpy(job.ids[i][0..job.lens[i]], id[0..job.lens[i]]);
+    const n = s.bulk.pending_batch.live(s.containers, &ids);
+    if (n == 0) {
+        noChange(s, route);
+        return;
     }
-
-    job.thread = std.Thread.spawn(.{}, work, .{ s, job }) catch {
-        s.gpa.destroy(job);
-        s.notify("could not start the bulk action", true);
-        return false;
-    };
-    s.bulk.job = job;
-    s.redraw();
-    return true;
+    if (bulk_action.start(s, route, ids[0..n], "")) s.bulk.clear();
 }
 
-fn work(s: *app.State, job: *Job) void {
-    const page = std.heap.page_allocator;
-    var arena = std.heap.ArenaAllocator.init(page);
-    defer arena.deinit();
-    var client = api.Client.init(job.io, page, job.socket[0..job.socket_len]);
-    client.api = job.api_version[0..job.api_len];
-    client.alloc = arena.allocator();
-
-    var path_buf: [128]u8 = undefined;
-    var i: usize = 0;
-    while (i < job.count) : (i += 1) {
-        if (job.canceled.load(.acquire)) break;
-        const id = job.ids[i][0..job.lens[i]];
-        const path = switch (job.route) {
-            .start => std.fmt.bufPrint(&path_buf, "/containers/{s}/start", .{id}) catch break,
-            .stop => std.fmt.bufPrint(&path_buf, "/containers/{s}/stop", .{id}) catch break,
-            .delete => std.fmt.bufPrint(&path_buf, "/containers/{s}?force=1", .{id}) catch break,
-        };
-        client.action(job.route.method(), path) catch {
-            if (job.first_error.len == 0 and client.err_body.len > 0) {
-                job.first_error = page.dupe(u8, client.err_body) catch "";
-            }
-            continue;
-        };
-        job.done += 1;
-    }
-    if (job.canceled.load(.acquire)) {
-        if (job.first_error.len > 0) page.free(job.first_error);
-        return; // shutdown: the job is deliberately abandoned
-    }
-    nanoui.App.after(0, s, finishBridge);
-}
-
-fn finishBridge(ctx: ?*anyopaque) callconv(.c) void {
-    const s: *app.State = @ptrCast(@alignCast(ctx.?));
-    finish(s);
-}
-
-fn finish(s: *app.State) void {
-    const job = s.bulk.job orelse return;
-    if (job.thread) |thread| thread.join();
-    s.bulk.job = null;
-    const route = job.route;
-    const done = job.done;
-    const total = job.total;
-    var project_buf: [128]u8 = undefined;
-    const project_len = job.project_len;
-    @memcpy(project_buf[0..project_len], job.project[0..project_len]);
-    const project = project_buf[0..project_len];
-    const error_text = s.gpa.dupe(u8, job.first_error) catch "";
-    const page = std.heap.page_allocator;
-    if (job.first_error.len > 0) page.free(job.first_error);
-    s.gpa.destroy(job);
-
-    if (done == total) {
-        if (project.len > 0) {
-            s.notifyFmt("{s} {d} in {s}", .{ route.verb(), done, project }, false);
-        } else {
-            s.notifyFmt("{s} {d} container{s}", .{ route.verb(), done, plural(done) }, false);
-        }
-    } else {
-        s.notifyFmt("{s} {d} of {d} containers", .{ route.verb(), done, total }, true);
-        if (error_text.len > 0) {
-            s.notifyFmt("{s}", .{firstLine(error_text)}, true);
-        }
-    }
-    if (error_text.len > 0) s.gpa.free(error_text);
-    s.refresh();
-    s.redraw();
-}
-
-fn firstLine(text: []const u8) []const u8 {
-    const end = std.mem.indexOfScalar(u8, text, '\n') orelse @min(text.len, 90);
-    return text[0..@min(end, 90)];
-}
-
-fn plural(n: usize) []const u8 {
-    return if (n == 1) "" else "s";
-}
-
+/// User Cancel: stop between items and let the worker's finish report.
 pub fn cancel(s: *app.State) void {
-    const job = s.bulk.job orelse return;
-    job.canceled.store(true, .release);
-    if (job.thread) |thread| thread.detach();
-    s.bulk.job = null;
+    bulk_action.cancel(s);
+}
+
+/// Teardown: abandon the worker rather than wait for a socket.
+pub fn discard(s: *app.State) void {
+    bulk_action.discard(s);
 }
 
 pub fn confirmDialog(s: *app.State, c: *ui.Context) void {
     const pending = s.bulk.pending orelse return;
     const project = s.bulk.project[0..s.bulk.project_len];
-    const count = if (project.len > 0) countProject(s, project, pending.route) else pending.count;
+    const count = if (project.len > 0) countProject(s, project, pending.route) else s.bulk.pending_batch.count;
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.danger);
     ui.text(c, pending.route.word(), .{ .size = 13, .weight = .semibold, .color = c.theme.danger });
-    const line = if (count == 0)
-        c.print("nothing left to {s} in {s}", .{ pending.route.word(), project })
+    const line = if (count == 0 and project.len > 0)
+        c.print("nothing left to {s} in {s}", .{ @tagName(pending.route), project })
+    else if (count == 0)
+        c.print("nothing to {s}", .{@tagName(pending.route)})
     else if (project.len > 0)
         c.print("{d} container{s} in {s} will be stopped", .{ count, plural(count), project })
     else if (pending.route == .delete)
@@ -407,11 +313,12 @@ pub fn confirmDialog(s: *app.State, c: *ui.Context) void {
     });
     const row = ui.div(c).row().wFull().justifyEnd().gap(8);
     if (widgets.dialogButton(c, "Cancel", false, false)) resolve(s, false);
-    if (widgets.dialogButton(c, pending.route.word(), true, true)) resolve(s, true);
+    // Nothing left to run: only Cancel, so the dialog cannot offer an action
+    // that resolve would immediately turn into a no-op.
+    if (count > 0 and widgets.dialogButton(c, pending.route.word(), true, true)) resolve(s, true);
     row.end();
     box.end();
 }
-
 
 test "selection toggles by id and forgets removed containers" {
     var state: State = .{};
@@ -427,12 +334,97 @@ test "selection toggles by id and forgets removed containers" {
         .{ .Id = "def", .State = "running" },
         .{ .Id = "xyz", .State = "exited" },
     };
+    state.pending_batch.snapshot(&[_][]const u8{ "def", "gone" });
     state.toggle("gone");
     state.retain(containers[0..]);
     try std.testing.expectEqual(@as(usize, 1), state.count);
     try std.testing.expectEqualStrings("def", state.id(0));
+    // The open confirmation loses the vanished id in the same pass.
+    try std.testing.expectEqual(@as(usize, 1), state.pending_batch.count);
+    try std.testing.expectEqualStrings("def", state.pending_batch.id(0));
     state.clear();
     try std.testing.expect(!state.enabled);
+}
+
+test "the Select chip turns the mode on and off" {
+    var state: State = .{};
+    state.toggle("abc");
+    state.toggleMode();
+    try std.testing.expect(state.enabled);
+    // Entering the mode starts empty: the old selection must not come back.
+    try std.testing.expectEqual(@as(usize, 0), state.count);
+
+    state.toggle("abc");
+    state.toggleMode();
+    try std.testing.expect(!state.enabled);
+    try std.testing.expectEqual(@as(usize, 0), state.count);
+
+    state.toggleMode();
+    try std.testing.expect(state.enabled);
+    try std.testing.expectEqual(@as(usize, 0), state.count);
+}
+
+test "an open confirmation freezes the selection" {
+    var state: State = .{ .enabled = true };
+    state.toggle("a");
+    state.pending = .{ .route = .stop };
+    state.toggle("b");
+    state.toggle("a");
+    try std.testing.expectEqual(@as(usize, 1), state.count);
+    try std.testing.expect(state.has("a"));
+    state.pending = null;
+    state.toggle("b");
+    try std.testing.expectEqual(@as(usize, 2), state.count);
+}
+
+test "a checkbox batch takes only the rows the route would change" {
+    const items = [_]api.Container{
+        .{ .Id = "up", .State = "running" },
+        .{ .Id = "down", .State = "exited" },
+        .{ .Id = "held", .State = "paused" },
+    };
+    var state: State = .{ .enabled = true };
+    state.toggle("up");
+    state.toggle("down");
+    state.toggle("held");
+    state.toggle("vanished");
+
+    var out: [max][]const u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), selectedIds(items[0..], &state, .start, &out));
+    try std.testing.expectEqualStrings("down", out[0]);
+
+    // Paused counts as up, exactly as it does for a project batch.
+    try std.testing.expectEqual(@as(usize, 2), selectedIds(items[0..], &state, .stop, &out));
+    try std.testing.expectEqualStrings("up", out[0]);
+    try std.testing.expectEqualStrings("held", out[1]);
+
+    // Delete keeps everything the engine still lists; a vanished row is not
+    // sent, since there is nothing left to remove.
+    try std.testing.expectEqual(@as(usize, 3), selectedIds(items[0..], &state, .delete, &out));
+}
+
+test "a confirmed batch is the set resolve sends" {
+    const before = [_]api.Container{ .{ .Id = "a", .State = "running" }, .{ .Id = "b", .State = "exited" } };
+    var state: State = .{ .enabled = true };
+    state.toggle("a");
+    state.toggle("b");
+    var ids: [max][]const u8 = undefined;
+    const n = selectedIds(before[0..], &state, .stop, &ids);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    state.pending_batch.snapshot(ids[0..n]);
+    var sent: [max][]const u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 1), state.pending_batch.live(before[0..], &sent));
+    try std.testing.expectEqualStrings("a", sent[0]);
+
+    // The tick moves to `b` and `b` starts: neither may replace the batch the
+    // dialog named. `a` merely changing state stays in it.
+    state.toggle("a");
+    const after = [_]api.Container{ .{ .Id = "a", .State = "exited" }, .{ .Id = "b", .State = "running" } };
+    try std.testing.expectEqual(@as(usize, 1), selectedIds(after[0..], &state, .stop, &ids));
+    try std.testing.expectEqualStrings("b", ids[0]);
+
+    try std.testing.expectEqual(@as(usize, 1), state.pending_batch.live(after[0..], &sent));
+    try std.testing.expectEqualStrings("a", sent[0]);
 }
 
 test "a project batch takes only the containers the route would change" {

@@ -12,10 +12,10 @@ reviewer; findings are fixed before the next item starts.
 - [x] `stats.demux` double-deinit when the raw fallback copy fails
 - [x] `engine/command.zig` double-free of argv on error
 
-## 2. Bulk selection and action semantics
-- [ ] "Select" chip never enables selection (`lists.zig` + `bulk.clear`)
-- [ ] 304 from Docker/Podman treated as success for actions
-- [ ] Bulk start/stop stops counting already-in-state containers as failures
+## 2. Bulk selection and action semantics — done
+- [x] "Select" chip never enables selection (`lists.zig` + `bulk.clear`)
+- [x] 304 from Docker/Podman treated as success for actions
+- [x] Bulk start/stop stops counting already-in-state containers as failures
 
 ## 3. Engine correctness
 - [ ] RestartCount read from the top level of inspect

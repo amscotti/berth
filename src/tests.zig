@@ -18,6 +18,8 @@ test {
     _ = @import("engine/command.zig");
     _ = @import("ops.zig");
     _ = @import("bulk.zig");
+    _ = @import("bulk_action.zig");
+    _ = @import("bulk_batch.zig");
     _ = @import("tray.zig");
     _ = @import("engine/inspect.zig");
     _ = @import("engine/lifetime.zig");

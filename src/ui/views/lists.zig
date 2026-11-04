@@ -47,7 +47,6 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
     // The rows this filter keeps, chosen once so the count and the list agree.
     // The search query ANDs with the chip: both narrow what is on screen.
     const q = c.alloc().dupe(u8, s.search.containers.text()) catch "";
-    s.bulk.retain(s.containers);
     var shown: [512]*const api.Container = undefined;
     var n: usize = 0;
     for (s.containers) |*ct| {
@@ -99,8 +98,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         .color = if (s.bulk.enabled) c.theme.accent else c.theme.text,
     });
     if (select_chip.clicked() and !s.bulk.running()) {
-        s.bulk.enabled = !s.bulk.enabled;
-        s.bulk.clear();
+        s.bulk.toggleMode();
         s.clearPending();
         s.redraw();
     }
@@ -158,7 +156,7 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
         if (!is_selected) row = row.hover(c.theme.surface_hover);
         defer row.end();
         if (row.clicked()) {
-            if (s.bulk.enabled) {
+            if (s.bulk.enabled and s.bulk.pending == null) {
                 s.bulk.toggle(ct.Id);
                 s.redraw();
             } else s.select(&ct);
@@ -209,11 +207,16 @@ pub fn containers(s: *app.State, c: *ui.Context) void {
 fn bulkBar(s: *app.State, c: *ui.Context) void {
     const bar = ui.div(c).row().wFull().itemsCenter().gap(6).pb(8);
     if (s.bulk.running()) {
-        ui.text(c, c.print("{s} containers…", .{bulk.runningLabel(&s.bulk)}), .{
+        const label = if (s.bulk.canceling) "Canceling…" else c.print("{s} containers…", .{bulk.runningLabel(&s.bulk)});
+        ui.text(c, label, .{
             .size = 11.5,
             .weight = .medium,
             .color = .hex(0xff9f0a),
         });
+        if (!s.bulk.canceling) {
+            ui.spacer(c);
+            if (smallButton(c, "Cancel", false)) bulk.cancel(s);
+        }
         bar.end();
         return;
     }
@@ -244,11 +247,17 @@ fn bulkBar(s: *app.State, c: *ui.Context) void {
 fn checkboxCell(s: *app.State, c: *ui.Context, ct: *const api.Container, width: f32) void {
     const slot = ui.div(c).row().w(width).h(24).itemsCenter();
     const on = s.bulk.has(ct.Id);
+    // A confirmation freezes ticks; dim the boxes so the no-op reads as
+    // deliberate rather than broken.
+    const frozen = s.bulk.pending != null;
+    const tint: f32 = if (frozen) 0.4 else 1;
+    const fill = if (on) c.theme.accent else c.theme.surface;
+    const edge = if (on) c.theme.accent else c.theme.border;
     const box = ui.div(c).row().w(18).h(18).center().rounded(5)
-        .bg(if (on) c.theme.accent else c.theme.surface)
-        .border(if (on) c.theme.accent else c.theme.border).control();
-    if (on) ui.icon(c, "checkmark", .{ .size = 11, .color = c.theme.accent_text });
-    if (box.clicked()) {
+        .bg(fill.alpha(tint))
+        .border(edge.alpha(tint)).control();
+    if (on) ui.icon(c, "checkmark", .{ .size = 11, .color = c.theme.accent_text.alpha(tint) });
+    if (box.clicked() and !frozen) {
         s.bulk.toggle(ct.Id);
         s.redraw();
     }
