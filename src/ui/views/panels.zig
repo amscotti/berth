@@ -29,6 +29,13 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     const cpu_share = stats_pool.aggregateCpuPercent(s.containers, s.stats, cores);
     const connected = if (rt) |r| r.reachable else false;
     const unknown = "—";
+    const mem_value = if (connected and s.stats_complete) format.bytes(c, mem_sum) else unknown;
+    const mem_note = if (!connected)
+        "no engine answering"
+    else if (s.stats_complete)
+        c.print("of {s}", .{format.bytes(c, info.MemTotal)})
+    else
+        "partial sample";
     // Two equal columns: `grow` hands out leftover space after each card's
     // intrinsic content, which made the CPU card narrower than Memory.
     const col_w = (s.layout.content - 12) / 2;
@@ -51,8 +58,8 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
         c,
         "memorychip",
         "Containers · Memory",
-        if (connected) format.bytes(c, mem_sum) else unknown,
-        if (connected) c.print("of {s}", .{format.bytes(c, info.MemTotal)}) else "no engine answering",
+        mem_value,
+        mem_note,
         .mem,
         c.theme.success,
         @floatFromInt(@max(info.MemTotal, 1)),
@@ -88,7 +95,7 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
     );
     bottom.end();
 
-    hostCard(s, c, mem_sum);
+    hostCard(s, c, if (connected and s.stats_complete) @as(?u64, mem_sum) else null);
 
     // The three-layer memory model starts here: on macOS the engine lives in a
     // VM, so container figures are "of the VM", never "of the machine". We show
@@ -127,8 +134,10 @@ pub fn overview(s: *app.State, c: *ui.Context) void {
 
 /// The machine, and how much of it the containers account for. This is the
 /// question a container monitor owes an answer to and rarely gives: containers
-/// use this much, the rest of the machine uses that much.
-fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
+/// use this much, the rest of the machine uses that much. `containers_mem` is
+/// null when any up container was unsampled, because the partial sum would
+/// otherwise land in "elsewhere" and look exact.
+fn hostCard(s: *app.State, c: *ui.Context, containers_mem: ?u64) void {
     const total = s.host_sample.mem_total;
     const used = s.host_sample.mem_used;
     if (total == 0) return; // nothing readable here; say nothing rather than zero
@@ -149,11 +158,19 @@ fn hostCard(s: *app.State, c: *ui.Context, containers_mem: u64) void {
     });
     head.end();
 
+    const containers_known = containers_mem orelse {
+        ui.text(c, "containers — · per-container stats incomplete", .{
+            .size = 11,
+            .color = c.theme.muted,
+        });
+        return;
+    };
+
     // Three segments: what the containers hold (a working set measured inside
     // the engine's VM on macOS), the engine's own host processes, and the rest
     // of the machine. Guest RAM is never counted into the engine segment — it
     // carries the containers, which are already the first segment.
-    const in_containers = @min(containers_mem, used);
+    const in_containers = @min(containers_known, used);
     const engine = @min(s.host_sample.engine_rss, used - in_containers);
     const elsewhere = used - in_containers - engine;
     const bar = ui.div(c).row().wFull().h(8).rounded(4).bg(c.theme.track).clip();

@@ -167,11 +167,23 @@ pub const ENGINE_PROCESSES = [_][]const u8{
     "virtiofsd",
 };
 
+/// `ps` reads the process table and normally answers in milliseconds. The
+/// timeout is a bound for a wedged process, not a budget: quitting joins the
+/// refresh worker, so this spawn must not be able to pin that join. A `.duration`
+/// timeout restarts on every pipe fill; converting it once to a `.deadline`
+/// keeps the whole `ps` run inside one budget. On timeout `engineRss` returns
+/// null and the previous RSS stays on screen.
+fn psOptions(io: std.Io) std.process.RunOptions {
+    const budget: std.Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } };
+    return .{
+        .argv = &.{ "/bin/ps", "-axo", "rss=,comm=" },
+        .timeout = budget.toDeadline(io),
+    };
+}
+
 /// Null when `ps` cannot run: "unknown" must not render as zero bytes.
 pub fn engineRss(io: std.Io, gpa: std.mem.Allocator) ?u64 {
-    const result = std.process.run(gpa, io, .{
-        .argv = &.{ "/bin/ps", "-axo", "rss=,comm=" },
-    }) catch return null;
+    const result = std.process.run(gpa, io, psOptions(io)) catch return null;
     defer gpa.free(result.stdout);
     defer gpa.free(result.stderr);
     if (!result.term.success()) return null;
@@ -246,4 +258,17 @@ test "a titled process is matched by the first word, not its arguments" {
     const text = "  4096 ssh: /Users/x/.lima/berth/ssh.sock [mux]\n  8192 limactl hostagent berth\n";
     // The SSH mux is not an engine process; the hostagent's title keeps limactl.
     try std.testing.expectEqual(@as(u64, 8192 * 1024), parseEngineRss(text));
+}
+
+test "engine rss runs ps with one bounded deadline" {
+    const opts = psOptions(std.testing.io);
+    try std.testing.expectEqualStrings("/bin/ps", opts.argv[0]);
+    const deadline = switch (opts.timeout) {
+        .deadline => |d| d,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(std.Io.Clock.awake, deadline.clock);
+    const left = deadline.durationFromNow(std.testing.io).raw.nanoseconds;
+    try std.testing.expect(left > 0);
+    try std.testing.expect(left <= 2 * std.time.ns_per_s);
 }

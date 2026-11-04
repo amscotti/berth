@@ -14,6 +14,7 @@ const engine_events = @import("engine/events.zig");
 const events_feed = @import("events_feed.zig");
 const logs = @import("logs.zig");
 const bulk = @import("bulk.zig");
+const refresh_selection = @import("refresh_selection.zig");
 const tray = @import("tray.zig");
 const image_tasks = @import("image_tasks.zig");
 const host = @import("host/host.zig");
@@ -27,6 +28,7 @@ pub const Job = struct {
     socket: []u8,
     generation: u64,
     snapshot: Snapshot,
+    completion: *Completion,
     follow: bool = false,
     follow_id: [64]u8 = undefined,
     follow_len: usize = 0,
@@ -35,6 +37,13 @@ pub const Job = struct {
     engine_dead: bool = false,
     canceled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     thread: ?std.Thread = null,
+};
+
+/// The callback context outlives the job at teardown. `discard` frees the job
+/// and nulls `job`; the queued `done` then frees only this small context.
+const Completion = struct {
+    gpa: std.mem.Allocator,
+    job: ?*Job = null,
 };
 
 pub fn start(s: *app.State) void {
@@ -51,6 +60,14 @@ pub fn start(s: *app.State) void {
         s.redraw();
         return;
     };
+    const completion = s.gpa.create(Completion) catch {
+        s.gpa.destroy(job);
+        s.gpa.free(socket);
+        s.error_text = "out of memory preparing a refresh";
+        s.redraw();
+        return;
+    };
+    completion.* = .{ .gpa = s.gpa, .job = job };
     job.* = .{
         .state = s,
         .io = s.io,
@@ -58,6 +75,7 @@ pub fn start(s: *app.State) void {
         .socket = socket,
         .generation = s.generation,
         .snapshot = Snapshot.init(s.gpa),
+        .completion = completion,
         .follow = s.log_opts.follow and s.detail_kind == .container,
         .logs_timestamps = s.log_opts.timestamps,
     };
@@ -66,6 +84,8 @@ pub fn start(s: *app.State) void {
         @memcpy(job.follow_id[0..job.follow_len], id[0..job.follow_len]);
     }
     job.thread = std.Thread.spawn(.{}, work, .{job}) catch {
+        completion.job = null;
+        s.gpa.destroy(completion);
         job.snapshot.deinit();
         s.gpa.free(socket);
         s.gpa.destroy(job);
@@ -81,27 +101,43 @@ pub fn start(s: *app.State) void {
 
 fn work(job: *Job) void {
     load(job);
-    nanoui.App.after(0, job, done);
+    nanoui.App.after(0, job.completion, done);
+}
+
+/// The worker checks this between requests. Quitting joins the thread, so a
+/// canceled pass must not start another step: the one request already in
+/// flight (a stats sample, a list call, `ps`) is the bound on that join.
+fn stopRequested(canceled: *const std.atomic.Value(bool)) bool {
+    return canceled.load(.acquire);
 }
 
 fn load(job: *Job) void {
+    const canceled = &job.canceled;
+    if (stopRequested(canceled)) return;
+
     var client = api.Client.init(job.io, job.gpa, job.socket);
     client.alloc = job.snapshot.arena.allocator();
 
-    if (!discovery.probe(&client)) {
+    const alive = discovery.probe(&client);
+    if (stopRequested(canceled)) return;
+    if (!alive) {
         job.error_text = "engine stopped answering";
         job.engine_dead = true;
         return;
     }
     const version = client.version() catch {
+        if (stopRequested(canceled)) return;
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not read the engine version";
         return;
     };
+    if (stopRequested(canceled)) return;
     client.adoptApi(version.ApiVersion);
     job.snapshot.containers = client.containers() catch {
+        if (stopRequested(canceled)) return;
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not list containers";
         return;
     };
+    if (stopRequested(canceled)) return;
 
     job.snapshot.stats = job.snapshot.arena.allocator().alloc(Stat, job.snapshot.containers.len) catch &.{};
     for (job.snapshot.containers, 0..) |ct, i| {
@@ -110,23 +146,31 @@ fn load(job: *Job) void {
     // Stats are sampled on every pass, whichever page is open: the worker is
     // off the UI thread, and a snapshot without them would show 0.0% for the
     // first few seconds after switching to Containers.
-    stats_pool.sample(job.io, job.socket, client.api, job.snapshot.containers, job.snapshot.stats);
+    stats_pool.sample(job.io, job.socket, client.api, job.snapshot.containers, job.snapshot.stats, canceled);
+    job.snapshot.stats_complete = stats_pool.allSampled(job.snapshot.containers, job.snapshot.stats);
+    if (stopRequested(canceled)) return;
 
     // A failed list must abort the snapshot, not commit an empty one: losing
     // images/volumes/networks for a pass reads as "they were deleted".
     job.snapshot.images = client.images() catch {
+        if (stopRequested(canceled)) return;
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not list images";
         return;
     };
+    if (stopRequested(canceled)) return;
     const volumes = client.volumes() catch {
+        if (stopRequested(canceled)) return;
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not list volumes";
         return;
     };
+    if (stopRequested(canceled)) return;
     job.snapshot.volumes = volumes.Volumes;
     job.snapshot.networks = client.networks() catch {
+        if (stopRequested(canceled)) return;
         job.error_text = if (client.err_body.len > 0) client.err_body else "could not list networks";
         return;
     };
+    if (stopRequested(canceled)) return;
     if (job.follow_len > 0) {
         const id = job.follow_id[0..job.follow_len];
         if (client.logs(id, 500, job.logs_timestamps)) |text| {
@@ -135,12 +179,15 @@ fn load(job: *Job) void {
             job.snapshot.logs_timestamps = job.logs_timestamps;
         } else |_| {}
     }
+    if (stopRequested(canceled)) return;
 
     job.snapshot.df = client.df() catch null;
+    if (stopRequested(canceled)) return;
 
     // Engine helper memory: `ps` on macOS, a /proc walk on Linux. Sampled here
     // on the worker; it is the one host figure that needs a process spawn.
     job.snapshot.engine_rss = host.engineRss(job.io, job.gpa);
+    if (stopRequested(canceled)) return;
 
     // Events are an interval, not a store: a failed call must not abort the
     // snapshot, and the cursor only moves when the interval actually arrived.
@@ -160,7 +207,11 @@ fn load(job: *Job) void {
 }
 
 fn done(ctx: ?*anyopaque) callconv(.c) void {
-    const job: *Job = @ptrCast(@alignCast(ctx.?));
+    const completion: *Completion = @ptrCast(@alignCast(ctx.?));
+    defer completion.gpa.destroy(completion);
+    const job = completion.job orelse return;
+    completion.job = null;
+
     if (job.thread) |thread| thread.join();
     const s = job.state;
     if (s.job != job) {
@@ -235,10 +286,19 @@ fn scheduleNext(s: *app.State) void {
 }
 
 /// Stop a job at shutdown: the worker may be inside a socket read, so join it
-/// before the state and its arena disappear.
-pub fn discard(job: *Job) void {
+/// before the state and its arena disappear. The job, snapshot and socket are
+/// freed here; the queued `done` still owns the small completion context and
+/// must not touch the state. If the loop stops before dispatching it, at most
+/// that one tiny context leaks — never the job or its arena.
+pub fn discard(s: *app.State, job: *Job) void {
+    if (s.job == job) s.job = null;
     job.canceled.store(true, .release);
-    if (job.thread) |thread| thread.join();
+    if (job.thread) |thread| {
+        thread.join();
+        job.thread = null;
+    }
+    const completion = job.completion;
+    completion.job = null;
     cleanup(job);
 }
 
@@ -268,6 +328,7 @@ fn commit(s: *app.State, job: *Job) void {
     // the refresh must still name a row the engine lists.
     s.bulk.retain(s.containers);
     s.stats = snap.stats;
+    s.stats_complete = snap.stats_complete;
     s.images = snap.images;
     s.volumes = snap.volumes;
     s.networks = snap.networks;
@@ -282,7 +343,7 @@ fn commit(s: *app.State, job: *Job) void {
     // to leave a string pointing into the retired snapshot.
     if (s.client) |*client| client.alloc = s.arena.allocator();
 
-    resolveSelection(s);
+    refresh_selection.resolve(s);
     events_feed.commit(s, snap.events_since, snap.events_until, snap.events);
     logs.commitSnapshot(s, snap.logs, snap.logs_id, snap.logs_timestamps);
     s.error_text = "";
@@ -296,95 +357,6 @@ fn commit(s: *app.State, job: *Job) void {
             .none => {},
             .pull => image_tasks.startPull(s),
             .run => image_tasks.startRun(s),
-        }
-    }
-}
-
-fn resolveSelection(s: *app.State) void {
-    if (s.selected) |old_id| {
-        var kept = false;
-        switch (s.detail_kind) {
-            .container => for (s.containers) |ct| {
-                if (std.mem.eql(u8, ct.Id, old_id)) {
-                    s.selected = ct.Id;
-                    s.selected_name = ct.name();
-                    kept = true;
-                    break;
-                }
-            },
-            .image => for (s.images) |im| {
-                if (std.mem.eql(u8, im.Id, old_id)) {
-                    s.selected = im.Id;
-                    s.selected_name = if (im.dangling()) "untagged" else im.tag();
-                    kept = true;
-                    break;
-                }
-            },
-            .volume => for (s.volumes) |v| {
-                if (std.mem.eql(u8, v.Name, old_id)) {
-                    s.selected = v.Name;
-                    s.selected_name = v.Name;
-                    kept = true;
-                    break;
-                }
-            },
-            .network => for (s.networks) |n| {
-                if (std.mem.eql(u8, n.Id, old_id) or std.mem.eql(u8, n.Name, old_id)) {
-                    s.selected = if (n.Id.len > 0) n.Id else n.Name;
-                    s.selected_name = n.Name;
-                    kept = true;
-                    break;
-                }
-            },
-        }
-        if (!kept) {
-            s.selected = null;
-            s.selected_name = "";
-            logs.clear(s);
-            s.clearInspect();
-        }
-    }
-    if (s.pending_select.len > 0) selectPending(s);
-}
-
-/// `BERTH_SELECT` for headless snapshots: a container name, or
-/// `image:tag`, `volume:name`, `network:name` for the other inspectors.
-fn selectPending(s: *app.State) void {
-    const spec = s.pending_select;
-    if (spec.len == 0) return;
-    s.pending_select = "";
-
-    if (std.mem.startsWith(u8, spec, "image:")) {
-        const want = spec["image:".len..];
-        for (s.images) |im| {
-            const label = if (im.dangling()) "untagged" else im.tag();
-            if (std.mem.eql(u8, label, want) or std.mem.eql(u8, im.Id, want)) {
-                s.selectImage(&im);
-                return;
-            }
-        }
-    } else if (std.mem.startsWith(u8, spec, "volume:")) {
-        const want = spec["volume:".len..];
-        for (s.volumes) |v| {
-            if (std.mem.eql(u8, v.Name, want)) {
-                s.selectVolume(&v);
-                return;
-            }
-        }
-    } else if (std.mem.startsWith(u8, spec, "network:")) {
-        const want = spec["network:".len..];
-        for (s.networks) |n| {
-            if (std.mem.eql(u8, n.Name, want)) {
-                s.selectNetwork(&n);
-                return;
-            }
-        }
-    } else {
-        for (s.containers) |ct| {
-            if (std.mem.eql(u8, ct.name(), spec)) {
-                s.select(&ct);
-                return;
-            }
         }
     }
 }
@@ -436,4 +408,139 @@ pub fn autoTick(ctx: ?*anyopaque) callconv(.c) void {
         return;
     }
     s.refresh();
+}
+
+test "a canceled pass reports stop before the next step" {
+    var canceled = std.atomic.Value(bool).init(false);
+    try std.testing.expect(!stopRequested(&canceled));
+    canceled.store(true, .release);
+    try std.testing.expect(stopRequested(&canceled));
+}
+
+test "a canceled load stops before the next request" {
+    const MockEngine = @import("engine/test_server.zig").MockEngine;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try std.Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+    var completion: Completion = .{ .gpa = std.testing.allocator };
+    var job: Job = .{
+        .state = &state,
+        .io = std.testing.io,
+        .gpa = std.testing.allocator,
+        .socket = path,
+        .generation = 0,
+        .snapshot = Snapshot.init(std.testing.allocator),
+        .completion = &completion,
+    };
+    completion.job = &job;
+    defer job.snapshot.deinit();
+
+    var mock: MockEngine = .{
+        .io = std.testing.io,
+        .listener = &listener,
+        .cancel_after = 1,
+        .canceled = &job.canceled,
+    };
+    try mock.start();
+    defer mock.finish() catch {};
+
+    // The mock cancels while answering /_ping. load must return instead of
+    // opening the next connection for /version.
+    load(&job);
+    try std.testing.expect(job.canceled.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), job.error_text.len);
+    try std.testing.expect(!job.engine_dead);
+    try mock.finish();
+    try std.testing.expectEqual(@as(usize, 1), mock.count);
+    try std.testing.expect(std.mem.indexOf(u8, mock.pathAt(0), "/_ping") != null);
+}
+
+test "discard frees the job and leaves the queued done only a context" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+
+    const completion = try state.gpa.create(Completion);
+    completion.* = .{ .gpa = state.gpa };
+    const job = try state.gpa.create(Job);
+    job.* = .{
+        .state = &state,
+        .io = std.testing.io,
+        .gpa = state.gpa,
+        .socket = try state.gpa.dupe(u8, "/nonexistent/berth.sock"),
+        .generation = 0,
+        .snapshot = Snapshot.init(state.gpa),
+        .completion = completion,
+    };
+    completion.job = job;
+    state.job = job;
+    job.thread = try std.Thread.spawn(.{}, struct {
+        fn idle() void {}
+    }.idle, .{});
+    discard(&state, job);
+    try std.testing.expect(state.job == null);
+    try std.testing.expect(completion.job == null);
+    // The queued done now owns only the context; the testing allocator proves
+    // the job, its snapshot arena and its socket were freed exactly once.
+    done(@ptrCast(completion));
+}
+
+test "a canceled done frees without committing or notifying" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+        .auto_refresh = false,
+    };
+    defer state.arena.deinit();
+    var kept = [_]api.Container{.{ .Id = "kept", .State = "running" }};
+    state.containers = &kept;
+    state.error_text = "previous";
+    state.last_update = 123;
+
+    const completion = try state.gpa.create(Completion);
+    completion.* = .{ .gpa = state.gpa };
+    const job = try state.gpa.create(Job);
+    job.* = .{
+        .state = &state,
+        .io = std.testing.io,
+        .gpa = state.gpa,
+        .socket = try state.gpa.dupe(u8, "/nonexistent/berth.sock"),
+        .generation = 0,
+        .snapshot = Snapshot.init(state.gpa),
+        .completion = completion,
+        .canceled = std.atomic.Value(bool).init(true),
+    };
+    var discarded = [_]api.Container{.{ .Id = "discarded", .State = "running" }};
+    job.snapshot.containers = &discarded;
+    completion.job = job;
+    state.job = job;
+    done(@ptrCast(completion));
+
+    try std.testing.expect(state.job == null);
+    try std.testing.expect(state.containers.ptr == @as([*]api.Container, @ptrCast(&kept)));
+    try std.testing.expectEqualStrings("previous", state.error_text);
+    try std.testing.expectEqual(@as(i64, 123), state.last_update);
+    try std.testing.expectEqual(@as(usize, 0), state.history.count);
+    try std.testing.expect(state.toast == null);
 }

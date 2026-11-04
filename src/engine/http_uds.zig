@@ -21,6 +21,7 @@ pub const Error = error{
     TooLarge,
     ShortBody,
     UnsupportedTransfer,
+    Timeout,
 };
 
 /// A response whose body the caller owns.
@@ -47,11 +48,24 @@ pub const Response = struct {
     }
 };
 
+/// `std.posix.setsockopt` treats EINVAL as unreachable. The timeout options
+/// are supported on macOS and Linux, but macOS also answers EINVAL once the
+/// peer has closed; the following read returns EOF immediately, so a rejected
+/// arm is harmless. Other failures leave the kernel's previous timeout in
+/// place, and `waitReadable` still enforces the total deadline with poll.
+fn setSockOpt(fd: std.posix.fd_t, level: i32, optname: u32, opt: []const u8) void {
+    _ = std.posix.system.setsockopt(fd, level, optname, opt.ptr, @intCast(opt.len));
+}
+
 /// One connection to an engine socket. Not thread safe; one per request, or
 /// one per streaming endpoint held by the reader.
 pub const Conn = struct {
     io: Io,
     stream: Io.net.Stream,
+    /// One deadline for the whole request, not one per read. A peer that sends
+    /// a byte every few seconds would otherwise restart the socket timeout
+    /// forever and pin the refresh worker (and the quit join) to the drip rate.
+    deadline: Io.Clock.Timestamp,
 
     /// A socket that has accepted but gone quiet must not block the window
     /// forever: Docker's `/system/df` can take seconds, and a Lima forwarder
@@ -64,15 +78,24 @@ pub const Conn = struct {
         return openTimeout(io, path, io_timeout_sec);
     }
 
-    /// The same connection with an explicit timeout, for probes: a stale
+    /// The same connection with an explicit deadline, for probes: a stale
     /// socket must not hold up the scan for the normal request budget.
+    /// `connect` itself is not covered: a Unix-domain connect is local, but a
+    /// full listener backlog could still block before this deadline starts.
     pub fn openTimeout(io: Io, path: []const u8, seconds: isize) !Conn {
         const addr = try Io.net.UnixAddress.init(path);
-        const conn: Conn = .{ .io = io, .stream = try addr.connect(io) };
-        const tv: std.posix.timeval = .{ .sec = seconds, .usec = 0 };
+        const conn: Conn = .{
+            .io = io,
+            .stream = try addr.connect(io),
+            .deadline = Io.Clock.Timestamp.fromNow(io, .{
+                .raw = .fromSeconds(@intCast(@max(seconds, 0))),
+                .clock = .awake,
+            }),
+        };
+        const tv: std.posix.timeval = .{ .sec = @intCast(@max(seconds, 0)), .usec = 0 };
         const fd = conn.stream.socket.handle;
-        std.posix.setsockopt(fd, @intCast(std.posix.SOL.SOCKET), @intCast(std.posix.SO.RCVTIMEO), std.mem.asBytes(&tv)) catch {};
-        std.posix.setsockopt(fd, @intCast(std.posix.SOL.SOCKET), @intCast(std.posix.SO.SNDTIMEO), std.mem.asBytes(&tv)) catch {};
+        setSockOpt(fd, @intCast(std.posix.SOL.SOCKET), @intCast(std.posix.SO.RCVTIMEO), std.mem.asBytes(&tv));
+        setSockOpt(fd, @intCast(std.posix.SOL.SOCKET), @intCast(std.posix.SO.SNDTIMEO), std.mem.asBytes(&tv));
         return conn;
     }
 
@@ -83,6 +106,48 @@ pub const Conn = struct {
     /// The descriptor, for a streaming caller that watches it with fdwatch.
     pub fn handle(self: *const Conn) std.posix.fd_t {
         return self.stream.socket.handle;
+    }
+
+    /// Whatever is left of the request's single deadline, rounded up to a
+    /// whole millisecond for poll. Null means the budget is gone.
+    fn remainingMs(self: *Conn) ?i32 {
+        const left = self.deadline.durationFromNow(self.io).raw.nanoseconds;
+        if (left <= 0) return null;
+        const ms = @divTrunc(left + std.time.ns_per_ms - 1, std.time.ns_per_ms);
+        return @intCast(@min(ms, @as(i96, std.math.maxInt(i32))));
+    }
+
+    /// The total-deadline guard for a read. Polling is the portability backstop:
+    /// SO_RCVTIMEO handles the normal path, and this still expires even if the
+    /// socket rejected the option while the peer is alive.
+    fn waitReadable(self: *Conn) !void {
+        const ms = self.remainingMs() orelse return error.Timeout;
+        var fds = [_]std.posix.pollfd{.{
+            .fd = self.stream.socket.handle,
+            .events = std.posix.POLL.IN,
+            .revents = 0,
+        }};
+        const ready = try std.posix.poll(&fds, ms);
+        if (ready == 0) return error.Timeout;
+    }
+
+    /// A best-effort send timeout for a request that is already on the wire.
+    /// The deadline check before it prevents starting after the budget is gone.
+    fn armSendTimeout(self: *Conn) void {
+        const left = self.deadline.durationFromNow(self.io).raw.nanoseconds;
+        if (left <= 0) return;
+        const usec = @divTrunc(left, std.time.ns_per_us) +
+            @intFromBool(@rem(left, std.time.ns_per_us) != 0);
+        const tv: std.posix.timeval = .{
+            .sec = @intCast(@divTrunc(usec, std.time.us_per_s)),
+            .usec = @intCast(@rem(usec, std.time.us_per_s)),
+        };
+        setSockOpt(
+            self.stream.socket.handle,
+            @intCast(std.posix.SOL.SOCKET),
+            @intCast(std.posix.SO.SNDTIMEO),
+            std.mem.asBytes(&tv),
+        );
     }
 
     /// Writes the request and reads the whole answer. `max` bounds the body, so
@@ -112,8 +177,13 @@ pub const Conn = struct {
         if (body.len > 0) try ww.print("Content-Type: application/json\r\nContent-Length: {d}\r\n", .{body.len});
         try ww.writeAll("\r\n");
         if (body.len > 0) try ww.writeAll(body);
+        if (self.remainingMs() == null) return error.Timeout;
+        self.armSendTimeout();
         const file = Io.File{ .handle = self.stream.socket.handle, .flags = .{ .nonblocking = false } };
-        try file.writeStreamingAll(self.io, ww.buffered());
+        file.writeStreamingAll(self.io, ww.buffered()) catch |err| {
+            if (err == error.WouldBlock) return error.Timeout;
+            return err;
+        };
     }
 
     /// Reads until the peer closes. With `Connection: close` that is exactly the
@@ -130,7 +200,11 @@ pub const Conn = struct {
                 const next = @min(buf.len * 2, max);
                 buf = try gpa.realloc(buf, next);
             }
-            const n = try std.posix.read(self.stream.socket.handle, buf[len..]);
+            try self.waitReadable();
+            const n = std.posix.read(self.stream.socket.handle, buf[len..]) catch |err| {
+                if (err == error.WouldBlock) return error.Timeout;
+                return err;
+            };
             if (n == 0) break;
             len += n;
         }
@@ -365,10 +439,92 @@ test "a socket that accepts but never answers times out" {
     defer conn.close();
     const started = Io.Clock.awake.now(std.testing.io).nanoseconds;
     try std.testing.expectError(
-        error.WouldBlock,
+        error.Timeout,
         conn.request(std.testing.allocator, "GET", "/_ping", "", 1024),
     );
     const elapsed = @divTrunc(Io.Clock.awake.now(std.testing.io).nanoseconds - started, std.time.ns_per_ms);
     try std.testing.expect(elapsed >= 700);
     try std.testing.expect(elapsed < 3000);
+}
+
+/// Sends one body byte every 50 ms, for longer than the client's one-second
+/// budget. A per-read timeout would reset at every byte and never fire; the
+/// total deadline has to close the connection at the budget instead.
+const Trickle = struct {
+    io: Io,
+    listener: *Io.net.Server,
+    stop: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    failure: ?anyerror = null,
+    thread: ?std.Thread = null,
+
+    fn serve(self: *Trickle) void {
+        const stream = self.listener.accept(self.io) catch |e| {
+            self.failure = e;
+            return;
+        };
+        defer stream.close(self.io);
+        var wbuf: [64]u8 = undefined;
+        var w = stream.writer(self.io, &wbuf);
+        w.interface.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n") catch |e| {
+            self.failure = e;
+            return;
+        };
+        w.interface.flush() catch |e| {
+            self.failure = e;
+            return;
+        };
+        // Bounded so a per-read implementation eventually sees EOF and the
+        // test fails with Ok rather than hanging forever.
+        for (0..40) |_| {
+            if (self.stop.load(.acquire)) return;
+            w.interface.writeAll("x") catch |e| {
+                self.failure = e;
+                return;
+            };
+            w.interface.flush() catch |e| {
+                self.failure = e;
+                return;
+            };
+            Io.sleep(self.io, .fromMilliseconds(50), .awake) catch return;
+        }
+    }
+
+    fn finish(self: *Trickle) !void {
+        self.stop.store(true, .release);
+        if (self.thread) |thread| {
+            thread.join();
+            self.thread = null;
+        }
+        if (self.failure) |e| return e;
+    }
+};
+
+test "a trickled response still expires at the total deadline" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var dirbuf: [256]u8 = undefined;
+    const n = try tmp.dir.realPath(std.testing.io, &dirbuf);
+    var pathbuf: [320]u8 = undefined;
+    const path = try std.fmt.bufPrint(&pathbuf, "{s}/engine.sock", .{dirbuf[0..n]});
+
+    var addr = try Io.net.UnixAddress.init(path);
+    var listener = try addr.listen(std.testing.io, .{});
+    defer listener.deinit(std.testing.io);
+
+    var server: Trickle = .{ .io = std.testing.io, .listener = &listener };
+    server.thread = try std.Thread.spawn(.{}, Trickle.serve, .{&server});
+    defer server.finish() catch {};
+
+    var conn = try Conn.openTimeout(std.testing.io, path, 1);
+    defer conn.close();
+    const started = Io.Clock.awake.now(std.testing.io).nanoseconds;
+    try std.testing.expectError(
+        error.Timeout,
+        conn.request(std.testing.allocator, "GET", "/_events", "", 1024),
+    );
+    const elapsed = @divTrunc(Io.Clock.awake.now(std.testing.io).nanoseconds - started, std.time.ns_per_ms);
+
+    try server.finish();
+    try std.testing.expect(elapsed >= 700);
+    try std.testing.expect(elapsed < 1600);
 }

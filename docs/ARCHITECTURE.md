@@ -30,6 +30,7 @@ commit ◄──── dispatch main ───────  ├─ stats_pool (b
 | `boot.zig` | state construction and teardown |
 | `app.zig` | `State`, selection, actions, cleanup, host sampling |
 | `refresh.zig` | `Job`, the worker load, the single commit callback, timer |
+| `refresh_selection.zig` | re-resolve the inspector selection by id after a snapshot swap |
 | `image_tasks.zig` | pull/create/start as background jobs, the create body |
 | `image_refs.zig` | reference, name and port parsing for the creation card |
 | `create.zig` | the volume/network create dialog and its POSTs |
@@ -87,18 +88,25 @@ sections of `app.zig`.
   empty list would read as “they were deleted”.
 - A failed `/system/df` keeps the previous disk figures; disk numbers are
   advisory and should not blank the page.
-- A failed stats sample skips that container; the next pass retries.
+- A failed stats sample skips that container; the next pass retries. The pass is
+  marked incomplete, so container totals render as partial rather than as a
+  lower bound presented as the whole.
 - A ping failure drops the client so the next timer tick rescans engines.
-- Every socket has a receive/send timeout: 5s general, 3s for `/system/df`,
-  2s for probes. The UI never waits on any of them.
+- Every socket has one total receive/send deadline: 5s general, 3s for
+  `/system/df`, 3s for probes. A peer that trickles bytes cannot restart it.
+  The initial Unix-domain `connect` is outside that deadline; a full listener
+  backlog remains the one unbounded socket step.
 
 ## Testing
 
 `zig build test` is engine-free and display-free. It covers:
 
 - HTTP/1.1 parsing, chunked decoding, header case, unsupported codings,
-  content-length truncation, malformed chunks, and the socket timeout against
-  a listener that accepts but never answers.
+  content-length truncation, malformed chunks, and the total socket deadline
+  against both a listener that never answers and one that trickles bytes.
+- A mock engine socket: stats fan-out and load balance, cancellation between
+  containers, a canceled refresh stopping before its next request, and the
+  teardown completion context.
 - Docker JSON shapes: compose labels, ports, `/system/df` new and old shapes,
   prune replies, attached-network counts, image dangling state.
 - Stats math: CPU delta and per-core fallback, missing previous samples,
@@ -107,10 +115,10 @@ sections of `app.zig`.
 - Formatting, history windows, tab/filter parsing, settings JSON, sorting
   comparators for all four tables, stack grouping, theme choices, prune routes.
 
-Not unit-tested: the worker orchestration, discovery scans, real engine
-actions/prune, and pixel output. Those are exercised by the headless
-`BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT`/`BERTH_PULL`/`BERTH_RUN_*` harness and
-by running against a live engine. `docs/ui/` is the visual evidence.
+Not unit-tested: the full worker lifecycle (spawn/commit/timer), discovery
+scans, real engine actions/prune, and pixel output. Those are exercised by the
+headless `BERTH_TAB`/`BERTH_SELECT`/`BERTH_ACT`/`BERTH_PULL`/`BERTH_RUN_*`
+harness and by running against a live engine. `docs/ui/` is the visual evidence.
 
 ## Review findings
 
@@ -126,12 +134,16 @@ by running against a live engine. `docs/ui/` is the visual evidence.
 
 | | Risk | Impact | Recommendation |
 |---|---|---|---|
-| 1 | `discover` scans sockets synchronously on the UI thread | Startup or Rediscover can block for `2s × stale candidates` | Move the scan into a job, like refresh |
-| 2 | `readAll` has a per-read timeout, not a total deadline | A slow trickle can hold a worker past the intended budget | Add a monotonic deadline around the whole response |
-| 3 | Actions and prune run synchronously on the UI thread | A slow daemon or build-cache prune can stall a frame | Put both behind the job/status pattern |
-| 4 | Stats spawn up to eight threads per pass | Many containers stretch the refresh period; thread churn | Persistent sampler or adaptive concurrency |
+| 1 | `discover` scans sockets synchronously on the UI thread | Startup or Rediscover can block for `3s × stale candidates` | Move the scan into a job, like refresh |
+| 2 | Stats spawn one thread per running container, capped at 64, every pass | Bounded per pass, but still thread churn on every refresh | Persistent sampler if thread creation shows up in profiles |
+| 3 | Unix-domain `connect` has no deadline | A full listener backlog can hold a worker before the request budget starts | Add a connect deadline where the platform exposes one |
+| 4 | Actions and prune run synchronously on the UI thread | A slow daemon or build-cache prune can stall a frame | Put both behind the job/status pattern |
 | 5 | No pixel-regression test in CI | Visual regressions still need a human to look | Snapshot every view as an artifact; add a diff gate when stable |
 | 6 | macOS guest RAM belongs to no attributable process | The engine segment is helper-only; the VM's RAM (which holds the containers) sits in "elsewhere" | Documented limitation; Virtualization.framework exposes no per-VM accounting |
 
 Fixed during this review: a failed images/volumes/networks fetch used to
 commit an empty list; it now aborts the snapshot and keeps the previous one.
+Stats used to top out at eight threads, so nine running containers stretched a
+pass past the refresh period; the pool now runs up to 64 and cancels between
+requests when the job is discarded. Socket reads now share one deadline per
+request, so a trickled response cannot extend a quit.

@@ -10,6 +10,9 @@ pub const Snapshot = struct {
     arena: std.heap.ArenaAllocator,
     containers: []api.Container = &.{},
     stats: []stats_pool.Sample = &.{},
+    /// False when any up container had no sample: sums over `stats` are then
+    /// lower bounds, not the containers' memory use.
+    stats_complete: bool = false,
     images: []api.Image = &.{},
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},

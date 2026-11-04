@@ -54,17 +54,20 @@ pub fn update(s: *app.State) void {
             if (sample.sampled) mem += sample.mem;
         }
         var bytes_buf: [32]u8 = undefined;
+        // A partial sum is not current memory: say unknown until every up
+        // container answered, matching the overview card.
+        const mem_text = if (s.stats_complete) format.bytesBuf(&bytes_buf, mem) else "—";
         const cpu = s.history.latestCpu();
         break :blk if (cpu) |v|
             std.fmt.bufPrint(&title_buf, "{d} up · {d:.1}% · {s}", .{
                 app.runningCount(s),
                 v,
-                format.bytesBuf(&bytes_buf, mem),
+                mem_text,
             }) catch "berth"
         else
             std.fmt.bufPrint(&title_buf, "{d} up · — · {s}", .{
                 app.runningCount(s),
-                format.bytesBuf(&bytes_buf, mem),
+                mem_text,
             }) catch "berth";
     };
     tray.setTitle(title);

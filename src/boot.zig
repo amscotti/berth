@@ -30,7 +30,7 @@ pub fn destroy(s: *app.State) void {
     ops.cancel(s);
     bulk.discard(s);
     image_tasks.cancel(s);
-    if (s.job) |job| refresh.discard(job);
+    if (s.job) |job| refresh.discard(s, job);
     s.clearPending();
     s.prune_open = false;
     logs.clear(s);

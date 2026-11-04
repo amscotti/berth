@@ -16,6 +16,9 @@ pub const Sample = struct {
     /// the last known value instead of drawing a fake zero.
     cpu_known: bool = true,
     mem: f32 = 0,
+    /// False when any up container had no stats. The memory graph holds the
+    /// last complete sum instead of drawing a partial one as if it were total.
+    mem_known: bool = true,
     running: f32 = 0,
     disk: f32 = 0,
     host_cpu: f32 = 0,
@@ -26,6 +29,7 @@ pub const History = struct {
     cpu: [Cap]f32 = @splat(0),
     cpu_known: [Cap]bool = @splat(true),
     mem: [Cap]f32 = @splat(0),
+    mem_known: [Cap]bool = @splat(true),
     running: [Cap]f32 = @splat(0),
     disk: [Cap]f32 = @splat(0),
     host_cpu: [Cap]f32 = @splat(0),
@@ -38,6 +42,7 @@ pub const History = struct {
             std.mem.copyForwards(f32, h.cpu[0 .. Cap - 1], h.cpu[1..Cap]);
             std.mem.copyForwards(bool, h.cpu_known[0 .. Cap - 1], h.cpu_known[1..Cap]);
             std.mem.copyForwards(f32, h.mem[0 .. Cap - 1], h.mem[1..Cap]);
+            std.mem.copyForwards(bool, h.mem_known[0 .. Cap - 1], h.mem_known[1..Cap]);
             std.mem.copyForwards(f32, h.running[0 .. Cap - 1], h.running[1..Cap]);
             std.mem.copyForwards(f32, h.disk[0 .. Cap - 1], h.disk[1..Cap]);
             std.mem.copyForwards(f32, h.host_cpu[0 .. Cap - 1], h.host_cpu[1..Cap]);
@@ -47,9 +52,11 @@ pub const History = struct {
         // An unknown CPU is not a zero: keep the previous height so the line
         // stays where the last measurement left it.
         const previous_cpu = if (h.count > 0) h.cpu[h.count - 1] else 0;
+        const previous_mem = if (h.count > 0) h.mem[h.count - 1] else 0;
         h.cpu[h.count] = if (s.cpu_known) s.cpu else previous_cpu;
         h.cpu_known[h.count] = s.cpu_known;
-        h.mem[h.count] = s.mem;
+        h.mem[h.count] = if (s.mem_known) s.mem else previous_mem;
+        h.mem_known[h.count] = s.mem_known;
         h.running[h.count] = s.running;
         h.disk[h.count] = s.disk;
         h.host_cpu[h.count] = s.host_cpu;
@@ -68,6 +75,13 @@ pub const History = struct {
         return h.firstKnownCpu() != null;
     }
 
+    pub fn firstKnownMem(h: *const History) ?usize {
+        for (h.mem_known[0..h.count], 0..) |known, i| {
+            if (known) return i;
+        }
+        return null;
+    }
+
     pub fn values(h: *const History, which: Which) []const f32 {
         return switch (which) {
             // No measurement yet means no line to draw; a flat zero would
@@ -75,7 +89,9 @@ pub const History = struct {
             // is a measurement, drop the unknown prefix too, or the graph
             // starts with fake zeros before the first real sample.
             .cpu => if (h.firstKnownCpu()) |first| h.cpu[first..h.count] else &.{},
-            .mem => h.mem[0..h.count],
+            // Same rule for memory: a partial sum is not a lower-bound line
+            // pretending to be the whole total.
+            .mem => if (h.firstKnownMem()) |first| h.mem[first..h.count] else &.{},
             .running => h.running[0..h.count],
             .disk => h.disk[0..h.count],
             .host_cpu => h.host_cpu[0..h.count],
@@ -157,6 +173,18 @@ test "an unknown cpu holds the graph and reports no current reading" {
     try std.testing.expectEqual(@as(f32, 12.5), h.latest(.cpu));
     // The number still says unknown.
     try std.testing.expect(h.latestCpu() == null);
+}
+
+test "an unknown memory sample holds the graph instead of drawing a partial sum" {
+    var h: History = .{};
+    h.push(.{ .mem = 512, .mem_known = true });
+    h.push(.{ .mem = 64, .mem_known = false });
+    // A partial sum is not a new height; the last complete total stays.
+    try std.testing.expectEqual(@as(f32, 512), h.latest(.mem));
+    // With no complete sample at all, there is no line to draw.
+    var only_partial: History = .{};
+    only_partial.push(.{ .mem = 64, .mem_known = false });
+    try std.testing.expectEqual(@as(usize, 0), only_partial.values(.mem).len);
 }
 
 test "a cpu series with no measurement at all draws nothing" {

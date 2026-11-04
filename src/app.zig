@@ -152,6 +152,9 @@ pub const State = struct {
 
     containers: []api.Container = &.{},
     stats: []Stat = &.{},
+    /// False when any up container had no stats this pass; container memory is
+    /// then a lower bound and must render as partial, not as the total.
+    stats_complete: bool = false,
     images: []api.Image = &.{},
     volumes: []api.Volume = &.{},
     networks: []api.Network = &.{},
@@ -271,6 +274,7 @@ pub const State = struct {
             .cpu = cpu orelse 0,
             .cpu_known = cpu != null,
             .mem = mem,
+            .mem_known = s.stats_complete,
             .running = running,
             .disk = disk,
             .host_cpu = s.host_sample.cpu_percent,
@@ -395,6 +399,7 @@ pub const State = struct {
         s.arena = .init(s.gpa);
         s.containers = &.{};
         s.stats = &.{};
+        s.stats_complete = false;
         s.images = &.{};
         s.volumes = &.{};
         s.networks = &.{};
