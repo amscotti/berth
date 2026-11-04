@@ -9,6 +9,7 @@ const app = @import("app.zig");
 const api = @import("engine/api.zig");
 const create_ops = @import("engine/create.zig");
 const prune = @import("engine/prune.zig");
+const sheets = @import("sheets.zig");
 const session = @import("session.zig");
 const format = @import("ui/format.zig");
 
@@ -187,6 +188,7 @@ pub fn runPrune(s: *app.State) bool {
     // The choices are frozen in the job; close the sheet so a second click
     // cannot look like it changed the run. A failed start keeps it open.
     s.prune_open = false;
+    sheets.resetPruneOpts(s);
     s.redraw();
     return true;
 }
@@ -425,7 +427,9 @@ pub fn confirm(s: *app.State, id: []const u8, name: []const u8, verb: []const u8
         s.gpa.free(id_copy);
         return;
     };
-    clearPending(s);
+    // A confirmation owns the modal slot: a prune sheet or bulk question
+    // under it would describe a different set of containers.
+    sheets.dismiss(s);
     s.pending = .{
         .id = id_copy,
         .name = name_copy,
@@ -446,10 +450,11 @@ pub fn clearPending(s: *app.State) void {
 
 pub fn resolvePending(s: *app.State, ok: bool) void {
     const p = s.pending orelse return;
+    // Do not discard the question when the action could not start. The user
+    // can retry after the busy operation or the missing engine is resolved.
+    if (ok and !act(s, p.method, p.path, p.verb)) return;
     s.pending = null;
-    if (ok) {
-        _ = act(s, p.method, p.path, p.verb);
-    } else s.redraw();
+    if (!ok) s.redraw();
     s.gpa.free(p.id);
     s.gpa.free(p.name);
     s.gpa.free(p.path);

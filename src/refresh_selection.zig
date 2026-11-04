@@ -4,6 +4,7 @@ const std = @import("std");
 const app = @import("app.zig");
 const logs = @import("logs.zig");
 const detail_job = @import("detail_job.zig");
+const ops = @import("ops.zig");
 
 pub fn resolve(s: *app.State) void {
     if (s.selected) |old_id| {
@@ -51,6 +52,40 @@ pub fn resolve(s: *app.State) void {
         }
     }
     if (s.pending_select.len > 0) selectPending(s);
+    if (s.pending_sheet.len > 0) applyPendingSheet(s);
+}
+
+/// Headless snapshots need sheets whose subject only exists after a pass:
+/// a bulk selection with real rows, a container confirmation, or an engine
+/// confirmation with its live count.
+fn applyPendingSheet(s: *app.State) void {
+    const spec = s.pending_sheet;
+    s.pending_sheet = "";
+    if (std.mem.eql(u8, spec, "bulk-all")) {
+        s.bulk.enabled = true;
+        s.bulk.selectShown(s.containers, s.filter, s.search.containers.text());
+        return;
+    }
+    if (std.mem.startsWith(u8, spec, "confirm:")) {
+        const rest = spec["confirm:".len..];
+        const colon = std.mem.indexOfScalar(u8, rest, ':') orelse return;
+        const verb = rest[0..colon];
+        const want = rest[colon + 1 ..];
+        for (s.containers) |ct| {
+            if (!std.mem.eql(u8, ct.name(), want)) continue;
+            if (std.mem.eql(u8, verb, "delete")) {
+                s.confirm(ct.Id, ct.name(), "Delete", "DELETE", "/containers/{s}?force=1");
+            } else {
+                s.confirm(ct.Id, ct.name(), "Stop", "POST", "/containers/{s}/stop");
+            }
+            return;
+        }
+        return;
+    }
+    if (std.mem.eql(u8, spec, "engine-stop") or std.mem.eql(u8, spec, "engine-restart")) {
+        const rt = s.activeRuntime() orelse return;
+        ops.confirm(s, if (std.mem.eql(u8, spec, "engine-stop")) .stop else .restart, rt, app.runningCount(s));
+    }
 }
 
 /// `BERTH_SELECT` for headless snapshots: a container name, or

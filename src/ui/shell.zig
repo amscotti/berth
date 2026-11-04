@@ -17,36 +17,124 @@ const stacks = @import("views/stacks.zig");
 const events_view = @import("views/events.zig");
 const bulk = @import("../bulk.zig");
 const create_mod = @import("../create.zig");
+const ops = @import("../ops.zig");
 const prune = @import("../engine/prune.zig");
-
-const TABS = [_]app.Tab{
-    .overview, .containers, .images, .volumes,  .networks,
-    .events,   .stacks,     .disk,   .runtimes, .settings,
-};
+const sheets = @import("../sheets.zig");
+const shortcuts = @import("../shortcuts.zig");
+const tabs = @import("../tabs.zig");
+const kit = nanoui.kit;
 
 pub fn view(s: *app.State, c: *ui.Context) void {
+    // Window keys are offered before any view or sheet paints: a tab switch
+    // must not race a dialog's own Enter/Escape handling.
+    shortcuts.handle(s, c);
     // One place decides how much room the rail and the inspector take; the
     // views read the result back from the state.
     s.layout = layout.of(c.size.w, s.selected != null);
     // Warm paper and amber, derived from the framework's theme each frame so
     // the system's light/dark switch keeps working.
     c.theme = theme.of(c.theme);
+    const sheet_open = sheets.open(s);
+    // A sheet owns the keyboard too: a text field left focused on the page
+    // must not receive the Enter or Escape meant for the sheet. The create
+    // form's own field is the one exception, because Enter submits it.
+    if (sheet_open) clearBackgroundFocus(s, c);
+    // Hold this event's text/key until the sheet is built: the page below is
+    // context only, so it must not consume typing or Enter on the way there.
+    const sheet_key = if (sheet_open) c.input.key else null;
+    const sheet_chars = if (sheet_open) c.input.chars else "";
+    const sheet_ops = if (sheet_open) c.input.ops else &.{};
+    if (sheet_open) {
+        c.input.key = null;
+        c.input.chars = "";
+        c.input.ops = &.{};
+    }
+
     const root = ui.div(c).row().sizeFull().bg(c.theme.background);
     defer root.end();
+    // One wrapper for everything a sheet covers. Hiding this box from the
+    // accessibility tree takes the rail, page and inspector with it.
+    const page = ui.div(c).row().sizeFull();
     rail(s, c);
     const main = ui.div(c).column().grow().hFull().px(20).pt(16).pb(12).gap(4);
     header(s, c);
-    if (s.bulk.pending != null) {
-        bulk.confirmDialog(s, c);
-    } else if (s.pending) |p| {
-        confirmDialog(s, c, p.verb, p.name);
-    }
-    if (s.prune_open) pruneDialog(s, c);
-    if (s.create_dialog.open != null) create_mod.dialog(s, c);
     body(s, c);
     main.end(); // before the detail pane, or the pane becomes a child of it
 
     if (s.selected != null) detail.pane(s, c);
+    page.end();
+    // Drawn last, on its own layer: the page stays visible for context but
+    // every pointer event lands on the dimming or the panel, never behind it.
+    if (sheet_open) {
+        ui.access.hide(c, page.index);
+        c.input.key = sheet_key;
+        c.input.chars = sheet_chars;
+        c.input.ops = sheet_ops;
+        sheetOverlay(s, c);
+    }
+}
+
+fn clearBackgroundFocus(s: *app.State, c: *ui.Context) void {
+    if (c.focus == 0) return;
+    const own_field = s.create_dialog.open != null and c.focus == s.create_dialog.name.last_id;
+    if (!own_field) c.focus = 0;
+}
+
+/// A sheet is a window-level layer, matching nanoui's dialog layers. The
+/// backdrop takes every click outside the panel, so row actions and rail
+/// clicks cannot run behind an unanswered destructive question.
+const sheet_backdrop_layer = 10;
+const sheet_panel_layer = 11;
+
+fn sheetOverlay(s: *app.State, c: *ui.Context) void {
+    // The page was built first and may have re-focused a field of its own;
+    // clear it again before the sheet takes this frame's keys.
+    clearBackgroundFocus(s, c);
+    const dim: f32 = if (c.theme.dark) 0.58 else 0.38;
+    const backdrop = ui.div(c).fixed().w(c.size.w).h(c.size.h).layer(sheet_backdrop_layer)
+        .bg(ui.Color.black.alpha(dim)).control().scrollY();
+    // The interaction registers the backdrop as the top hit and clears the
+    // page's text focus on press; it deliberately does not close the sheet.
+    // `scrollY` makes the same hit the wheel target, so the page behind does
+    // not scroll while the question is up.
+    _ = backdrop.interaction();
+    ui.access.hide(c, backdrop.index);
+    backdrop.end();
+
+    const panel_id = c.peekId(null);
+    const h = if (c.rects.get(panel_id)) |r| r.h else 260;
+    const w = @min(620, c.size.w - 64);
+    const top = @max(16, (c.size.h - h) / 2 - c.size.h * 0.04);
+    const panel = ui.div(c).fixed().offset((c.size.w - w) / 2, top).w(w).layer(sheet_panel_layer).column();
+    if (s.bulk.pending != null) {
+        bulk.confirmDialog(s, c);
+    } else if (s.pending) |p| {
+        confirmDialog(s, c, p.verb, p.name);
+    } else if (s.ops.pending) |p| {
+        engineConfirmDialog(s, c, &p);
+    } else if (s.prune_open) {
+        pruneDialog(s, c);
+    } else if (s.create_dialog.open != null) {
+        create_mod.dialog(s, c);
+    }
+    panel.end();
+}
+
+/// Whether a sheet's Enter/Escape may be taken this frame. A focused field
+/// belongs to the sheet only for the create form; anything else is page
+/// focus that slipped through and must be ignored.
+fn sheetKeysAllowed(s: *app.State, c: *ui.Context) bool {
+    if (c.focus == 0) return true;
+    return s.create_dialog.open != null and c.focus == s.create_dialog.name.last_id;
+}
+
+/// A sheet title is the one explicitly described element. Describing the
+/// panel itself would claim every control inside it, leaving VoiceOver with
+/// a labelled box and no buttons.
+fn sheetHeading(c: *ui.Context, text: []const u8, color: ui.Color, wrap: bool) void {
+    const at: u32 = @intCast(c.nodes.items.len);
+    ui.text(c, text, .{ .size = 13, .weight = .semibold, .color = color, .wrap = wrap });
+    ui.access.describe(c, at, .{ .role = .static_text, .label = text, .header = true });
 }
 
 fn rail(s: *app.State, c: *ui.Context) void {
@@ -62,7 +150,7 @@ fn rail(s: *app.State, c: *ui.Context) void {
     // A runtime loop, not `inline for`: inside an inline for the deferred
     // `.end()` calls all run at the end of the unrolled block, nesting every
     // nav item inside the first one.
-    for (TABS) |tab| {
+    for (tabs.all) |tab| {
         if (tab == .containers) {
             if (narrow) divider(c) else section(c, "Resources");
         }
@@ -101,15 +189,10 @@ fn railItem(s: *app.State, c: *ui.Context, tab: app.Tab, narrow: bool) void {
         .rounded(7)
         .bg(if (selected) c.theme.accent else c.theme.surface);
     item = if (narrow) item.justifyCenter() else item.px(6);
-    if (item.clicked()) {
-        // A row from one view has no meaning in another; the inspector closes
-        // with the tab rather than following the user around.
-        if (s.tab != tab and s.selected != null) s.clearSelection();
-        // The create dialog belongs to Volumes and Networks; leaving the page
-        // must not leave its form floating over another list.
-        if (s.tab != tab) s.create_dialog.open = null;
-        s.tab = tab;
-        s.redraw();
+    const it = item.interaction();
+    if (it.clicked) {
+        c.changed = true;
+        shortcuts.switchTab(s, tab);
     }
     defer item.end();
 
@@ -119,6 +202,22 @@ fn railItem(s: *app.State, c: *ui.Context, tab: app.Tab, narrow: bool) void {
     ui.icon(c, tab.icon(), .{ .size = if (narrow) 13 else 12, .color = if (selected) c.theme.accent_text else tint });
     chip.end(); // before the label, or the label becomes a child of the 20pt chip
 
+    // The icon-only rail still has to say what each glyph means, both to a
+    // pointer at rest and to VoiceOver. The figure is part of the name so the
+    // tooltip carries the same monitor reading the wide rail prints.
+    const figure = railFigure(s, c, tab);
+    const accessible = if (figure.len > 0)
+        c.print("{s} · {s}", .{ tab.label(), figure })
+    else
+        tab.label();
+    kit.tooltip(c, it, accessible, .{ .placement = .right });
+    ui.access.describe(c, item.index, .{
+        .role = .tab,
+        .label = accessible,
+        .selected = selected,
+        .hint = c.print("Switch to {s}", .{tab.label()}),
+    });
+
     if (narrow) return;
     ui.text(c, tab.label(), .{
         .size = 13,
@@ -126,7 +225,6 @@ fn railItem(s: *app.State, c: *ui.Context, tab: app.Tab, narrow: bool) void {
         .color = if (selected) c.theme.accent_text else c.theme.text,
     });
     ui.spacer(c);
-    const figure = railFigure(s, c, tab);
     if (figure.len > 0) ui.text(c, figure, .{
         .size = 10.5,
         .mono = true,
@@ -221,27 +319,8 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         "Engine not answering";
     var status = ui.div(c).column().wFull().gap(3).pb(6);
     status = if (narrow) status.itemsCenter() else status.px(8);
+    const status_it = status.interaction();
     defer status.end();
-
-    const line = ui.div(c).row().itemsCenter().gap(if (narrow) 5 else 7);
-    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (scanning or live) theme.warning_fill else c.theme.danger);
-    dot.end();
-    ui.text(c, label, .{
-        .size = if (narrow) 9.5 else 11,
-        .color = if (warn) theme.warning(c.theme) else if (scanning or live) c.theme.muted else theme.dangerText(c.theme),
-    });
-    line.end();
-
-    if (narrow) {
-        if (s.toast) |t| {
-            ui.text(c, t.text, .{
-                .size = 9.5,
-                .color = if (t.bad) theme.dangerText(c.theme) else theme.successText(c.theme),
-                .wrap = true,
-            });
-        }
-        return;
-    }
 
     // Frame-owned copy: the runtime strings belong to the state and a scan may
     // replace them between frames, while this painted slice must stay valid.
@@ -253,6 +332,51 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
         c.print("{s}", .{r.name})
     else
         "no engine found";
+    const clock = if (s.last_update == 0) "not yet" else format.clock(c, s.last_update);
+    const updated_line = c.print("updated {s}", .{clock});
+    // The bottom line is one monitor readout wherever the rail is: status,
+    // engine name and the clock that proves a refresh happened. In narrow
+    // form the last two stack, because 88 points cannot hold a sentence.
+    const status_label = c.print("{s} · {s} · {s}", .{ label, engine_line, updated_line });
+    kit.tooltip(c, status_it, status_label, .{ .placement = .right });
+    // The tooltip needs an interaction for hover, but the readout is not a
+    // control: describe it as static text or VoiceOver announces a button.
+    ui.access.describe(c, status.index, .{ .role = .static_text, .label = status_label });
+
+    const line = ui.div(c).row().itemsCenter().gap(if (narrow) 5 else 7);
+    const dot = ui.div(c).w(7).h(7).rounded(4).bg(if (warn) c.theme.danger else if (scanning or live) theme.warning_fill else c.theme.danger);
+    dot.end();
+    ui.text(c, label, .{
+        .size = if (narrow) 9.5 else 11,
+        .color = if (warn) theme.warning(c.theme) else if (scanning or live) c.theme.muted else theme.dangerText(c.theme),
+    });
+    line.end();
+
+    if (narrow) {
+        ui.text(c, engine_line, .{
+            .size = 9,
+            .color = if (warn) theme.warning(c.theme) else c.theme.muted,
+            .truncate = .middle,
+        });
+        // 88 points fit the clock, not "updated" plus seconds; the tooltip
+        // above still carries the full sentence.
+        ui.text(c, clock, .{
+            .size = 9,
+            .mono = true,
+            .color = c.theme.muted,
+        });
+        if (s.toast) |t| {
+            // One clipped line: a long engine message must not grow the
+            // status block until it pushes the clock off the window.
+            ui.text(c, t.text, .{
+                .size = 9.5,
+                .color = if (t.bad) theme.dangerText(c.theme) else theme.successText(c.theme),
+                .truncate = .middle,
+            });
+        }
+        return;
+    }
+
     ui.text(c, engine_line, .{
         .size = 10.5,
         .color = if (warn) theme.warning(c.theme) else c.theme.muted,
@@ -268,9 +392,7 @@ fn railStatus(s: *app.State, c: *ui.Context, narrow: bool) void {
 
     // The timestamp is the refresh indicator; the rescan lives with the
     // sockets it rescans, under Runtimes.
-    ui.text(c, c.print("updated {s}", .{
-        if (s.last_update == 0) "not yet" else format.clock(c, s.last_update),
-    }), .{ .size = 10, .color = c.theme.muted, .mono = true });
+    ui.text(c, updated_line, .{ .size = 10, .color = c.theme.muted, .mono = true });
 }
 
 fn header(s: *app.State, c: *ui.Context) void {
@@ -306,14 +428,43 @@ fn body(s: *app.State, c: *ui.Context) void {
 
 /// The confirmation every destructive action goes through, naming its target.
 pub fn confirmDialog(s: *app.State, c: *ui.Context, verb: []const u8, target: []const u8) void {
+    const keys = sheetKeysAllowed(s, c);
+    if (keys and c.shortcut(.{ .key = ui.Shortcut.escape })) {
+        s.resolvePending(false);
+        return;
+    }
+    const enter = keys and c.input.key == .enter;
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.danger);
     defer box.end();
-    ui.text(c, verb, .{ .size = 13, .weight = .semibold, .color = theme.dangerText(c.theme) });
+    sheetHeading(c, verb, theme.dangerText(c.theme), false);
     const line = c.print("{s} — {s}", .{ target, verb });
-    ui.text(c, line, .{ .size = 12, .color = c.theme.muted });
+    ui.text(c, line, .{ .size = 12, .color = c.theme.muted, .wrap = true });
     const row = ui.div(c).row().wFull().justifyEnd().gap(8);
     if (widgets.dialogButton(c, "Cancel", false, false)) s.resolvePending(false);
-    if (widgets.dialogButton(c, "Confirm", true, true)) s.resolvePending(true);
+    if (enter or widgets.dialogButton(c, "Confirm", true, true)) s.resolvePending(true);
+    row.end();
+}
+
+/// Stopping or restarting a machine stops the containers inside it. The
+/// sentence names the engine and the count captured when the button was
+/// pressed, so the answer is about the engine the user pointed at.
+fn engineConfirmDialog(s: *app.State, c: *ui.Context, p: *const ops.Pending) void {
+    const keys = sheetKeysAllowed(s, c);
+    if (keys and c.shortcut(.{ .key = ui.Shortcut.escape })) {
+        ops.resolve(s, false);
+        return;
+    }
+    const enter = keys and c.input.key == .enter;
+    const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.danger);
+    defer box.end();
+    // A machine name can be long; the title wraps inside the 620-point panel
+    // instead of running under the buttons.
+    sheetHeading(c, c.print("{s} {s}?", .{ p.verb.title(), p.nameText() }), theme.dangerText(c.theme), true);
+    var line_buf: [256]u8 = undefined;
+    ui.text(c, c.print("{s}", .{ops.consequence(p, &line_buf)}), .{ .size = 12, .color = c.theme.muted, .wrap = true });
+    const row = ui.div(c).row().wFull().justifyEnd().gap(8);
+    if (widgets.dialogButton(c, "Cancel", false, false)) ops.resolve(s, false);
+    if (enter or widgets.dialogButton(c, p.verb.title(), true, true)) ops.resolve(s, true);
     row.end();
 }
 
@@ -321,6 +472,12 @@ pub fn confirmDialog(s: *app.State, c: *ui.Context, verb: []const u8, target: []
 /// amounts come from the last `/system/df`, so the user sees what is at stake
 /// before the first destructive click.
 fn pruneDialog(s: *app.State, c: *ui.Context) void {
+    const keys = sheetKeysAllowed(s, c);
+    if (keys and c.shortcut(.{ .key = ui.Shortcut.escape })) {
+        s.closePrune();
+        return;
+    }
+    const enter = keys and c.input.key == .enter;
     const engine: prune.Engine = if (s.activeRuntime()) |rt|
         switch (rt.dialect) {
             .podman => .podman,
@@ -348,14 +505,14 @@ fn pruneDialog(s: *app.State, c: *ui.Context) void {
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.accent);
     defer box.end();
     const head = ui.div(c).row().wFull().itemsCenter().gap(8);
-    ui.text(c, "Clean up unused data", .{ .size = 13, .weight = .semibold });
+    sheetHeading(c, "Clean up unused data", c.theme.text, false);
     ui.spacer(c);
     ui.text(c, c.print("{s} selected", .{format.bytesSigned(c, @max(0, selected))}), .{ .size = 11, .color = c.theme.muted });
     head.end();
     ui.text(c, if (build_cache_supported)
         "Stopped containers, unused images and build cache. Volumes and networks are opt-in; this cannot be undone."
     else
-        "Stopped containers and unused images. Volumes and networks are opt-in; this cannot be undone.", .{ .size = 11.5, .color = c.theme.muted });
+        "Stopped containers and unused images. Volumes and networks are opt-in; this cannot be undone.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
 
     pruneOption(c, "Stopped containers", cont, &s.prune_opts.containers);
     pruneOption(c, "Unused images", imgs, &s.prune_opts.images);
@@ -365,7 +522,7 @@ fn pruneDialog(s: *app.State, c: *ui.Context) void {
 
     const buttons = ui.div(c).row().wFull().justifyEnd().gap(8).pt(2);
     if (widgets.dialogButton(c, "Cancel", false, false)) s.closePrune();
-    if (widgets.dialogButton(c, "Clean up", true, true)) s.runPrune();
+    if (enter or widgets.dialogButton(c, "Clean up", true, true)) s.runPrune();
     buttons.end();
 }
 

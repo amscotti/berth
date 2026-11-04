@@ -6,6 +6,7 @@ const nanoui = @import("nanoui");
 const app = @import("app.zig");
 const command = @import("engine/command.zig");
 const discovery = @import("engine/discovery.zig");
+const sheets = @import("sheets.zig");
 const session = @import("session.zig");
 
 /// GUI apps inherit a minimal PATH; the container tools live in Homebrew and
@@ -32,10 +33,54 @@ pub const Verb = enum {
             .restart => "restart",
         };
     }
+
+    pub fn title(self: Verb) []const u8 {
+        return switch (self) {
+            .start => "Start",
+            .stop => "Stop",
+            .restart => "Restart",
+        };
+    }
 };
+
+/// A machine command waiting on its confirmation. The socket and name are
+/// copied because discovery can replace the runtime slice between the click
+/// and the answer, and the action must still target the engine that was named.
+pub const Pending = struct {
+    verb: Verb,
+    kind: discovery.Kind,
+    name: [128]u8 = undefined,
+    name_len: usize = 0,
+    socket: [512]u8 = undefined,
+    socket_len: usize = 0,
+    /// How many running containers the command takes down with the engine,
+    /// read when the question was asked rather than when it is answered.
+    /// Null when neither the live list nor `/info` has answered yet: the
+    /// sentence must not claim zero.
+    running: ?usize = null,
+
+    pub fn nameText(self: *const Pending) []const u8 {
+        return self.name[0..self.name_len];
+    }
+
+    pub fn socketText(self: *const Pending) []const u8 {
+        return self.socket[0..self.socket_len];
+    }
+};
+
+/// The sentence under the engine confirmation. Formatted into the caller's
+/// buffer so the unknown-count case is testable without a frame.
+pub fn consequence(p: *const Pending, buf: []u8) []const u8 {
+    if (p.running) |n| {
+        if (n == 1) return std.fmt.bufPrint(buf, "1 running container on {s} will stop with the engine.", .{p.nameText()}) catch "A running container will stop with the engine.";
+        return std.fmt.bufPrint(buf, "{d} running containers on {s} will stop with the engine.", .{ n, p.nameText() }) catch "Running containers will stop with the engine.";
+    }
+    return std.fmt.bufPrint(buf, "Running containers on {s} will stop with the engine.", .{p.nameText()}) catch "Running containers will stop with the engine.";
+}
 
 pub const State = struct {
     job: ?*command.Job = null,
+    pending: ?Pending = null,
     label_buf: [96]u8 = undefined,
     label_len: usize = 0,
     /// The engine this job was started for, captured before a minutes-long
@@ -56,16 +101,48 @@ pub const State = struct {
     pub fn running(self: *const State) bool {
         return self.job != null;
     }
+
+    pub fn dismissPending(self: *State) void {
+        self.pending = null;
+    }
 };
 
 pub fn supported(kind: discovery.Kind) bool {
     return kind == .lima or kind == .colima or kind == .podman_machine;
 }
 
-pub fn start(s: *app.State, verb: Verb, kind: discovery.Kind, socket: []const u8) void {
+/// Asks before stopping or restarting a machine: both take every running
+/// container down with them. Start is safe and still runs immediately.
+pub fn confirm(s: *app.State, verb: Verb, rt: *const discovery.Runtime, running: ?usize) void {
+    if (verb == .start or rt.socket.len > 512) return;
+    sheets.dismiss(s);
+    var p: Pending = .{ .verb = verb, .kind = rt.kind, .running = running };
+    p.name_len = @min(rt.name.len, p.name.len);
+    @memcpy(p.name[0..p.name_len], rt.name[0..p.name_len]);
+    p.socket_len = rt.socket.len;
+    @memcpy(p.socket[0..p.socket_len], rt.socket);
+    s.ops.pending = p;
+    s.redraw();
+}
+
+pub fn resolve(s: *app.State, ok: bool) void {
+    const pending = s.ops.pending orelse return;
+    if (!ok) {
+        s.ops.pending = null;
+        s.redraw();
+        return;
+    }
+    // Keep the question until the command actually started. A refusal (busy,
+    // spawn failure) can be retried; discarding it would hide the reason
+    // behind a toast and leave the user to click Stop again from scratch.
+    if (start(s, pending.verb, pending.kind, pending.socketText())) s.ops.pending = null;
+    s.redraw();
+}
+
+pub fn start(s: *app.State, verb: Verb, kind: discovery.Kind, socket: []const u8) bool {
     if (s.mutating()) {
         s.notify("wait for the current engine operation to finish", true);
-        return;
+        return false;
     }
 
     var target_buf: [96]u8 = undefined;
@@ -107,11 +184,12 @@ pub fn start(s: *app.State, verb: Verb, kind: discovery.Kind, socket: []const u8
         finish,
     ) catch {
         s.notify("could not start the engine command", true);
-        return;
+        return false;
     };
     s.ops.job = job;
     s.ops.restart_after_stop = planned.restart_after_stop;
     s.redraw();
+    return true;
 }
 
 const Plan = struct {
@@ -147,7 +225,7 @@ fn finish(ctx: ?*anyopaque) callconv(.c) void {
     if (label.len > 0) s.gpa.free(label);
 
     if (restart_after_stop and ok) {
-        start(s, .start, s.ops.target_kind, restartSocket(s));
+        _ = start(s, .start, s.ops.target_kind, restartSocket(s));
         // If the second half could not spawn, still rescan and release any
         // switch or scan queued behind the restart.
         if (s.ops.job == null) {
@@ -290,4 +368,35 @@ test "restart uses one command where the tool has it" {
     const lima = plan(.restart, .lima);
     try std.testing.expectEqual(Verb.stop, lima.verb);
     try std.testing.expect(lima.restart_after_stop);
+}
+
+test "an unknown engine count is worded without a number" {
+    var p: Pending = .{ .verb = .stop, .kind = .lima };
+    p.name_len = 4;
+    @memcpy(p.name[0..4], "lima");
+    var buf: [192]u8 = undefined;
+
+    try std.testing.expectEqualStrings("Running containers on lima will stop with the engine.", consequence(&p, &buf));
+    p.running = 1;
+    try std.testing.expectEqualStrings("1 running container on lima will stop with the engine.", consequence(&p, &buf));
+    p.running = 3;
+    try std.testing.expectEqualStrings("3 running containers on lima will stop with the engine.", consequence(&p, &buf));
+}
+
+test "a refused engine command keeps its confirmation" {
+    var state = app.State{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+
+    var fake: command.Job = undefined;
+    state.ops.job = &fake;
+    state.ops.pending = .{ .verb = .stop, .kind = .lima };
+    resolve(&state, true);
+    // Still busy: the question stays so the retry is one click away.
+    try std.testing.expect(state.ops.pending != null);
+    state.ops.job = null;
 }

@@ -260,6 +260,8 @@ pub const Info = struct {
     ContainersRunning: u32 = 0,
     ContainersPaused: u32 = 0,
     ContainersStopped: u32 = 0,
+    /// Not every engine reports this; an absent field stays zero.
+    ContainersRestarting: u32 = 0,
     Images: u32 = 0,
 };
 

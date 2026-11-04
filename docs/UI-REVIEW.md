@@ -296,3 +296,30 @@ Evidence: `volumes-light.png`, `volumes-dialog-light.png`,
   sharing Pull's right edge instead of crowding the Env row.
 - **Stacks:** Start all is the accent primary action, Stop all neutral.
 - **Host bar:** the engine segment is labelled "engine helpers".
+
+## Review-fix evidence: modal sheets, inline errors, keyboard
+
+The follow-up review found that the sheets were inline cards, so row actions and
+rail navigation stayed live behind them; a refused engine command discarded its
+question; and engine counts could print an unknown as zero. The fix draws every
+sheet on nanoui's dialog layers: a full-window backdrop consumes pointer events,
+the panel is the only live control, and a focused page field cannot take the
+sheet's Enter or Escape. While a sheet is open, the rail and page leave the
+accessibility tree; its title is a static heading and its buttons and fields
+remain individual elements, so VoiceOver can reach Cancel, the primary action
+and the name field. The backdrop also owns the wheel so the page cannot scroll
+behind it. The rail carries cross-platform drawn tooltips and accessible tab
+names, while the narrow status keeps the engine name and a clock that fits 88
+points. Local pull/run/create failures now sit beside their fields instead of
+in the truncated rail toast.
+
+Evidence, all at 960×600 with the live Lima engine (`docs/ui/review/`):
+
+- `rail-960-light.png`, `rail-960-dark.png` — narrow rail, tooltip, engine and clock.
+- `form-errors-960-light.png`, `create-error-960-light.png` — inline validation.
+- `prune-960-light.png`, `confirm-960-light.png`, `engine-stop-960-light.png` — modal sheets and engine count.
+- `bulk-960-light.png` — Select all shown / None in the bulk bar.
+
+Reproduce with `BERTH_SIZE`, `BERTH_THEME` and `BERTH_SHEET`; the flag list is in
+`AGENTS.md`. Larger dark/light variants were inspected during the pass and
+removed as duplicates.

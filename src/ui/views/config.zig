@@ -1,5 +1,6 @@
 //! Runtimes and Settings: the engine chooser, socket discovery and the
 //! preferences that belong to the machine rather than to a container.
+const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../../app.zig");
@@ -9,6 +10,7 @@ const format = @import("../format.zig");
 const widgets = @import("../widgets.zig");
 const theme = @import("../theme.zig");
 const prefs = @import("../../settings.zig");
+const shortcuts = @import("../../shortcuts.zig");
 
 const KINDS = [_]discovery.Kind{
     .docker_desktop,
@@ -54,6 +56,21 @@ pub fn runtimes(s: *app.State, c: *ui.Context) void {
     }
 
     for (KINDS) |kind| kindCard(s, c, kind);
+}
+
+/// How many running containers a machine command takes down, when that is
+/// actually known. Before the first commit there is no live list, and a
+/// failed `/info` leaves a zero that is not a count.
+pub fn stopCount(s: *app.State, rt: *const discovery.Runtime, active: bool) ?usize {
+    if (active and s.last_update != 0) return app.runningCount(s);
+    if (rt.info_read) {
+        // `/info` splits running from paused. A paused container still holds
+        // its process and stops with the engine, so both are in the sentence.
+        return @as(usize, @intCast(rt.info.ContainersRunning)) +
+            @as(usize, @intCast(rt.info.ContainersPaused)) +
+            @as(usize, @intCast(rt.info.ContainersRestarting));
+    }
+    return null;
 }
 
 fn customSocket(s: *app.State, c: *ui.Context) void {
@@ -139,6 +156,7 @@ fn kindCard(s: *app.State, c: *ui.Context, kind: discovery.Kind) void {
 
 fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.Runtime) void {
     const active = index == s.active;
+    const running = stopCount(s, rt, active);
     const row = ui.div(c).row().wFull().itemsCenter().gap(8).h(30).px(2);
     const dot = ui.div(c).w(6).h(6).rounded(3)
         .bg(if (rt.reachable) c.theme.success else c.theme.danger.alpha(0.7));
@@ -152,9 +170,9 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
     if (active) ui.text(c, "active", .{ .size = 10.5, .weight = .medium, .color = theme.accentText(c.theme) });
     if (ops.supported(rt.kind) and !s.ops.running()) {
         if (!rt.reachable) {
-            if (settingButton(c, "Start", false)) ops.start(s, .start, rt.kind, rt.socket);
+            if (settingButton(c, "Start", false)) _ = ops.start(s, .start, rt.kind, rt.socket);
         } else if (active) {
-            if (settingButton(c, "Restart", false)) ops.start(s, .restart, rt.kind, rt.socket);
+            if (settingButton(c, "Restart", false)) ops.confirm(s, .restart, rt, running);
         }
     }
     if (!rt.reachable and !ops.supported(rt.kind)) {
@@ -164,7 +182,7 @@ fn runtimeRow(s: *app.State, c: *ui.Context, index: usize, rt: *const discovery.
         if (settingButton(c, "Use", false)) s.selectRuntime(index);
     }
     if (rt.reachable and ops.supported(rt.kind) and !s.ops.running()) {
-        if (settingButton(c, "Stop", false)) ops.start(s, .stop, rt.kind, rt.socket);
+        if (settingButton(c, "Stop", false)) ops.confirm(s, .stop, rt, running);
     }
     row.end();
 }
@@ -282,9 +300,10 @@ fn engineCard(s: *app.State, c: *ui.Context) void {
             ui.text(c, if (scanning) "Reading engine…" else "No engine is answering. Add a socket on Runtimes.", .{ .size = 11.5, .color = c.theme.muted, .wrap = true });
         }
         if (settingButton(c, "All sockets…", false)) {
-            s.tab = .runtimes;
             s.engine_menu_open = false;
-            s.redraw();
+            // The shared path closes any sheet and the inspector before the
+            // page changes, exactly as the rail and keyboard do.
+            shortcuts.switchTab(s, .runtimes);
         }
     }
     engine.end();
@@ -309,4 +328,34 @@ fn settingButton(c: *ui.Context, label: []const u8, primary: bool) bool {
         .color = if (primary) c.theme.accent_text else c.theme.text,
     });
     return box.clicked();
+}
+
+test "the stop count waits for a live pass or a fetched info" {
+    var state = app.State{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+    var rt = discovery.Runtime{ .name = "lima", .kind = .lima };
+
+    // Nothing has committed and /info failed: not zero, unknown.
+    try std.testing.expect(stopCount(&state, &rt, true) == null);
+    rt.info_read = true;
+    rt.info.ContainersRunning = 4;
+    rt.info.ContainersPaused = 1;
+    try std.testing.expectEqual(@as(?usize, 5), stopCount(&state, &rt, true));
+
+    // A live list wins once a pass has committed.
+    state.last_update = 1;
+    var items = [_]@import("../../engine/api.zig").Container{
+        .{ .State = "running" },
+        .{ .State = "paused" },
+        .{ .State = "exited" },
+    };
+    state.containers = items[0..];
+    try std.testing.expectEqual(@as(?usize, 2), stopCount(&state, &rt, true));
+    // Another engine keeps using its own /info figure, paused included.
+    try std.testing.expectEqual(@as(?usize, 5), stopCount(&state, &rt, false));
 }

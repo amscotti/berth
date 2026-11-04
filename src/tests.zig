@@ -15,7 +15,10 @@ test {
     _ = @import("engine/create.zig");
     _ = @import("image_tasks.zig");
     _ = @import("image_refs.zig");
+    _ = @import("image_validation.zig");
     _ = @import("create.zig");
+    _ = @import("sheets.zig");
+    _ = @import("shortcuts.zig");
     _ = @import("terminal.zig");
     _ = @import("engine/command.zig");
     _ = @import("ops.zig");
@@ -47,6 +50,7 @@ test {
     _ = @import("ui/layout.zig");
     _ = @import("ui/detail.zig");
     _ = @import("ui/shell.zig");
+    _ = @import("ui/shell_tests.zig");
     _ = @import("ui/views/stacks.zig");
     _ = @import("ui/format.zig");
     _ = @import("ui/widgets.zig");

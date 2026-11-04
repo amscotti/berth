@@ -7,6 +7,8 @@ const ui = nanoui.ui;
 const app = @import("app.zig");
 const api = @import("engine/api.zig");
 const widgets = @import("ui/widgets.zig");
+const search = @import("ui/views/search.zig");
+const sheets = @import("sheets.zig");
 const bulk_batch = @import("bulk_batch.zig");
 const bulk_action = @import("bulk_action.zig");
 
@@ -69,6 +71,33 @@ pub const State = struct {
         @memcpy(self.ids[self.count][0..n], container_id);
         self.lens[self.count] = @intCast(n);
         self.count += 1;
+    }
+
+    /// Selects every row the current filter and search leave on screen, in
+    /// the engine's order, up to the same 512-row cap as manual ticks. The
+    /// table can show at most that many, so the button cannot promise rows
+    /// the list never painted.
+    pub fn selectShown(self: *State, containers: []const api.Container, filter: app.Filter, query: []const u8) void {
+        // A confirmation names a frozen set; letting the bar change it behind
+        // the dialog would make the count and the worker disagree.
+        if (self.pending != null) return;
+        self.count = 0;
+        for (containers) |*ct| {
+            if (!filter.keeps(ct)) continue;
+            if (!search.keepContainer(query, ct)) continue;
+            if (ct.Id.len == 0 or ct.Id.len > id_len) continue;
+            if (self.count == max) break;
+            const n = ct.Id.len;
+            @memcpy(self.ids[self.count][0..n], ct.Id);
+            self.lens[self.count] = @intCast(n);
+            self.count += 1;
+        }
+    }
+
+    /// "None" clears the ticks without leaving checkbox mode.
+    pub fn selectNone(self: *State) void {
+        if (self.pending != null) return;
+        self.count = 0;
     }
 
     /// Turns checkbox mode on or off. Leaving it drops the batch, as Cancel
@@ -145,6 +174,7 @@ pub fn stopSelected(s: *app.State) void {
         noChange(s, .stop);
         return;
     }
+    sheets.dismiss(s);
     s.bulk.project_len = 0;
     s.bulk.pending_batch.snapshot(ids[0..n]);
     s.bulk.pending = .{ .route = .stop };
@@ -158,6 +188,7 @@ pub fn deleteSelected(s: *app.State) void {
         noChange(s, .delete);
         return;
     }
+    sheets.dismiss(s);
     s.bulk.project_len = 0;
     s.bulk.pending_batch.snapshot(ids[0..n]);
     s.bulk.pending = .{ .route = .delete };
@@ -179,6 +210,7 @@ pub fn stopProject(s: *app.State, project: []const u8) void {
     var ids: [max][]const u8 = undefined;
     const n = projectIds(s.containers, project, .stop, &ids);
     if (n == 0) return;
+    sheets.dismiss(s);
     s.bulk.project_len = project.len;
     @memcpy(s.bulk.project[0..s.bulk.project_len], project);
     s.bulk.pending = .{ .route = .stop };
@@ -187,8 +219,9 @@ pub fn stopProject(s: *app.State, project: []const u8) void {
 
 pub fn resolve(s: *app.State, ok: bool) void {
     const pending = s.bulk.pending orelse return;
-    s.bulk.pending = null;
     if (!ok) {
+        s.bulk.pending = null;
+        s.bulk.pending_batch.count = 0;
         s.bulk.project_len = 0;
         s.redraw();
         return;
@@ -197,15 +230,30 @@ pub fn resolve(s: *app.State, ok: bool) void {
         const project = s.bulk.project[0..s.bulk.project_len];
         var ids: [max][]const u8 = undefined;
         const n = projectIds(s.containers, project, pending.route, &ids);
-        s.bulk.project_len = 0;
         if (n == 0) {
-            s.notifyFmt("nothing to {s} in {s}", .{ pending.route.word(), project }, true);
+            // Nothing left to change is not a failure; do not flash red.
+            s.notifyFmt("nothing to {s} in {s}", .{ pending.route.word(), project }, false);
+            s.bulk.pending = null;
+            s.bulk.pending_batch.count = 0;
+            s.bulk.project_len = 0;
+            s.redraw();
             return;
         }
+        // `start` clears the pending question only once its worker exists.
         _ = bulk_action.start(s, pending.route, ids[0..n], project);
         return;
     }
-    startJob(s, pending.route);
+
+    var ids: [max][]const u8 = undefined;
+    const n = s.bulk.pending_batch.live(s.containers, &ids);
+    if (n == 0) {
+        noChange(s, pending.route);
+        s.bulk.pending = null;
+        s.bulk.pending_batch.count = 0;
+        s.redraw();
+        return;
+    }
+    if (bulk_action.start(s, pending.route, ids[0..n], "")) s.bulk.clear();
 }
 
 /// The confirmation re-reads the project each frame it is open, so its count
@@ -270,17 +318,6 @@ fn projectIds(containers: []const api.Container, project: []const u8, route: Rou
     return n;
 }
 
-/// Runs the batch the confirmation named, not today's live selection.
-fn startJob(s: *app.State, route: Route) void {
-    var ids: [max][]const u8 = undefined;
-    const n = s.bulk.pending_batch.live(s.containers, &ids);
-    if (n == 0) {
-        noChange(s, route);
-        return;
-    }
-    if (bulk_action.start(s, route, ids[0..n], "")) s.bulk.clear();
-}
-
 /// User Cancel: stop between items and let the worker's finish report.
 pub fn cancel(s: *app.State) void {
     bulk_action.cancel(s);
@@ -293,10 +330,20 @@ pub fn discard(s: *app.State) void {
 
 pub fn confirmDialog(s: *app.State, c: *ui.Context) void {
     const pending = s.bulk.pending orelse return;
+    // The shell clears page focus when the sheet opens; this is the second
+    // guard against a background field taking the sheet's keys.
+    const keys = c.focus == 0;
+    if (keys and c.shortcut(.{ .key = ui.Shortcut.escape })) {
+        resolve(s, false);
+        return;
+    }
+    const enter = keys and c.input.key == .enter;
     const project = s.bulk.project[0..s.bulk.project_len];
     const count = if (project.len > 0) countProject(s, project, pending.route) else s.bulk.pending_batch.count;
     const box = ui.div(c).column().wFull().gap(8).p(12).rounded(10).bg(c.theme.surface).border(c.theme.danger);
+    const title_at: u32 = @intCast(c.nodes.items.len);
     ui.text(c, pending.route.word(), .{ .size = 13, .weight = .semibold, .color = c.theme.danger });
+    ui.access.describe(c, title_at, .{ .role = .static_text, .label = pending.route.word(), .header = true });
     const line = if (count == 0 and project.len > 0)
         c.print("nothing left to {s} in {s}", .{ @tagName(pending.route), project })
     else if (count == 0)
@@ -310,12 +357,13 @@ pub fn confirmDialog(s: *app.State, c: *ui.Context) void {
     ui.text(c, line, .{
         .size = 12,
         .color = c.theme.muted,
+        .wrap = true,
     });
     const row = ui.div(c).row().wFull().justifyEnd().gap(8);
     if (widgets.dialogButton(c, "Cancel", false, false)) resolve(s, false);
     // Nothing left to run: only Cancel, so the dialog cannot offer an action
     // that resolve would immediately turn into a no-op.
-    if (count > 0 and widgets.dialogButton(c, pending.route.word(), true, true)) resolve(s, true);
+    if (count > 0 and (enter or widgets.dialogButton(c, pending.route.word(), true, true))) resolve(s, true);
     row.end();
     box.end();
 }
@@ -427,6 +475,36 @@ test "a confirmed batch is the set resolve sends" {
     try std.testing.expectEqualStrings("a", sent[0]);
 }
 
+test "select all shown respects the filter, the search and the cap" {
+    const items = [_]api.Container{
+        .{ .Id = "web-up", .Names = &.{"/web-up"}, .State = "running" },
+        .{ .Id = "web-down", .Names = &.{"/web-down"}, .State = "exited" },
+        .{ .Id = "db-up", .Names = &.{"/db-up"}, .State = "running" },
+    };
+    var state: State = .{ .enabled = true };
+    state.selectShown(items[0..], .running, "web");
+    try std.testing.expectEqual(@as(usize, 1), state.count);
+    try std.testing.expectEqualStrings("web-up", state.id(0));
+
+    state.selectShown(items[0..], .all, "");
+    try std.testing.expectEqual(@as(usize, 3), state.count);
+    state.selectNone();
+    try std.testing.expectEqual(@as(usize, 0), state.count);
+
+    // The list itself stops at 512; a "select all" over a bigger snapshot
+    // must not grow a batch the worker cannot carry.
+    var many: [max + 1]api.Container = undefined;
+    var ids: [max + 1][8]u8 = undefined;
+    for (&many, &ids, 0..) |*ct, *id, i| {
+        const text = std.fmt.bufPrint(id, "c{d}", .{i}) catch unreachable;
+        ct.* = .{ .Id = text, .State = "running" };
+    }
+    state.selectShown(many[0..], .all, "");
+    try std.testing.expectEqual(@as(usize, max), state.count);
+    try std.testing.expectEqualStrings("c0", state.id(0));
+    try std.testing.expectEqualStrings("c511", state.id(max - 1));
+}
+
 test "a project batch takes only the containers the route would change" {
     var running = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
     defer running.deinit();
@@ -447,4 +525,66 @@ test "a project batch takes only the containers the route would change" {
     try std.testing.expectEqual(@as(usize, 1), projectIds(items[0..], "shop", .stop, &out));
     try std.testing.expectEqualStrings("up", out[0]);
     try std.testing.expectEqual(@as(usize, 0), projectIds(items[0..], "missing", .stop, &out));
+}
+
+test "a refused bulk action keeps its confirmation" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+
+    var items = [_]api.Container{.{ .Id = "abc", .State = "running" }};
+    state.containers = items[0..];
+    state.bulk.enabled = true;
+    state.bulk.pending = .{ .route = .stop };
+    state.bulk.pending_batch.snapshot(&[_][]const u8{"abc"});
+
+    // No client is a refusal before the worker exists. The dialog and the
+    // frozen batch must survive so the user can retry, not vanish.
+    resolve(&state, true);
+    try std.testing.expect(state.bulk.pending != null);
+    try std.testing.expectEqual(@as(usize, 1), state.bulk.pending_batch.count);
+}
+
+test "a refused project bulk action keeps its question" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+
+    var labels = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"com.docker.compose.project\":\"shop\"}", .{});
+    defer labels.deinit();
+    var items = [_]api.Container{.{ .Id = "abc", .State = "running", .Labels = labels.value }};
+    state.containers = items[0..];
+    state.bulk.pending = .{ .route = .stop };
+    state.bulk.project_len = 4;
+    @memcpy(state.bulk.project[0..4], "shop");
+
+    resolve(&state, true);
+    try std.testing.expect(state.bulk.pending != null);
+    try std.testing.expectEqual(@as(usize, 4), state.bulk.project_len);
+}
+
+test "an emptied project confirmation is neutral, not an error" {
+    var state: app.State = .{
+        .gpa = std.testing.allocator,
+        .io = std.testing.io,
+        .app = undefined,
+        .arena = .init(std.testing.allocator),
+    };
+    defer state.arena.deinit();
+
+    state.bulk.pending = .{ .route = .stop };
+    state.bulk.project_len = 4;
+    @memcpy(state.bulk.project[0..4], "shop");
+    resolve(&state, true);
+    try std.testing.expect(state.bulk.pending == null);
+    try std.testing.expect(state.toast != null);
+    try std.testing.expect(!state.toast.?.bad);
 }

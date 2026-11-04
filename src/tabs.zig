@@ -75,6 +75,13 @@ pub const Tab = enum {
     }
 };
 
+/// The rail's order, and the order keyboard shortcuts address. Kept here so
+/// the rail and the shortcut map cannot drift apart.
+pub const all = [_]Tab{
+    .overview, .containers, .images, .volumes,  .networks,
+    .events,   .stacks,     .disk,   .runtimes, .settings,
+};
+
 /// One search buffer per list view. They are separate so that focus, caret
 /// and undo belong to the field on screen, and so switching tabs keeps each
 /// view's query where the user left it. `TextBuffer` allocates on the C heap,
@@ -102,6 +109,7 @@ pub const Search = struct {
             .images => &self.images,
             .volumes => &self.volumes,
             .networks => &self.networks,
+            .events => &self.events,
             else => null,
         };
     }

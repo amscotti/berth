@@ -8,6 +8,7 @@ const api = @import("engine/api.zig");
 const discovery = @import("engine/discovery.zig");
 const image_ops = @import("engine/image_ops.zig");
 const refs = @import("image_refs.zig");
+const validation = @import("image_validation.zig");
 const session = @import("session.zig");
 
 pub const Pending = enum { none, pull, run };
@@ -22,6 +23,10 @@ pub const State = struct {
     run_volumes: ui.TextBuffer = .{},
     run_env: ui.TextBuffer = .{},
     run_job: ?*RunJob = null,
+    /// A failed submit leaves the message beside the field until the text
+    /// changes; the rail is for completed actions, not unfinished forms.
+    pull_attempted: bool = false,
+    run_attempted: bool = false,
 
     pub fn deinit(self: *State) void {
         self.pull_input.deinit();
@@ -43,24 +48,18 @@ pub const State = struct {
 
 pub fn startPull(s: *app.State) void {
     if (s.image_tasks.pulling()) return;
+    const reference = s.image_tasks.pull_input.text();
+    if (validation.pull(reference) != null) {
+        s.image_tasks.pull_attempted = true;
+        s.redraw();
+        return;
+    }
     var client = s.client orelse {
         s.notify("no engine is selected", true);
         return;
     };
-    const reference = s.image_tasks.pull_input.text();
+    s.image_tasks.pull_attempted = false;
     const split = refs.splitReference(reference);
-    if (split.repo.len == 0) {
-        s.notify("Enter an image reference", true);
-        return;
-    }
-    if (!refs.validReference(reference)) {
-        s.notifyFmt("reference {s} has characters an engine will reject", .{refs.firstLine(reference)}, true);
-        return;
-    }
-    if (split.repo.len > 256 or split.tag.len > 128) {
-        s.notify("that reference is too long", true);
-        return;
-    }
 
     const job = s.gpa.create(PullJob) catch {
         s.notify("could not start the pull", true);
@@ -96,48 +95,20 @@ pub fn startRun(s: *app.State) void {
         s.notify("wait for the current engine operation to finish", true);
         return;
     }
+    const state = &s.image_tasks;
+    const image = state.run_image.text();
+    // The job carries fixed buffers: validate before copying so a truncated
+    // request can never act on a different image.
+    if (validation.run(image, state.run_name.text(), state.run_ports.text(), state.run_volumes.text(), state.run_env.text()) != null) {
+        state.run_attempted = true;
+        s.redraw();
+        return;
+    }
     var client = s.client orelse {
         s.notify("no engine is selected", true);
         return;
     };
-    const state = &s.image_tasks;
-    const image = state.run_image.text();
-    if (image.len == 0) {
-        s.notify("Enter an image to run", true);
-        return;
-    }
-    if (!refs.validReference(image)) {
-        s.notifyFmt("image {s} has characters an engine will reject", .{refs.firstLine(image)}, true);
-        return;
-    }
-    // The job carries fixed buffers: refuse here rather than copy a prefix
-    // the engine would act on as a different, truncated request.
-    if (image.len > 256) {
-        s.notify("that image reference is too long", true);
-        return;
-    }
-    if (state.run_name.text().len > 0 and !refs.validName(state.run_name.text())) {
-        s.notify("container names are letters, digits, dot, dash and underscore", true);
-        return;
-    }
-    if (refs.firstInvalidPort(state.run_ports.text())) |bad| {
-        s.notifyFmt("port {s} needs host:container or ip:host:container", .{bad}, true);
-        return;
-    }
-    if (refs.firstInvalid(state.run_volumes.text(), ':')) |bad| {
-        s.notifyFmt("volume {s} needs source:container", .{bad}, true);
-        return;
-    }
-    if (refs.firstInvalid(state.run_env.text(), '=')) |bad| {
-        s.notifyFmt("environment {s} needs KEY=value", .{bad}, true);
-        return;
-    }
-    if (state.run_ports.text().len > 512 or state.run_volumes.text().len > 512 or
-        state.run_env.text().len > 512)
-    {
-        s.notify("that options list is too long", true);
-        return;
-    }
+    state.run_attempted = false;
 
     const job = s.gpa.create(RunJob) catch {
         s.notify("could not start the container", true);

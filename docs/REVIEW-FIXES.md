@@ -36,12 +36,12 @@ reviewer; findings are fixed before the next item starts.
 - [x] Overview disk bar proportional; shared colour tokens
 - [x] Log follow scrolls to the end
 - [x] First-paint false zeros and missing error states
-- [ ] Rail labels/tooltips/accessibility at 960
-- [ ] Modal confirmations, Escape, engine stop/restart confirmation
-- [ ] Inline validation in create/pull/run
+- [x] Rail labels/tooltips/accessibility at 960
+- [x] Modal confirmations, Escape, engine stop/restart confirmation
+- [x] Inline validation in create/pull/run
 - [x] Light-theme contrast for status text
-- [ ] Prune opt-ins reset (Stacks health/clickable and AGE sort done)
-- [ ] Select all/none; inspector unknown facts
+- [x] Prune opt-ins reset (Stacks health/clickable and AGE sort done)
+- [x] Select all/none; inspector unknown facts
 
 ## 6. Scale and performance
 - [ ] 512-row container cap and pre-virtualization sorting

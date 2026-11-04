@@ -61,6 +61,9 @@ pub const Runtime = struct {
     error_text: []const u8 = "",
     version: api.Version = .{},
     info: api.Info = .{},
+    /// `/info` answered, so `info.ContainersRunning` is a real count rather
+    /// than the zero value of a failed read.
+    info_read: bool = false,
 };
 
 /// Free every string a runtime owns. A runtime's version/info come from the
@@ -385,7 +388,10 @@ pub fn scan(gpa: std.mem.Allocator, io: std.Io, preferred: []const u8) !Found {
             rt.api = std.fmt.allocPrint(gpa, "v{s}", .{rt.version.ApiVersion}) catch "";
             if (rt.api.len > 0) client.api = rt.api;
         }
-        rt.info = client.info() catch api.Info{};
+        if (client.info()) |info| {
+            rt.info = info;
+            rt.info_read = true;
+        } else |_| {}
         if (client.err_body.len > 0) {
             gpa.free(client.err_body);
             client.err_body = "";

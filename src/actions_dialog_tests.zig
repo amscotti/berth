@@ -168,3 +168,24 @@ test "a create closes the dialog on success and keeps it on failure" {
     try std.testing.expect(state.create_dialog.open == .volume);
     try std.testing.expectEqualStrings("data", state.create_dialog.name.text());
 }
+
+test "a refused action keeps its confirmation" {
+    var state = testState();
+    defer state.arena.deinit();
+    defer state.create_dialog.deinit();
+
+    state.pending = .{
+        .id = try state.gpa.dupe(u8, "abc"),
+        .name = try state.gpa.dupe(u8, "web"),
+        .method = "POST",
+        .path = try state.gpa.dupe(u8, "/containers/abc/stop"),
+        .verb = "Stop",
+    };
+    var fake: Job = undefined;
+    state.actions.job = &fake;
+    actions.resolvePending(&state, true);
+    // The busy operation refused the request; the user can retry.
+    try std.testing.expect(state.pending != null);
+    state.actions.job = null;
+    state.clearPending();
+}

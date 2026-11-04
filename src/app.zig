@@ -27,6 +27,7 @@ const actions = @import("actions.zig");
 const logs = @import("logs.zig");
 const image_tasks = @import("image_tasks.zig");
 const settings = @import("settings.zig");
+const sheets = @import("sheets.zig");
 const builtin = @import("builtin");
 
 extern "c" fn getenv(name: [*:0]const u8) ?[*:0]u8;
@@ -209,6 +210,9 @@ pub const State = struct {
     /// `verb:name` to run once the list arrives (`BERTH_ACT`), so the action
     /// path can be exercised without a mouse: "stop:web", "restart:db".
     pending_act: []const u8 = "",
+    /// A sheet that needs a row or engine from the first snapshot
+    /// (`BERTH_SHEET`), so dialogs can be photographed headlessly.
+    pending_sheet: []const u8 = "",
     /// The act being run, kept while `pending_act` is cleared.
     pending_act_saved: []const u8 = "",
 
@@ -429,10 +433,10 @@ pub const State = struct {
         s.df_error = false;
         s.df_stale = false;
         s.history.clearEngine();
-        s.clearPending();
         s.bulk.clear();
-        s.prune_open = false;
-        s.create_dialog.open = null;
+        // A pending answer names the old engine's row; it cannot survive the
+        // switch. This also resets the cleanup opt-ins and closes the form.
+        sheets.dismiss(s);
         s.engine_rss = 0;
         s.error_text = "";
         // Nothing from the old engine is on screen any more: the views show
@@ -509,12 +513,18 @@ pub const State = struct {
             s.notify(if (actions.pruning(s)) "cleanup is running" else "wait for the current engine operation to finish", true);
             return;
         }
+        // The sheet owns the modal slot: a stop confirmation or create form
+        // underneath it would be a second, contradictory question.
+        sheets.dismiss(s);
         s.prune_open = true;
         s.redraw();
     }
 
     pub fn closePrune(s: *State) void {
         s.prune_open = false;
+        // Cancel is a decision too: a tick from this visit must not turn into
+        // a destructive default the next time the sheet opens.
+        sheets.resetPruneOpts(s);
         s.redraw();
     }
 

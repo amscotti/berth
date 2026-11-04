@@ -6,6 +6,7 @@ const nanoui = @import("nanoui");
 const ui = nanoui.ui;
 const app = @import("../../app.zig");
 const image_tasks = @import("../../image_tasks.zig");
+const validation = @import("../../image_validation.zig");
 const widgets = @import("../widgets.zig");
 const theme = @import("../theme.zig");
 
@@ -28,6 +29,12 @@ pub fn card(s: *app.State, c: *ui.Context) void {
     ui.icon(c, if (open) "chevron.up" else "chevron.down", .{ .size = 11, .color = c.theme.muted });
     if (head.clicked()) {
         s.creation_card_open = !open;
+        // A collapsed card is out of sight; a stale red line must not pop
+        // back the next time it is opened.
+        if (!s.creation_card_open) {
+            s.image_tasks.pull_attempted = false;
+            s.image_tasks.run_attempted = false;
+        }
         s.redraw();
     }
     head.end();
@@ -36,12 +43,22 @@ pub fn card(s: *app.State, c: *ui.Context) void {
         return;
     }
 
+    const pull_failure = if (s.image_tasks.pull_attempted)
+        validation.pull(s.image_tasks.pull_input.text())
+    else
+        null;
+    const run_failure = if (s.image_tasks.run_attempted)
+        validation.run(s.image_tasks.run_image.text(), s.image_tasks.run_name.text(), s.image_tasks.run_ports.text(), s.image_tasks.run_volumes.text(), s.image_tasks.run_env.text())
+    else
+        null;
+
     // Bottom-align Pull with the Reference field, not with label + field:
     // centre alignment parked the button halfway up the label's height.
     const pull_row = ui.div(c).row().wFull().itemsEnd().gap(8);
     _ = field(c, "Reference", &s.image_tasks.pull_input, "nginx:alpine", .fill, .grow);
     if (button(c, "Pull", !s.image_tasks.pulling())) image_tasks.startPull(s);
     pull_row.end();
+    showFailure(c, pull_failure, &.{.reference});
 
     ui.div(c).wFull().h(1).bg(c.theme.border).end();
 
@@ -61,19 +78,26 @@ pub fn card(s: *app.State, c: *ui.Context) void {
         submitted = field(c, "Image", &s.image_tasks.run_image, "nginx:alpine", .{ .px = col_w }, .fixed) or submitted;
         submitted = field(c, "Name", &s.image_tasks.run_name, "web", .{ .px = col_w }, .fixed) or submitted;
         first.end();
+        showFailure(c, run_failure, &.{ .image, .name });
         const second = ui.div(c).row().wFull().itemsCenter().gap(10);
         submitted = field(c, "Ports", &s.image_tasks.run_ports, "18080:80", .{ .px = col_w }, .fixed) or submitted;
         submitted = field(c, "Volumes", &s.image_tasks.run_volumes, "data:/data", .{ .px = col_w }, .fixed) or submitted;
         second.end();
+        showFailure(c, run_failure, &.{ .ports, .volumes });
     } else {
         submitted = field(c, "Image", &s.image_tasks.run_image, "nginx:alpine", .fill, .full) or submitted;
+        showFailure(c, run_failure, &.{.image});
         submitted = field(c, "Name", &s.image_tasks.run_name, "web", .fill, .full) or submitted;
+        showFailure(c, run_failure, &.{.name});
         submitted = field(c, "Ports", &s.image_tasks.run_ports, "18080:80", .fill, .full) or submitted;
+        showFailure(c, run_failure, &.{.ports});
         submitted = field(c, "Volumes", &s.image_tasks.run_volumes, "data:/data", .fill, .full) or submitted;
+        showFailure(c, run_failure, &.{.volumes});
     }
     // Env is a direct child of the card's column, so it takes the full width
     // like the stacked fields: grow here would stretch vertically, not out.
     submitted = field(c, "Env", &s.image_tasks.run_env, "KEY=value", .fill, .full) or submitted;
+    showFailure(c, run_failure, &.{.env});
 
     // The bottom row carries the how-to on the left and the action on the
     // right, so Run shares the right edge with Pull instead of crowding Env.
@@ -87,6 +111,22 @@ pub fn card(s: *app.State, c: *ui.Context) void {
     if (button(c, "Run", !s.image_tasks.running()) or submitted) image_tasks.startRun(s);
     last.end();
     box.end();
+}
+
+/// The sentence belongs under the row that owns the field, not in the rail:
+/// by the time a toast gets there it is truncated and away from the input.
+fn showFailure(c: *ui.Context, failure: ?validation.Failure, fields: []const validation.Field) void {
+    const f = failure orelse return;
+    for (fields) |wanted| {
+        if (f.field != wanted) continue;
+        var buf: [192]u8 = undefined;
+        ui.text(c, c.print("{s}", .{validation.describe(f, &buf)}), .{
+            .size = 11,
+            .color = theme.dangerText(c.theme),
+            .wrap = true,
+        });
+        return;
+    }
 }
 
 const Stretch = enum { grow, full, fixed };

@@ -226,6 +226,19 @@ fn bulkBar(s: *app.State, c: *ui.Context) void {
         .weight = .medium,
         .color = if (s.bulk.count > 0) c.theme.text else c.theme.muted,
     });
+    // The list already applied the filter and the search; asking it again
+    // here keeps the shortcut honest when a query is in the field. A frozen
+    // confirmation already names its set, so the bar must not change it.
+    if (s.bulk.pending == null) {
+        if (smallButton(c, "Select all shown", false)) {
+            s.bulk.selectShown(s.containers, s.filter, s.search.containers.text());
+            s.redraw();
+        }
+        if (smallButton(c, "None", false)) {
+            s.bulk.selectNone();
+            s.redraw();
+        }
+    }
     ui.spacer(c);
     if (s.bulk.count == 0) {
         ui.text(c, "check rows to start, stop or delete them together", .{

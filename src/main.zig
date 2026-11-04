@@ -136,6 +136,42 @@ pub fn main(init: std.process.Init) !void {
         state.pending_act = std.mem.span(p);
         state.auto_refresh = false; // one action, then stop refreshing
     }
+    // `BERTH_SHEET=prune|create-volume|create-error|form-errors|bulk` opens a
+    // sheet or a form mistake before the first frame. The values that need a
+    // container row wait for the first snapshot (`pending_sheet`).
+    if (getenv("BERTH_SHEET")) |p| {
+        const name = std.mem.span(p);
+        const eq = std.ascii.eqlIgnoreCase;
+        // A sheet is a still frame: one snapshot, then no timer racing exit.
+        state.auto_refresh = false;
+        if (eq(name, "prune")) {
+            state.prune_open = true;
+        } else if (eq(name, "create-volume") or eq(name, "create-network")) {
+            state.tab = if (eq(name, "create-volume")) .volumes else .networks;
+            state.create_dialog.open = if (eq(name, "create-volume")) .volume else .network;
+            state.create_dialog.generation +%= 1;
+            state.create_dialog.name.focus();
+        } else if (eq(name, "create-error")) {
+            state.tab = .volumes;
+            state.create_dialog.open = .volume;
+            state.create_dialog.generation +%= 1;
+            state.create_dialog.name.set("bad name");
+            state.create_dialog.attempted = true;
+        } else if (eq(name, "form-errors")) {
+            state.tab = .images;
+            state.creation_card_open = true;
+            state.image_tasks.pull_input.set("bad ref");
+            state.image_tasks.pull_attempted = true;
+            state.image_tasks.run_image.set("nginx:alpine");
+            state.image_tasks.run_ports.set("8080");
+            state.image_tasks.run_attempted = true;
+        } else if (eq(name, "bulk")) {
+            state.tab = .containers;
+            state.bulk.enabled = true;
+        } else {
+            state.pending_sheet = name;
+        }
+    }
 
     // Start finding an engine on a worker. The window opens on its skeletons
     // instead of waiting out a stale socket, and the scan's completion starts
