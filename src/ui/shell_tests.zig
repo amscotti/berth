@@ -1,6 +1,7 @@
 //! The rail's accessible names and tooltips are frame data, not pixels: a
-//! headless PNG cannot show AppKit's native tooltip, so the frame is inspected
-//! directly. The status line's narrow reading is checked as drawn text.
+//! headless PNG cannot show native tooltips, so the frame is inspected
+//! directly. The status is checked through the accessibility tree, which is
+//! platform-independent; its drawn form is covered by the snapshots.
 const std = @import("std");
 const nanoui = @import("nanoui");
 const ui = nanoui.ui;
@@ -20,10 +21,10 @@ test "every narrow rail item has a tooltip and an accessible tab name" {
     try t.init(std.testing.allocator, .init(&state, app.State.view), .{ .width = 960, .height = 600 });
     defer t.deinit();
 
-    // The narrow rail still prints the engine and clock beneath the status.
-    try std.testing.expect(t.containsText("no engine found"));
-    try std.testing.expect(t.containsText("not yet"));
-
+    // The narrow rail's drawn lines are covered by the snapshots; the
+    // accessible status is the platform-independent contract inspected here.
+    // It still names the engine and the clock even when the drawn form
+    // truncates.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var elements: std.ArrayList(ui.access.Element) = .empty;
@@ -33,8 +34,14 @@ test "every narrow rail item has a tooltip and an accessible tab name" {
     var tabs: usize = 0;
     var images = false;
     var status_static = false;
+    var status_named_engine = false;
+    var status_named_clock = false;
     for (elements.items) |e| {
-        if (e.role == .static_text and std.mem.indexOf(u8, e.label, "no engine found") != null) status_static = true;
+        if (e.role == .static_text and std.mem.indexOf(u8, e.label, "no engine found") != null) {
+            status_static = true;
+            status_named_engine = true;
+            status_named_clock = std.mem.indexOf(u8, e.label, "not yet") != null;
+        }
         if (e.role != .tab) continue;
         tabs += 1;
         if (std.mem.startsWith(u8, e.label, "Images · ")) images = true;
@@ -44,6 +51,8 @@ test "every narrow rail item has a tooltip and an accessible tab name" {
     try std.testing.expect(images);
     // The status carries a tooltip but is read as text, not a button.
     try std.testing.expect(status_static);
+    try std.testing.expect(status_named_engine);
+    try std.testing.expect(status_named_clock);
 }
 
 test "a sheet hides the page but keeps its own controls accessible" {
