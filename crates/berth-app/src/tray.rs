@@ -54,6 +54,7 @@ mod imp {
 mod imp {
     pub struct Tray;
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[allow(dead_code)]
     pub enum Event {
         Open,
         Quit,
