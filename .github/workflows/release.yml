@@ -23,20 +23,11 @@ jobs:
   verify:
     name: verify ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc g++ clang libfontconfig-dev libfreetype-dev \
-            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev \
-            libvulkan-dev
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -55,13 +46,12 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: Tests
+      # The full GPUI build and its tests are gated by the GPUI workflow on
+      # main. Release verification keeps the engine/domain contract fast.
+      - name: Core and engine tests
         run: |
-          timeout 900 cargo test --workspace --locked -- \
-            --skip gpui_tests --skip app_render::tests
+          cargo clippy -p berth-core -p berth-engine --all-targets --locked -- -D warnings
+          cargo test -p berth-core -p berth-engine --locked
 
       - name: Line rule
         run: ./tools/lines.py
