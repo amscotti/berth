@@ -437,9 +437,13 @@ mod tests {
             std::fs::canonicalize(&preferred).unwrap().to_string_lossy()
         );
         assert!(list.iter().any(|path| path.contains(".lima/docker")));
+        // The host may also have /var/run/docker.sock; only the sockets under
+        // this temporary HOME prove candidate discovery and deduplication.
+        let root = std::fs::canonicalize(&dir).expect("canonical home");
+        let root = root.to_string_lossy();
         assert_eq!(
             list.iter()
-                .filter(|path| path.contains("docker.sock"))
+                .filter(|path| path.starts_with(root.as_ref()))
                 .count(),
             2
         );

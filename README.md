@@ -38,11 +38,10 @@ stores, with the live figures a container monitor is actually for.*
 
 ## Status
 
-This repository is the **Rust + GPUI rewrite** of the unreleased Zig/nanoui
-app. Ten views, live engine reads, actions, creation, cleanup, events, stacks,
-bulk selection, an inspector with logs/inspect, a tray title and light/dark
-appearance are implemented and tested. The live path was verified against
-Docker 29.9.2 on macOS.
+berth is built in Rust on GPUI. Ten views, live engine reads, actions,
+creation, cleanup, events, stacks, bulk selection, an inspector with logs and
+inspect, a tray title and light/dark appearance are implemented and tested.
+The live path was verified against Docker 29.9.2 on macOS.
 
 ```sh
 cargo run -p berth-app
@@ -52,10 +51,9 @@ cargo run -p berth-app --example perf          # 100-container frame budget
 cargo run -p berth-app --example screenshots   # full visual matrix
 ```
 
-`docs/PARITY-CHECKLIST.md` is the honest status, including the remaining gaps
-(tray reopen after window close, automated xa11y/driver E2E, Linux runtime
-verification). The old Zig app remains the reference implementation and visual
-oracle (`docs/reference-ui/`).
+`docs/PARITY-CHECKLIST.md` records the current verification status and known
+gaps: tray reopen after window close, automated xa11y/test-driver E2E, and a
+Linux runtime pass.
 
 ## What works
 
