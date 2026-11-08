@@ -1,0 +1,10 @@
+[package]
+name = "berth-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "berth design tokens, geometry and type scale"
+
+[dependencies]
+gpui = { workspace = true }

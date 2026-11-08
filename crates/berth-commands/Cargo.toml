@@ -1,0 +1,11 @@
+[package]
+name = "berth-commands"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "berth typed actions, keymaps and menus"
+
+[dependencies]
+gpui = { workspace = true }
+serde = { workspace = true }

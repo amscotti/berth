@@ -1,0 +1,12 @@
+target/
+.DS_Store
+*.png.bak
+
+# Python E2E
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+
+# Local screenshots/artifacts
+target/e2e/

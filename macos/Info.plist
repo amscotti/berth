@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>berth</string>
+    <key>CFBundleDisplayName</key>
+    <string>berth</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.berth.app</string>
+    <key>CFBundleExecutable</key>
+    <string>berth</string>
+    <key>CFBundleIconFile</key>
+    <string>berth</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>__BERTH_COMMIT__</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+</dict>
+</plist>
