@@ -46,6 +46,18 @@ start / stop / restart / pause / resume / delete, bulk actions, Compose
 start/stop, image pull and run, volume and network creation, prune, engine
 machine start/stop/restart, a macOS tray title, and light/dark themes.
 
+## Releases
+
+Unsigned builds are produced by tag:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+CI publishes a macOS arm64 `.app` zip and a Linux x86_64 tarball with
+`SHA256SUMS`. See `docs/RELEASE.md`.
+
 ## Building
 
 Needs Rust 1.98 (the pinned toolchain) and, on macOS, the Xcode Command Line

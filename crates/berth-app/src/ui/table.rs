@@ -38,7 +38,10 @@ pub(crate) fn page_header(
         Tab::Events => format::count(app.snapshot.events.len(), "event", "events"),
         Tab::Stacks => format::count(app.snapshot.projects.len(), "project", "projects"),
         Tab::Runtimes => format::count(app.engine.reachable(), "engine", "engines"),
-        Tab::Settings => "berth 0.0.0 · a native container monitor".to_owned(),
+        Tab::Settings => format!(
+            "berth {} · a native container monitor",
+            env!("CARGO_PKG_VERSION")
+        ),
     };
 
     let mut header = div()
