@@ -15,6 +15,27 @@ questions without a terminal:
   unused networks and build cache, with the reclaimable total shown before
   anything is removed.
 
+![berth overview](docs/ui/overview-light.png)
+
+*berth's overview: fleet activity, host memory split, engine facts and disk
+stores, with the live figures a container monitor is actually for.*
+
+## At a glance
+
+- **Ten views** — Overview, Containers, Images, Volumes, Networks, Events,
+  Stacks, Disk, Runtimes, Settings.
+- **Live, non-blocking snapshots** — a worker reads the engine every five
+  seconds; the last complete snapshot stays on screen until the next commit.
+- **Real container figures** — per-container CPU and memory using the same
+  two-sample window as `docker stats`, network/disk I/O, PIDs and uptime.
+- **A proper inspector** — Facts, Config, Runtime and Inspect tabs; logs,
+  process list, writable-layer changes, image layers, redacted environment and
+  copy-ready run commands.
+- **Actions that stay out of the way** — start/stop/restart/pause/delete,
+  bulk selection, Compose start/stop, image pull/run, volume/network creation,
+  prune, engine machine commands and terminal launch.
+- **One native window** — no webview, no helper daemon, no telemetry.
+
 ## Status
 
 This repository is the **Rust + GPUI rewrite** of the unreleased Zig/nanoui

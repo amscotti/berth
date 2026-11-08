@@ -61,7 +61,7 @@ jobs:
           # GPUI window tests need the macOS test platform. Linux runs the
           # engine, domain, view-model and non-window app tests.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            timeout 900 cargo test --workspace --locked
+            cargo test --workspace --locked
           else
             timeout 900 cargo test --workspace --locked -- \
               --skip gpui_tests --skip app_render::tests
