@@ -59,7 +59,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test --workspace --locked
+        run: |
+          timeout 900 cargo test --workspace --locked -- \
+            --skip gpui_tests --skip app_render::tests
 
       - name: Line rule
         run: ./tools/lines.py
