@@ -342,10 +342,10 @@ impl BerthApp {
             }
         }
         self.reconcile_selection();
-        if self.detail_kind == DetailKind::Container
-            && self.selected_id.is_some()
-            && self.logs_follow
-            && self.detail_task.is_none()
+        if self.view.detail_kind == DetailKind::Container
+            && self.view.selected_id.is_some()
+            && self.inspector.logs_follow
+            && self.inspector.detail_task.is_none()
         {
             self.start_detail(cx);
         }
@@ -354,24 +354,24 @@ impl BerthApp {
     }
 
     pub(crate) fn reconcile_selection(&mut self) {
-        self.bulk_selected.retain(|id| {
+        self.view.bulk_selected.retain(|id| {
             self.snapshot
                 .containers
                 .iter()
                 .any(|container| &container.id == id)
         });
         // Selection is by id, found again in whatever snapshot is on screen.
-        let Some(id) = self.selected_id.clone() else {
+        let Some(id) = self.view.selected_id.clone() else {
             return;
         };
-        let still_there = match self.detail_kind {
+        let still_there = match self.view.detail_kind {
             DetailKind::Container => self.snapshot.selected_container(&id).is_some(),
             DetailKind::Image => self.snapshot.selected_image(&id).is_some(),
             DetailKind::Volume => self.snapshot.selected_volume(&id).is_some(),
             DetailKind::Network => self.snapshot.selected_network(&id).is_some(),
         };
         if !still_there {
-            self.selected_id = None;
+            self.view.selected_id = None;
         }
     }
 

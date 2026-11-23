@@ -12,22 +12,22 @@ impl BerthApp {
     // --- creation and cleanup forms ----------------------------------------
 
     pub(crate) fn set_creation_open(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.creation_open = open;
+        self.view.creation_open = open;
         if !open {
-            self.pull_attempted = false;
-            self.run_attempted = false;
+            self.view.pull_attempted = false;
+            self.view.run_attempted = false;
         }
         cx.notify();
     }
 
     pub(crate) fn start_pull(&mut self, cx: &mut Context<Self>) {
-        let reference = self.pull_input.read(cx).text().trim().to_owned();
+        let reference = self.view.pull_input.read(cx).text().trim().to_owned();
         if validation::pull(&reference).is_some() {
-            self.pull_attempted = true;
+            self.view.pull_attempted = true;
             cx.notify();
             return;
         }
-        self.pull_attempted = false;
+        self.view.pull_attempted = false;
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
@@ -43,17 +43,17 @@ impl BerthApp {
     }
 
     pub(crate) fn start_run(&mut self, cx: &mut Context<Self>) {
-        let image = self.run_image.read(cx).text().trim().to_owned();
-        let name = self.run_name.read(cx).text().trim().to_owned();
-        let ports = self.run_ports.read(cx).text().trim().to_owned();
-        let volumes = self.run_volumes.read(cx).text().trim().to_owned();
-        let env = self.run_env.read(cx).text().trim().to_owned();
+        let image = self.view.run_image.read(cx).text().trim().to_owned();
+        let name = self.view.run_name.read(cx).text().trim().to_owned();
+        let ports = self.view.run_ports.read(cx).text().trim().to_owned();
+        let volumes = self.view.run_volumes.read(cx).text().trim().to_owned();
+        let env = self.view.run_env.read(cx).text().trim().to_owned();
         if validation::run(&image, &name, &ports, &volumes, &env).is_some() {
-            self.run_attempted = true;
+            self.view.run_attempted = true;
             cx.notify();
             return;
         }
-        self.run_attempted = false;
+        self.view.run_attempted = false;
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
@@ -73,32 +73,34 @@ impl BerthApp {
     }
 
     pub(crate) fn open_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {
-        self.pending = None;
-        self.prune_open = false;
-        self.create_kind = Some(kind);
-        self.create_attempted = false;
-        self.create_name.update(cx, |input, cx| input.clear(cx));
+        self.view.pending = None;
+        self.view.prune_open = false;
+        self.view.create_kind = Some(kind);
+        self.view.create_attempted = false;
+        self.view
+            .create_name
+            .update(cx, |input, cx| input.clear(cx));
         cx.notify();
     }
 
     pub(crate) fn close_create(&mut self, cx: &mut Context<Self>) {
-        self.create_kind = None;
-        self.create_attempted = false;
+        self.view.create_kind = None;
+        self.view.create_attempted = false;
         cx.notify();
     }
 
     pub(crate) fn submit_create(&mut self, cx: &mut Context<Self>) {
-        let Some(kind) = self.create_kind else {
+        let Some(kind) = self.view.create_kind else {
             return;
         };
-        let name = self.create_name.read(cx).text().trim().to_owned();
+        let name = self.view.create_name.read(cx).text().trim().to_owned();
         // One rule for a name, shared with the sheet that explains it.
         if create_name_error(kind, &name, &self.snapshot.volumes).is_some() {
-            self.create_attempted = true;
+            self.view.create_attempted = true;
             cx.notify();
             return;
         }
-        self.create_attempted = false;
+        self.view.create_attempted = false;
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
@@ -115,19 +117,19 @@ impl BerthApp {
                 name,
             },
         };
-        self.create_in_flight = self.start_mutation(request, cx);
+        self.view.create_in_flight = self.start_mutation(request, cx);
     }
 
     pub(crate) fn open_prune(&mut self, cx: &mut Context<Self>) {
-        self.pending = None;
-        self.create_kind = None;
-        self.prune_open = true;
+        self.view.pending = None;
+        self.view.create_kind = None;
+        self.view.prune_open = true;
         cx.notify();
     }
 
     pub(crate) fn close_prune(&mut self, cx: &mut Context<Self>) {
-        self.prune_open = false;
-        self.prune_options = PruneOptions::default();
+        self.view.prune_open = false;
+        self.view.prune_options = PruneOptions::default();
         cx.notify();
     }
 
@@ -138,7 +140,7 @@ impl BerthApp {
 
     /// What a cleanup option is ticked for, in the order the sheet lists them.
     pub(crate) fn prune_ticked(&self, field: usize) -> bool {
-        let options = self.prune_options;
+        let options = self.view.prune_options;
         match field {
             0 => options.containers,
             1 => options.images,
@@ -263,12 +265,12 @@ impl BerthApp {
             return;
         };
         let dialect = self.engine.dialect;
-        self.prune_in_flight = self.start_mutation(
+        self.view.prune_in_flight = self.start_mutation(
             Request::Prune {
                 socket: client.socket().to_owned(),
                 api: client.api().to_owned(),
                 dialect,
-                options: self.prune_options,
+                options: self.view.prune_options,
             },
             cx,
         );
@@ -292,7 +294,7 @@ impl BerthApp {
             );
             return;
         }
-        self.pending = Some(Pending {
+        self.view.pending = Some(Pending {
             method: "ENGINE".to_owned(),
             path: socket,
             verb: verb.to_owned(),
@@ -311,7 +313,7 @@ impl BerthApp {
         name: String,
         cx: &mut Context<Self>,
     ) {
-        self.pending = Some(Pending {
+        self.view.pending = Some(Pending {
             method,
             path,
             verb,
@@ -321,7 +323,7 @@ impl BerthApp {
     }
 
     pub(crate) fn resolve_pending(&mut self, ok: bool, cx: &mut Context<Self>) {
-        let Some(pending) = self.pending.take() else {
+        let Some(pending) = self.view.pending.take() else {
             return;
         };
         if !ok {
@@ -401,17 +403,17 @@ impl BerthApp {
         cx: &mut Context<Self>,
     ) {
         self.mutation_task = None;
-        if self.create_in_flight {
-            self.create_in_flight = false;
+        if self.view.create_in_flight {
+            self.view.create_in_flight = false;
             if !outcome.bad {
-                self.create_kind = None;
+                self.view.create_kind = None;
             }
         }
-        if self.prune_in_flight {
-            self.prune_in_flight = false;
+        if self.view.prune_in_flight {
+            self.view.prune_in_flight = false;
             if !outcome.bad {
-                self.prune_open = false;
-                self.prune_options = PruneOptions::default();
+                self.view.prune_open = false;
+                self.view.prune_options = PruneOptions::default();
             }
         }
         if !is_engine_op && generation != self.engine.generation {
@@ -437,17 +439,17 @@ impl BerthApp {
     }
 
     pub(crate) fn notify(&mut self, text: &str, bad: bool, cx: &mut Context<Self>) {
-        self.toast = Some(Toast {
+        self.view.toast = Some(Toast {
             text: text.to_owned(),
             bad,
         });
         cx.notify();
-        self.toast_task = Some(cx.spawn(async move |this, cx| {
+        self.view.toast_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(std::time::Duration::from_secs(4))
                 .await;
             this.update(cx, |app, cx| {
-                app.toast = None;
+                app.view.toast = None;
                 cx.notify();
             })
             .ok();

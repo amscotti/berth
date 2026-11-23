@@ -27,7 +27,7 @@ pub(crate) fn container_pane(
     tokens: Tokens,
     cx: &mut gpui::Context<crate::app::BerthApp>,
 ) -> impl IntoElement {
-    let tab = app.inspector_tab;
+    let tab = app.inspector.tab;
     // The pages of the inspector are tabs: one strip, one of them selected.
     let mut pane = pane_shell(container.name(), "Container inspector", width, tokens, cx).child(
         div()
@@ -81,7 +81,7 @@ pub(crate) fn container_pane(
             .child(
                 div()
                     .id("inspect-well")
-                    .track_scroll(&app.inspect_scroll)
+                    .track_scroll(&app.inspector.inspect_scroll)
                     .debug_selector(|| "inspect-well".to_string())
                     .flex()
                     .flex_col()
@@ -99,8 +99,8 @@ pub(crate) fn container_pane(
                             .text_size(px(type_scale::MONO))
                             .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.text)
-                            .child(app.inspect_text.clone().unwrap_or_else(|| {
-                                if app.inspect_loading {
+                            .child(app.inspector.inspect_text.clone().unwrap_or_else(|| {
+                                if app.inspector.inspect_loading {
                                     "Reading…".to_owned()
                                 } else {
                                     "Nothing loaded yet. Refresh fetches the engine's JSON."
@@ -125,7 +125,7 @@ pub(crate) fn container_pane(
     if let Some(service) = container.service() {
         pane = pane.child(fact("Service", service, tokens));
     }
-    if let Some(facts) = &app.inspect_facts {
+    if let Some(facts) = &app.inspector.inspect_facts {
         if let Some(started) = facts.started_at {
             pane = pane.child(fact(
                 "Started",
@@ -150,7 +150,7 @@ pub(crate) fn container_pane(
         if let Some(probe) = &facts.health_log {
             pane = pane.child(fact("Probe", probe, tokens));
         }
-    } else if app.logs_loading {
+    } else if app.inspector.logs_loading {
         pane = pane.child(fact("Started", "Reading…", tokens));
     } else if let Some(seconds) = up_seconds(&container.status) {
         pane = pane.child(fact("Up", &format::duration(seconds), tokens));
@@ -320,7 +320,8 @@ pub(crate) fn container_pane(
                 cx.listener(|this, _, _, cx| this.clone_container_to_run(cx)),
             ))
             .when(
-                app.inspect_facts
+                app.inspector
+                    .inspect_facts
                     .as_ref()
                     .is_some_and(|facts| facts.run_cmd.is_some()),
                 |this| {
@@ -389,11 +390,11 @@ pub(crate) fn container_pane(
             .gap(px(6.0))
             .child(inspector_toggle(
                 "Follow",
-                app.logs_follow,
+                app.inspector.logs_follow,
                 tokens,
                 cx.listener(|this, _, _, cx| {
-                    this.logs_follow = !this.logs_follow;
-                    if this.logs_follow {
+                    this.inspector.logs_follow = !this.inspector.logs_follow;
+                    if this.inspector.logs_follow {
                         this.reload_detail(cx);
                     }
                     cx.notify();
@@ -401,19 +402,19 @@ pub(crate) fn container_pane(
             ))
             .child(inspector_toggle(
                 "Times",
-                app.logs_timestamps,
+                app.inspector.logs_timestamps,
                 tokens,
                 cx.listener(|this, _, _, cx| this.toggle_log_timestamps(cx)),
             ))
             .child(div().flex_1())
-            .child(app.log_search.clone()),
+            .child(app.inspector.log_search.clone()),
     );
 
     let body = log_body(app, cx);
     pane.child(
         div()
             .id("log-well")
-            .track_scroll(&app.log_scroll)
+            .track_scroll(&app.inspector.log_scroll)
             .debug_selector(|| "log-well".to_string())
             .flex()
             .flex_col()
@@ -429,8 +430,8 @@ pub(crate) fn container_pane(
             // Scrolling back up pauses Follow, as it does in every log viewer.
             // The toggle shows that it has paused.
             .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
-                if event.delta.pixel_delta(px(1.0)).y > px(0.0) && this.logs_follow {
-                    this.logs_follow = false;
+                if event.delta.pixel_delta(px(1.0)).y > px(0.0) && this.inspector.logs_follow {
+                    this.inspector.logs_follow = false;
                     cx.notify();
                 }
             }))
@@ -448,18 +449,18 @@ pub(crate) fn container_pane(
 /// on screen: only the very first read, with nothing to show yet, says it is
 /// reading.
 pub(crate) fn log_body(app: &crate::app::BerthApp, cx: &gpui::App) -> String {
-    let query = app.log_search.read(cx).text().to_owned();
-    if app.logs_loading && app.logs_text.is_empty() {
+    let query = app.inspector.log_search.read(cx).text().to_owned();
+    if app.inspector.logs_loading && app.inspector.logs_text.is_empty() {
         return "Reading…".to_owned();
     }
     if query.is_empty() {
-        if app.logs_text.is_empty() {
+        if app.inspector.logs_text.is_empty() {
             "No output yet. A container that has said nothing says nothing.".to_owned()
         } else {
-            app.logs_text.clone()
+            app.inspector.logs_text.clone()
         }
     } else {
-        let matched = berth_engine::logs::filter_lines(&app.logs_text, &query);
+        let matched = berth_engine::logs::filter_lines(&app.inspector.logs_text, &query);
         if matched.is_empty() {
             format!("No line contains {query:?}.")
         } else {
@@ -502,24 +503,26 @@ mod tests {
     fn a_follow_poll_never_blanks_the_logs_already_on_screen(cx: &mut TestAppContext) {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
-            app.logs_text = "line one\nline two\n".into();
+            app.inspector.logs_text = "line one\nline two\n".into();
             // A poll is in flight.
-            app.logs_loading = true;
+            app.inspector.logs_loading = true;
             assert_eq!(log_body(app, cx), "line one\nline two\n");
             // Only the very first read has nothing to show yet.
-            app.logs_text.clear();
+            app.inspector.logs_text.clear();
             assert_eq!(log_body(app, cx), "Reading…");
-            app.logs_loading = false;
+            app.inspector.logs_loading = false;
             assert_eq!(
                 log_body(app, cx),
                 "No output yet. A container that has said nothing says nothing."
             );
             // A search that matches nothing says so.
-            app.logs_text = "alpha\nbeta\n".into();
-            app.log_search
+            app.inspector.logs_text = "alpha\nbeta\n".into();
+            app.inspector
+                .log_search
                 .update(cx, |input, cx| input.set_value("gamma", cx));
             assert_eq!(log_body(app, cx), "No line contains \"gamma\".");
-            app.log_search
+            app.inspector
+                .log_search
                 .update(cx, |input, cx| input.set_value("beta", cx));
             assert_eq!(log_body(app, cx), "beta");
         });
@@ -530,18 +533,18 @@ mod tests {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            app.logs_text = (0..400).map(|line| format!("line {line}\n")).collect();
-            app.logs_loading = false;
-            app.logs_follow = true;
+            app.inspector.logs_text = (0..400).map(|line| format!("line {line}\n")).collect();
+            app.inspector.logs_loading = false;
+            app.inspector.logs_follow = true;
             // What a finished read does when Follow is on.
-            app.log_scroll.scroll_to_bottom();
+            app.inspector.log_scroll.scroll_to_bottom();
         });
         crate::testkit::draw(cx);
         app.read_with(&*cx, |app, _| {
-            let max = app.log_scroll.max_offset().y;
+            let max = app.inspector.log_scroll.max_offset().y;
             assert!(max > px(0.0), "the logs overflow the well ({max:?})");
             assert_eq!(
-                app.log_scroll.offset().y,
+                app.inspector.log_scroll.offset().y,
                 -max,
                 "the newest lines are on screen"
             );
@@ -557,7 +560,7 @@ mod tests {
             ..Default::default()
         });
         assert!(
-            !app.read_with(&*cx, |app, _| app.logs_follow),
+            !app.read_with(&*cx, |app, _| app.inspector.logs_follow),
             "scrolling up pauses Follow"
         );
     }

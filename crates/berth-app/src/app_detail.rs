@@ -8,25 +8,25 @@ impl BerthApp {
     // --- detail ------------------------------------------------------------
 
     pub(crate) fn start_detail(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_id.clone() else {
+        let Some(id) = self.view.selected_id.clone() else {
             return;
         };
         let Some(client) = self.engine.client.clone() else {
             return;
         };
-        self.detail_generation = self.detail_generation.wrapping_add(1);
-        let generation = self.detail_generation;
+        self.inspector.detail_generation = self.inspector.detail_generation.wrapping_add(1);
+        let generation = self.inspector.detail_generation;
         let request = detail::Request {
             socket: client.socket().to_owned(),
             api: client.api().to_owned(),
             id: id.clone(),
             generation,
-            timestamps: self.logs_timestamps,
+            timestamps: self.inspector.logs_timestamps,
             extras: true,
         };
-        self.logs_loading = true;
-        self.inspect_loading = true;
-        self.detail_task = Some(cx.spawn(async move |this, cx| {
+        self.inspector.logs_loading = true;
+        self.inspector.inspect_loading = true;
+        self.inspector.detail_task = Some(cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_executor()
                 .spawn(async move { detail::load(request) })
@@ -42,32 +42,32 @@ impl BerthApp {
     /// generation releases the slot even when the selection has gone away
     /// under it, so nothing is left behind to hold the next read back.
     fn finish_detail(&mut self, outcome: detail::Outcome, cx: &mut Context<Self>) {
-        if outcome.generation != self.detail_generation {
+        if outcome.generation != self.inspector.detail_generation {
             return;
         }
-        self.detail_task = None;
-        let Some(selected) = self.selected_id.as_deref() else {
+        self.inspector.detail_task = None;
+        let Some(selected) = self.view.selected_id.as_deref() else {
             return;
         };
         if selected != outcome.id {
             return;
         }
-        self.logs_loading = false;
-        self.inspect_loading = false;
-        self.detail_top = outcome.top;
-        self.detail_changes = outcome.changes;
-        self.logs_text = outcome
+        self.inspector.logs_loading = false;
+        self.inspector.inspect_loading = false;
+        self.inspector.detail_top = outcome.top;
+        self.inspector.detail_changes = outcome.changes;
+        self.inspector.logs_text = outcome
             .logs
             .unwrap_or_else(|error| format!("could not read logs: {error}"));
         // Follow means the newest lines are on screen.
-        if self.logs_follow {
-            self.log_scroll.scroll_to_bottom();
+        if self.inspector.logs_follow {
+            self.inspector.log_scroll.scroll_to_bottom();
         }
-        self.inspect_text = match outcome.inspect {
+        self.inspector.inspect_text = match outcome.inspect {
             Ok(inspect) => {
-                self.inspect_facts = Some(berth_engine::detail::InspectFacts::from_detail(
-                    &inspect.detail,
-                ));
+                self.inspector.inspect_facts = Some(
+                    berth_engine::detail::InspectFacts::from_detail(&inspect.detail),
+                );
                 Some(inspect.json)
             }
             Err(error) => Some(format!("could not read inspect: {error}")),
@@ -76,22 +76,22 @@ impl BerthApp {
     }
 
     fn finish_image_detail(&mut self, outcome: detail::ImageOutcome, cx: &mut Context<Self>) {
-        if outcome.generation != self.detail_generation {
+        if outcome.generation != self.inspector.detail_generation {
             return;
         }
-        self.detail_task = None;
-        if self.selected_id.as_deref() != Some(outcome.id.as_str()) {
+        self.inspector.detail_task = None;
+        if self.view.selected_id.as_deref() != Some(outcome.id.as_str()) {
             return;
         }
-        self.image_layers_loading = false;
+        self.inspector.image_layers_loading = false;
         if let Ok(layers) = outcome.layers {
-            self.image_layers = layers;
+            self.inspector.image_layers = layers;
         }
         cx.notify();
     }
 
     pub(crate) fn open_terminal(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_id.clone() else {
+        let Some(id) = self.view.selected_id.clone() else {
             return;
         };
         let Some(container) = self.snapshot.selected_container(&id).cloned() else {
@@ -148,12 +148,14 @@ impl BerthApp {
     /// Show one page of the inspector, reading what that page shows if it
     /// hasn't been read yet.
     pub(crate) fn show_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
-        self.inspector_tab = tab;
+        self.inspector.tab = tab;
         let unread = match tab {
             InspectorTab::Facts => false,
-            InspectorTab::Config => self.inspect_facts.is_none(),
-            InspectorTab::Runtime => self.detail_top.is_none() && self.detail_changes.is_empty(),
-            InspectorTab::Inspect => self.inspect_text.is_none(),
+            InspectorTab::Config => self.inspector.inspect_facts.is_none(),
+            InspectorTab::Runtime => {
+                self.inspector.detail_top.is_none() && self.inspector.detail_changes.is_empty()
+            }
+            InspectorTab::Inspect => self.inspector.inspect_text.is_none(),
         };
         if unread {
             self.start_detail(cx);
@@ -162,20 +164,22 @@ impl BerthApp {
     }
 
     pub(crate) fn toggle_log_timestamps(&mut self, cx: &mut Context<Self>) {
-        self.logs_timestamps = !self.logs_timestamps;
+        self.inspector.logs_timestamps = !self.inspector.logs_timestamps;
         self.start_detail(cx);
         cx.notify();
     }
 
     pub(crate) fn copy_logs(&mut self, cx: &mut Context<Self>) {
-        if !self.logs_text.is_empty() {
-            cx.write_to_clipboard(gpui::ClipboardItem::new_string(self.logs_text.clone()));
+        if !self.inspector.logs_text.is_empty() {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                self.inspector.logs_text.clone(),
+            ));
             self.notify("Logs copied", false, cx);
         }
     }
 
     pub(crate) fn copy_run_command(&mut self, cx: &mut Context<Self>) {
-        let Some(facts) = &self.inspect_facts else {
+        let Some(facts) = &self.inspector.inspect_facts else {
             return;
         };
         let Some(command) = &facts.run_cmd else {
@@ -190,7 +194,7 @@ impl BerthApp {
     }
 
     pub(crate) fn copy_inspect(&mut self, cx: &mut Context<Self>) {
-        if let Some(text) = &self.inspect_text {
+        if let Some(text) = &self.inspector.inspect_text {
             cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
             self.notify("Inspect JSON copied", false, cx);
         }
@@ -198,7 +202,7 @@ impl BerthApp {
 
     pub(crate) fn select_container_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.snapshot.containers.iter().position(|c| c.id == id) {
-            self.tab = Tab::Containers;
+            self.view.tab = Tab::Containers;
             // The row has to be on screen: drop whatever was hiding it.
             self.set_filter(Filter::All, cx);
             self.clear_search(SearchKind::Containers, cx);
@@ -207,7 +211,7 @@ impl BerthApp {
     }
 
     pub(crate) fn clone_container_to_run(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected_id.clone() else {
+        let Some(id) = self.view.selected_id.clone() else {
             return;
         };
         let Some(container) = self.snapshot.selected_container(&id).cloned() else {
@@ -225,7 +229,7 @@ impl BerthApp {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let (volumes, env, missing) = if let Some(facts) = &self.inspect_facts {
+        let (volumes, env, missing) = if let Some(facts) = &self.inspector.inspect_facts {
             let vols = facts
                 .mounts
                 .iter()
@@ -261,50 +265,55 @@ impl BerthApp {
         };
         let image = container.image.clone();
         let next_name = format!("{}-copy", container.name());
-        self.tab = Tab::Images;
+        self.view.tab = Tab::Images;
         self.clear_selection(cx);
-        self.creation_open = true;
-        self.run_image
+        self.view.creation_open = true;
+        self.view
+            .run_image
             .update(cx, |input, cx| input.set_value(image, cx));
-        self.run_name
+        self.view
+            .run_name
             .update(cx, |input, cx| input.set_value(next_name, cx));
-        self.run_ports
+        self.view
+            .run_ports
             .update(cx, |input, cx| input.set_value(ports, cx));
-        self.run_volumes
+        self.view
+            .run_volumes
             .update(cx, |input, cx| input.set_value(volumes, cx));
-        self.run_env
+        self.view
+            .run_env
             .update(cx, |input, cx| input.set_value(env, cx));
-        self.run_env_missing = missing;
+        self.view.run_env_missing = missing;
         cx.notify();
     }
 
     pub(crate) fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.clear_selection(cx);
-        self.selected_id = self.snapshot.containers.get(ix).map(|row| row.id.clone());
-        self.selected_name = self
+        self.view.selected_id = self.snapshot.containers.get(ix).map(|row| row.id.clone());
+        self.view.selected_name = self
             .snapshot
             .containers
             .get(ix)
             .map(|row| row.name().to_owned())
             .unwrap_or_default();
-        self.detail_kind = DetailKind::Container;
+        self.view.detail_kind = DetailKind::Container;
         self.start_detail(cx);
         cx.notify();
     }
 
     pub(crate) fn select_image(&mut self, id: &str, name: &str, cx: &mut Context<Self>) {
         self.clear_selection(cx);
-        self.selected_id = Some(id.to_owned());
-        self.selected_name = name.to_owned();
-        self.detail_kind = DetailKind::Image;
+        self.view.selected_id = Some(id.to_owned());
+        self.view.selected_name = name.to_owned();
+        self.view.detail_kind = DetailKind::Image;
         if let Some(client) = self.engine.client.clone() {
-            self.detail_generation = self.detail_generation.wrapping_add(1);
-            let generation = self.detail_generation;
+            self.inspector.detail_generation = self.inspector.detail_generation.wrapping_add(1);
+            let generation = self.inspector.detail_generation;
             let socket = client.socket().to_owned();
             let api = client.api().to_owned();
             let id_owned = id.to_owned();
-            self.image_layers_loading = true;
-            self.detail_task = Some(cx.spawn(async move |this, cx| {
+            self.inspector.image_layers_loading = true;
+            self.inspector.detail_task = Some(cx.spawn(async move |this, cx| {
                 let outcome = cx
                     .background_executor()
                     .spawn(async move { detail::load_image(socket, api, id_owned, generation) })
@@ -318,35 +327,35 @@ impl BerthApp {
 
     pub(crate) fn select_volume(&mut self, name: &str, cx: &mut Context<Self>) {
         self.clear_selection(cx);
-        self.selected_id = Some(name.to_owned());
-        self.selected_name = name.to_owned();
-        self.detail_kind = DetailKind::Volume;
+        self.view.selected_id = Some(name.to_owned());
+        self.view.selected_name = name.to_owned();
+        self.view.detail_kind = DetailKind::Volume;
         cx.notify();
     }
 
     pub(crate) fn select_network(&mut self, id: &str, name: &str, cx: &mut Context<Self>) {
         self.clear_selection(cx);
-        self.selected_id = Some(id.to_owned());
-        self.selected_name = name.to_owned();
-        self.detail_kind = DetailKind::Network;
+        self.view.selected_id = Some(id.to_owned());
+        self.view.selected_name = name.to_owned();
+        self.view.detail_kind = DetailKind::Network;
         cx.notify();
     }
 
     pub(crate) fn clear_selection(&mut self, cx: &mut Context<Self>) {
-        self.selected_id = None;
-        self.selected_name.clear();
-        self.inspector_tab = InspectorTab::Facts;
-        self.logs_text.clear();
-        self.logs_loading = false;
-        self.inspect_text = None;
-        self.inspect_loading = false;
-        self.inspect_facts = None;
-        self.detail_top = None;
-        self.detail_changes.clear();
-        self.image_layers.clear();
-        self.image_layers_loading = false;
-        self.detail_task = None;
-        self.detail_generation = self.detail_generation.wrapping_add(1);
+        self.view.selected_id = None;
+        self.view.selected_name.clear();
+        self.inspector.tab = InspectorTab::Facts;
+        self.inspector.logs_text.clear();
+        self.inspector.logs_loading = false;
+        self.inspector.inspect_text = None;
+        self.inspector.inspect_loading = false;
+        self.inspector.inspect_facts = None;
+        self.inspector.detail_top = None;
+        self.inspector.detail_changes.clear();
+        self.inspector.image_layers.clear();
+        self.inspector.image_layers_loading = false;
+        self.inspector.detail_task = None;
+        self.inspector.detail_generation = self.inspector.detail_generation.wrapping_add(1);
         cx.notify();
     }
 }
@@ -378,20 +387,23 @@ mod tests {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            app.detail_task = Some(queued(cx));
-            let generation = app.detail_generation;
+            app.inspector.detail_task = Some(queued(cx));
+            let generation = app.inspector.detail_generation;
 
             // The container goes away under the read, as a delete makes it.
             app.snapshot = Arc::new(crate::state::Snapshot::empty());
             app.reconcile_selection();
-            assert!(app.selected_id.is_none());
+            assert!(app.view.selected_id.is_none());
 
             app.finish_detail(outcome("demo-1", generation), cx);
             assert!(
-                app.detail_task.is_none(),
+                app.inspector.detail_task.is_none(),
                 "a finished read must not stay in the slot and hold the next one back"
             );
-            assert!(app.logs_text.is_empty(), "and it put nothing on screen");
+            assert!(
+                app.inspector.logs_text.is_empty(),
+                "and it put nothing on screen"
+            );
         });
     }
 
@@ -400,13 +412,13 @@ mod tests {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            app.detail_task = Some(queued(cx));
-            app.finish_detail(outcome("demo-1", app.detail_generation - 1), cx);
+            app.inspector.detail_task = Some(queued(cx));
+            app.finish_detail(outcome("demo-1", app.inspector.detail_generation - 1), cx);
             assert!(
-                app.detail_task.is_some(),
+                app.inspector.detail_task.is_some(),
                 "the older read doesn't own the slot"
             );
-            assert!(app.logs_text.is_empty());
+            assert!(app.inspector.logs_text.is_empty());
         });
     }
 
@@ -415,13 +427,13 @@ mod tests {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            app.logs_loading = true;
-            let generation = app.detail_generation;
+            app.inspector.logs_loading = true;
+            let generation = app.inspector.detail_generation;
             let mut read = outcome("demo-1", generation);
             read.logs = Ok("first\nsecond\n".into());
             app.finish_detail(read, cx);
-            assert!(!app.logs_loading);
-            assert_eq!(app.logs_text, "first\nsecond\n");
+            assert!(!app.inspector.logs_loading);
+            assert_eq!(app.inspector.logs_text, "first\nsecond\n");
         });
     }
 
@@ -430,7 +442,7 @@ mod tests {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            app.inspect_facts = Some(berth_engine::detail::InspectFacts {
+            app.inspector.inspect_facts = Some(berth_engine::detail::InspectFacts {
                 env: vec![
                     ("PORT".into(), "8080".into(), false),
                     ("API_KEY".into(), "<redacted>".into(), true),
@@ -439,39 +451,40 @@ mod tests {
                 ..Default::default()
             });
             app.clone_container_to_run(cx);
-            let env = app.run_env.read(cx).text().to_owned();
+            let env = app.view.run_env.read(cx).text().to_owned();
             assert_eq!(env, "PORT=8080, API_KEY=, TOKEN=");
-            assert_eq!(app.run_env_missing, 2);
-            assert_eq!(app.tab, Tab::Images);
-            assert!(app.creation_open);
+            assert_eq!(app.view.run_env_missing, 2);
+            assert_eq!(app.view.tab, Tab::Images);
+            assert!(app.view.creation_open);
         });
         // The clone filled the field in itself; that must not retire the
         // note a moment later, once its own change event is delivered.
         cx.run_until_parked();
-        app.read_with(&*cx, |app, _| assert_eq!(app.run_env_missing, 2));
+        app.read_with(&*cx, |app, _| assert_eq!(app.view.run_env_missing, 2));
         // The user's own edit does.
         cx.update(|window, cx| {
-            let input = app.read(cx).run_env.clone();
+            let input = app.read(cx).view.run_env.clone();
             input.update(cx, |input, cx| input.focus(window, cx));
         });
         cx.simulate_input("X");
         cx.run_until_parked();
-        app.read_with(&*cx, |app, _| assert_eq!(app.run_env_missing, 0));
+        app.read_with(&*cx, |app, _| assert_eq!(app.view.run_env_missing, 0));
     }
 
     #[gpui::test]
     fn jumping_to_a_container_clears_whatever_was_hiding_it(cx: &mut TestAppContext) {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
-            app.tab = Tab::Disk;
+            app.view.tab = Tab::Disk;
             app.set_filter(Filter::Stopped, cx);
-            app.searches[SearchKind::Containers as usize]
+            app.view.lists[SearchKind::Containers as usize]
+                .search
                 .update(cx, |input, cx| input.set_value("nothing-matches", cx));
             app.select_container_by_id("demo-1", cx);
-            assert_eq!(app.tab, Tab::Containers);
-            assert_eq!(app.filter, Filter::All);
+            assert_eq!(app.view.tab, Tab::Containers);
+            assert_eq!(app.view.filter, Filter::All);
             assert_eq!(app.query(SearchKind::Containers), "");
-            assert_eq!(app.selected_id.as_deref(), Some("demo-1"));
+            assert_eq!(app.view.selected_id.as_deref(), Some("demo-1"));
         });
     }
 }

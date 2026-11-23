@@ -38,16 +38,16 @@ fn a_refused_prune_leaves_its_sheet_open_and_no_unrelated_success_closes_it(
         app.open_prune(cx);
         app.run_prune(cx);
         // Refused, so the sheet is not waiting on anything, and nothing was sent.
-        assert!(app.prune_open);
-        assert!(!app.prune_in_flight);
+        assert!(app.view.prune_open);
+        assert!(!app.view.prune_in_flight);
     });
     assert_eq!(engine.count("/prune"), 0);
 
     // The stop finishing must not close the sheet as though the prune had run.
     cx.run_until_parked();
     app.read_with(&*cx, |app, _| {
-        assert!(app.prune_open);
-        assert!(!app.prune_in_flight);
+        assert!(app.view.prune_open);
+        assert!(!app.view.prune_in_flight);
     });
     assert_eq!(engine.count("/prune"), 0, "a refused prune is never sent");
     assert_eq!(engine.count("/containers/demo-1/stop"), 1);
@@ -59,8 +59,8 @@ fn an_accepted_prune_closes_its_sheet_only_once_it_has_run(cx: &mut TestAppConte
     app.update(cx, |app, cx| {
         app.open_prune(cx);
         app.run_prune(cx);
-        assert!(app.prune_in_flight);
-        assert!(app.prune_open);
+        assert!(app.view.prune_in_flight);
+        assert!(app.view.prune_open);
     });
     assert_eq!(
         engine.count("/prune"),
@@ -69,9 +69,9 @@ fn an_accepted_prune_closes_its_sheet_only_once_it_has_run(cx: &mut TestAppConte
     );
     cx.run_until_parked();
     app.read_with(&*cx, |app, _| {
-        assert!(!app.prune_open);
-        assert!(!app.prune_in_flight);
-        assert_eq!(app.toast.as_ref().map(|toast| toast.bad), Some(false));
+        assert!(!app.view.prune_open);
+        assert!(!app.view.prune_in_flight);
+        assert_eq!(app.view.toast.as_ref().map(|toast| toast.bad), Some(false));
     });
     assert!(engine.count("/prune") >= 1);
 }
@@ -100,14 +100,14 @@ fn changing_the_filter_clears_a_selection_that_no_longer_fits(cx: &mut TestAppCo
     let (app, _engine, cx) = wired(cx);
     app.update(cx, |app, cx| {
         app.select(0, cx);
-        assert!(app.selected_id.is_some());
+        assert!(app.view.selected_id.is_some());
         // The fixture's container is running, so it isn't among the stopped.
         app.set_filter(Filter::Stopped, cx);
-        assert!(app.selected_id.is_none());
+        assert!(app.view.selected_id.is_none());
         // Cleared the whole way: no detail job is left running against nothing.
-        assert!(app.detail_task.is_none());
-        assert!(app.inspect_facts.is_none());
-        assert!(app.logs_text.is_empty());
+        assert!(app.inspector.detail_task.is_none());
+        assert!(app.inspector.inspect_facts.is_none());
+        assert!(app.inspector.logs_text.is_empty());
     });
 }
 
@@ -117,10 +117,10 @@ fn a_selection_that_still_fits_survives_a_filter_change(cx: &mut TestAppContext)
     app.update(cx, |app, cx| {
         app.select(0, cx);
         app.set_filter(Filter::Running, cx);
-        assert_eq!(app.selected_id.as_deref(), Some("demo-1"));
+        assert_eq!(app.view.selected_id.as_deref(), Some("demo-1"));
         // Choosing the filter that is already on changes nothing.
         app.set_filter(Filter::Running, cx);
-        assert_eq!(app.selected_id.as_deref(), Some("demo-1"));
+        assert_eq!(app.view.selected_id.as_deref(), Some("demo-1"));
     });
 }
 
@@ -139,13 +139,13 @@ fn ports_sort_as_numbers_so_8080_comes_before_10000(cx: &mut TestAppContext) {
             }];
         }
         app.snapshot = std::sync::Arc::new(snapshot);
-        app.sorts[0] = (8, true);
+        app.view.lists[0].sort = (8, true);
         assert_eq!(
             app.visible_rows(),
             [1, 0],
             "ascending: the lower port first"
         );
-        app.sorts[0] = (8, false);
+        app.view.lists[0].sort = (8, false);
         assert_eq!(
             app.visible_rows(),
             [0, 1],
@@ -159,7 +159,7 @@ fn a_container_with_no_port_sorts_after_those_with_one(cx: &mut TestAppContext) 
     let (app, _engine, cx) = wired(cx);
     app.update(cx, |app, _| {
         // In the fixture only the first container publishes a port.
-        app.sorts[0] = (8, true);
+        app.view.lists[0].sort = (8, true);
         assert_eq!(app.visible_rows(), [0, 1]);
     });
 }
@@ -184,11 +184,14 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
     // With only the options that have nothing left ticked, the button knows
     // there is nothing to do, and Tab passes it by.
     app.update(cx, |app, cx| {
-        app.prune_options.images = false;
+        app.view.prune_options.images = false;
         app.open_prune(cx);
     });
     let (work, stops) = app.read_with(&*cx, |app, cx| {
-        (app.prune_has_work(), app.sheet_focus.stops(app, cx).len())
+        (
+            app.prune_has_work(),
+            app.view.sheet_focus.stops(app, cx).len(),
+        )
     });
     assert_eq!(work, Some(false));
     assert_eq!(
@@ -233,11 +236,15 @@ fn a_bad_name_is_refused_before_anything_is_sent(cx: &mut TestAppContext) {
     for name in ["", "a", "-bad", "bad name", "shop-data"] {
         app.update(cx, |app, cx| {
             app.open_create(CreateKind::Volume, cx);
-            app.create_name
+            app.view
+                .create_name
                 .update(cx, |input, cx| input.set_value(name, cx));
             app.submit_create(cx);
-            assert!(app.create_attempted, "{name:?} was refused");
-            assert!(app.create_kind.is_some(), "and the sheet stays to say why");
+            assert!(app.view.create_attempted, "{name:?} was refused");
+            assert!(
+                app.view.create_kind.is_some(),
+                "and the sheet stays to say why"
+            );
         });
         cx.run_until_parked();
     }
@@ -245,10 +252,11 @@ fn a_bad_name_is_refused_before_anything_is_sent(cx: &mut TestAppContext) {
 
     // A name that passes the rule is sent, once.
     app.update(cx, |app, cx| {
-        app.create_name
+        app.view
+            .create_name
             .update(cx, |input, cx| input.set_value("brand-new", cx));
         app.submit_create(cx);
-        assert!(!app.create_attempted);
+        assert!(!app.view.create_attempted);
     });
     cx.run_until_parked();
     assert_eq!(engine.count("/volumes/create"), 1);

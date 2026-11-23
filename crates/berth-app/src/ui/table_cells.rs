@@ -85,8 +85,8 @@ pub(crate) fn container_row(
             this.select(index, cx);
         }));
 
-    if app.bulk_enabled {
-        let checked = app.bulk_selected.contains(&container.id);
+    if app.view.bulk_enabled {
+        let checked = app.view.bulk_selected.contains(&container.id);
         let id = container.id.clone();
         element = element.child(
             checkbox(

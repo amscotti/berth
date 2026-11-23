@@ -131,8 +131,8 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .iter()
             .filter(|c| c.uses_image(image))
             .count();
-        let selected = app.detail_kind == crate::app::DetailKind::Image
-            && app.selected_id.as_deref() == Some(image.id.as_str());
+        let selected = app.view.detail_kind == crate::app::DetailKind::Image
+            && app.view.selected_id.as_deref() == Some(image.id.as_str());
         let click_id = image.id.clone();
         let click_label = label.to_owned();
         let mut row = div()
@@ -201,7 +201,7 @@ fn image_matches(image: &Image, query: &str) -> bool {
 /// "Get and run images": a card that folds down to its heading, and opens on
 /// the two forms.
 fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> AnyElement {
-    let open = app.creation_open;
+    let open = app.view.creation_open;
     let mut card = card(tokens).mb(px(layout::CARD_GAP)).child(
         // The heading opens and closes the forms. To assistive technology
         // it says which way it is.
@@ -220,7 +220,7 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
             .aria_label("Get and run images")
             .aria_expanded(open)
             .on_click(cx.listener(|this, _, _, cx| {
-                this.set_creation_open(!this.creation_open, cx);
+                this.set_creation_open(!this.view.creation_open, cx);
             }))
             .child(
                 div()
@@ -246,18 +246,20 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
     }
 
     let pull_failure = app
+        .view
         .pull_attempted
-        .then(|| validation::pull(app.pull_input.read(cx).text()))
+        .then(|| validation::pull(app.view.pull_input.read(cx).text()))
         .flatten();
     let run_failure = app
+        .view
         .run_attempted
         .then(|| {
             validation::run(
-                app.run_image.read(cx).text(),
-                app.run_name.read(cx).text(),
-                app.run_ports.read(cx).text(),
-                app.run_volumes.read(cx).text(),
-                app.run_env.read(cx).text(),
+                app.view.run_image.read(cx).text(),
+                app.view.run_name.read(cx).text(),
+                app.view.run_ports.read(cx).text(),
+                app.view.run_volumes.read(cx).text(),
+                app.view.run_env.read(cx).text(),
             )
         })
         .flatten();
@@ -268,7 +270,7 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .items_end()
         .w_full()
         .gap(px(8.0))
-        .child(field("Reference", app.pull_input.clone(), tokens))
+        .child(field("Reference", app.view.pull_input.clone(), tokens))
         .child(
             button("images-cmd-Pull", "Pull", tokens)
                 .primary()
@@ -288,8 +290,8 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .items_end()
         .gap(px(layout::ROW_GAP));
     first = first
-        .child(field("Image", app.run_image.clone(), tokens))
-        .child(field("Name", app.run_name.clone(), tokens));
+        .child(field("Image", app.view.run_image.clone(), tokens))
+        .child(field("Name", app.view.run_name.clone(), tokens));
     card = card.child(first);
     if let Some(failure) = &run_failure {
         card = card.child(error_line(&validation::describe(failure), tokens));
@@ -302,12 +304,12 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .items_end()
         .gap(px(layout::ROW_GAP));
     second = second
-        .child(field("Ports", app.run_ports.clone(), tokens))
-        .child(field("Volumes", app.run_volumes.clone(), tokens));
+        .child(field("Ports", app.view.run_ports.clone(), tokens))
+        .child(field("Volumes", app.view.run_volumes.clone(), tokens));
     card = card.child(second);
-    card = card.child(field("Env", app.run_env.clone(), tokens));
-    if app.run_env_missing > 0 {
-        let noun = if app.run_env_missing == 1 {
+    card = card.child(field("Env", app.view.run_env.clone(), tokens));
+    if app.view.run_env_missing > 0 {
+        let noun = if app.view.run_env_missing == 1 {
             "value was"
         } else {
             "values were"
@@ -318,7 +320,7 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
                 .text_color(tokens.warning_text())
                 .child(format!(
                     "{} {noun} left empty because the source redacted them. Fill them in before running.",
-                    app.run_env_missing
+                    app.view.run_env_missing
                 )),
         );
     }

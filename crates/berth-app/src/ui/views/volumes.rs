@@ -124,8 +124,8 @@ pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> An
     );
 
     let rows = shown.into_iter().enumerate().map(|(index, volume)| {
-        let selected = app.detail_kind == DetailKind::Volume
-            && app.selected_id.as_deref() == Some(volume.name.as_str());
+        let selected = app.view.detail_kind == DetailKind::Volume
+            && app.view.selected_id.as_deref() == Some(volume.name.as_str());
         let click_name = volume.name.clone();
         let mut row = div()
             .id(SharedString::from(format!("volume-{}", volume.name)))

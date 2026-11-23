@@ -113,7 +113,7 @@ fn rail_item(
         tab.label(),
         tab.icon_name(),
         theme::tint(tokens, tab.tint_kind()),
-        app.tab == tab,
+        app.view.tab == tab,
         tokens,
     );
     if narrow {

@@ -24,7 +24,7 @@ pub(crate) fn page_header(
     let tokens = app.tokens;
     let running = app.snapshot.running();
     let total = app.snapshot.containers.len();
-    let subtitle = match app.tab {
+    let subtitle = match app.view.tab {
         Tab::Containers => format!("{running} running · {total} total"),
         Tab::Overview => app.engine.engine_label(),
         Tab::Disk => app
@@ -57,7 +57,7 @@ pub(crate) fn page_header(
                 .text_size(px(type_scale::TITLE))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(tokens.text)
-                .child(app.tab.label()),
+                .child(app.view.tab.label()),
         )
         .child(
             div()
@@ -71,7 +71,7 @@ pub(crate) fn page_header(
         let search_width = if widths.content < 760.0 { 132.0 } else { 190.0 };
         if let Some(label) = action_label {
             header = header.child(button("page-action", label, tokens).on_click(cx.listener(
-                |this, _, _, cx| match this.tab {
+                |this, _, _, cx| match this.view.tab {
                     Tab::Containers => this.toggle_bulk(cx),
                     Tab::Volumes => this.open_create(crate::app::CreateKind::Volume, cx),
                     Tab::Networks => this.open_create(crate::app::CreateKind::Network, cx),
@@ -96,13 +96,13 @@ pub(crate) fn page_header(
             chip(
                 ("filter", filter as usize),
                 filter.label(),
-                app.filter == filter,
+                app.view.filter == filter,
                 tokens,
             )
             .on_click(cx.listener(move |this, _, _, cx| this.set_filter(filter, cx)))
         }));
 
-    if app.tab == Tab::Containers {
+    if app.view.tab == Tab::Containers {
         div()
             .flex()
             .flex_col()
@@ -138,7 +138,7 @@ pub(crate) fn table_header(
         .role(Role::Row)
         .aria_label("Containers table header");
 
-    if app.bulk_enabled {
+    if app.view.bulk_enabled {
         row = row.child(header_cell("", layout::BULK_COLUMN, false, tokens));
         row = row.child(sortable_header_cell(
             0,
@@ -296,7 +296,7 @@ pub(crate) fn table(
                 app.query(crate::app::SearchKind::Containers)
             )
         } else {
-            match app.filter {
+            match app.view.filter {
                 Filter::Stopped => "No stopped containers — All shows every container".to_owned(),
                 Filter::Running => "No running containers — All shows every container".to_owned(),
                 Filter::All => "No containers".to_owned(),
@@ -317,7 +317,7 @@ pub(crate) fn table(
         .map(|(position, index)| {
             let container = &app.snapshot.containers[*index];
             let stat = app.snapshot.stat(*index);
-            let selected = app.selected_id.as_deref() == Some(container.id.as_str());
+            let selected = app.view.selected_id.as_deref() == Some(container.id.as_str());
             cells::container_row(
                 app, *index, position, container, stat, selected, tokens, columns, cx,
             )
@@ -328,7 +328,7 @@ pub(crate) fn table(
     // presses. The arrow keys move inside it.
     crate::ui::kit::focused(
         div().id("containers-table"),
-        Some(&app.table_focus),
+        Some(&app.view.table_focus),
         tokens.focus_ring(),
         true,
     )
@@ -344,10 +344,10 @@ pub(crate) fn table(
 }
 
 fn bulk_bar(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
-    if !app.bulk_enabled {
+    if !app.view.bulk_enabled {
         return div();
     }
-    let none_selected = app.bulk_selected.is_empty();
+    let none_selected = app.view.bulk_selected.is_empty();
     div()
         .flex()
         .flex_row()
@@ -356,7 +356,7 @@ fn bulk_bar(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
         .gap(px(8.0))
         .py(px(6.0))
         .child(caption(
-            format!("{} selected", app.bulk_selected.len()),
+            format!("{} selected", app.view.bulk_selected.len()),
             tokens,
         ))
         .child(

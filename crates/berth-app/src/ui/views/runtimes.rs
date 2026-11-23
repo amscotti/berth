@@ -56,12 +56,12 @@ fn custom_socket(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
                 .items_center()
                 .w_full()
                 .gap(px(8.0))
-                .child(app.socket_input.clone())
+                .child(app.view.socket_input.clone())
                 .child(
                     button("connect-socket", "Connect", tokens)
                         .primary()
                         .on_click(cx.listener(|this, _, _, cx| {
-                            let path = this.socket_input.read(cx).text().trim().to_owned();
+                            let path = this.view.socket_input.read(cx).text().trim().to_owned();
                             if !path.is_empty() {
                                 this.use_socket(&path, cx);
                             }

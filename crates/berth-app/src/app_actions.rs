@@ -107,7 +107,7 @@ impl BerthApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let kind = match self.tab {
+        let kind = match self.view.tab {
             Tab::Containers => Some(SearchKind::Containers),
             Tab::Images => Some(SearchKind::Images),
             Tab::Volumes => Some(SearchKind::Volumes),
@@ -116,7 +116,9 @@ impl BerthApp {
             _ => None,
         };
         if let Some(kind) = kind {
-            self.searches[kind as usize].update(cx, |input, cx| input.focus(window, cx));
+            self.view.lists[kind as usize]
+                .search
+                .update(cx, |input, cx| input.focus(window, cx));
             cx.notify();
         }
     }
@@ -164,12 +166,12 @@ impl BerthApp {
     }
 
     fn step_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.tab == Tab::Containers {
+        if self.view.tab == Tab::Containers {
             let rows = self.visible_rows();
             if rows.is_empty() {
                 return;
             }
-            let current = self.selected_id.as_deref().and_then(|id| {
+            let current = self.view.selected_id.as_deref().and_then(|id| {
                 rows.iter()
                     .position(|&ix| self.snapshot.containers[ix].id == id)
             });
@@ -183,20 +185,20 @@ impl BerthApp {
     }
 
     pub(crate) fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pending.is_some() {
-            self.pending = None;
+        if self.view.pending.is_some() {
+            self.view.pending = None;
             cx.notify();
             return;
         }
-        if self.create_kind.is_some() {
+        if self.view.create_kind.is_some() {
             self.close_create(cx);
             return;
         }
-        if self.prune_open {
+        if self.view.prune_open {
             self.close_prune(cx);
             return;
         }
-        for search in &self.searches {
+        for search in self.view.lists.iter().map(|list| &list.search) {
             let focused_non_empty =
                 search.read(cx).focus_handle().is_focused(window) && !search.read(cx).is_empty();
             if focused_non_empty {
@@ -204,13 +206,20 @@ impl BerthApp {
                 return;
             }
         }
-        if self.log_search.read(cx).focus_handle().is_focused(window)
-            && !self.log_search.read(cx).is_empty()
+        if self
+            .inspector
+            .log_search
+            .read(cx)
+            .focus_handle()
+            .is_focused(window)
+            && !self.inspector.log_search.read(cx).is_empty()
         {
-            self.log_search.update(cx, |input, cx| input.clear(cx));
+            self.inspector
+                .log_search
+                .update(cx, |input, cx| input.clear(cx));
             return;
         }
-        if self.selected_id.is_some() {
+        if self.view.selected_id.is_some() {
             self.clear_selection(cx);
         }
     }
@@ -278,11 +287,12 @@ impl BerthApp {
     /// subset is cleared completely, the way `clear_selection` does it: the
     /// detail job is cancelled, not left to finish against nothing.
     pub(crate) fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
-        if self.filter == filter {
+        if self.view.filter == filter {
             return;
         }
-        self.filter = filter;
+        self.view.filter = filter;
         if self
+            .view
             .selected_id
             .as_deref()
             .and_then(|id| self.snapshot.selected_container(id))
@@ -293,33 +303,31 @@ impl BerthApp {
         cx.notify();
     }
 
+    /// How a table is sorted: the column, and whether ascending.
     pub(crate) fn sort_for(&self, table: usize) -> (usize, bool) {
-        self.sorts[table]
+        self.view.lists[table].sort
     }
 
     pub(crate) fn toggle_sort(&mut self, table: usize, col: usize, cx: &mut Context<Self>) {
-        let (current_col, asc) = self.sorts[table];
-        self.sorts[table] = if current_col == col {
-            (col, !asc)
-        } else {
-            (col, true)
-        };
+        self.view.lists[table].toggle_sort(col);
         cx.notify();
     }
 
     pub(crate) fn visible_rows(&self) -> Vec<usize> {
-        let query = self.queries[SearchKind::Containers as usize].to_ascii_lowercase();
+        let query = self.view.lists[SearchKind::Containers as usize]
+            .query
+            .to_ascii_lowercase();
         let mut rows: Vec<usize> = self
             .snapshot
             .containers
             .iter()
             .enumerate()
             .filter_map(|(index, container)| {
-                (self.filter.keeps(container) && container_matches(container, &query))
+                (self.view.filter.keeps(container) && container_matches(container, &query))
                     .then_some(index)
             })
             .collect();
-        let (col, asc) = self.sorts[0];
+        let (col, asc) = self.view.lists[0].sort;
         rows.sort_by(|&a, &b| {
             let ca = &self.snapshot.containers[a];
             let cb = &self.snapshot.containers[b];

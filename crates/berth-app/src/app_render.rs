@@ -17,8 +17,8 @@ impl BerthApp {
         tokens: Tokens,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let id = self.selected_id.as_deref()?;
-        let element = match self.detail_kind {
+        let id = self.view.selected_id.as_deref()?;
+        let element = match self.view.detail_kind {
             DetailKind::Container => {
                 let index = self
                     .snapshot
@@ -70,7 +70,7 @@ impl BerthApp {
 
 impl Focusable for BerthApp {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
-        self.focus_handle.clone()
+        self.view.focus_handle.clone()
     }
 }
 
@@ -78,11 +78,11 @@ impl Render for BerthApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.place_focus(window, cx);
         let window_width: f32 = window.viewport_size().width.into();
-        let widths = layout::for_window(window_width, self.selected_id.is_some());
+        let widths = layout::for_window(window_width, self.view.selected_id.is_some());
         let tokens = self.tokens;
-        let columns = layout::container_columns(widths.content, self.bulk_enabled);
+        let columns = layout::container_columns(widths.content, self.view.bulk_enabled);
 
-        let body = match self.tab {
+        let body = match self.view.tab {
             Tab::Containers => {
                 let page = table::page_header(
                     self,
@@ -143,7 +143,7 @@ impl Render for BerthApp {
         // the keyboard while it is open.
         let page = div()
             .id("berth-page")
-            .track_focus(&self.focus_handle)
+            .track_focus(&self.view.focus_handle)
             .key_context("Berth")
             .on_action(cx.listener(Self::on_show_overview))
             .on_action(cx.listener(Self::on_show_containers))
@@ -200,10 +200,11 @@ mod tests {
         let (app, cx) = cx.add_window_view(|_, cx| BerthApp::new_fixture(theme::light(), cx));
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            assert!(app.selected_id.is_some());
+            assert!(app.view.selected_id.is_some());
             app.switch_to(Tab::Images, cx);
         });
-        let (tab, selected) = app.read_with(&*cx, |app, _| (app.tab, app.selected_id.clone()));
+        let (tab, selected) =
+            app.read_with(&*cx, |app, _| (app.view.tab, app.view.selected_id.clone()));
         assert_eq!(tab, Tab::Images);
         assert!(selected.is_none());
     }
@@ -215,7 +216,7 @@ mod tests {
             app.select(1, cx);
             app.clear_selection(cx);
         });
-        let selected = app.read_with(&*cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(&*cx, |app, _| app.view.selected_id.clone());
         assert!(selected.is_none());
     }
 }

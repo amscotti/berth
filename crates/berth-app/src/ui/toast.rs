@@ -13,7 +13,7 @@ pub fn overlay(
     tokens: Tokens,
     cx: &mut gpui::Context<BerthApp>,
 ) -> Option<AnyElement> {
-    let toast = app.toast.as_ref()?;
+    let toast = app.view.toast.as_ref()?;
     let color = if toast.bad {
         tokens.danger_text()
     } else {
@@ -46,8 +46,8 @@ pub fn overlay(
             })
             .aria_label(toast.text.clone())
             .on_click(cx.listener(|this, _, _, cx| {
-                this.toast = None;
-                this.toast_task = None;
+                this.view.toast = None;
+                this.view.toast_task = None;
                 cx.notify();
             }))
             .child(div().w(px(7.0)).h(px(7.0)).rounded(px(4.0)).bg(color))

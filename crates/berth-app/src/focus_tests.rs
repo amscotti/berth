@@ -15,7 +15,7 @@ fn focused(cx: &mut VisualTestContext, handle: &FocusHandle) -> bool {
 fn in_sheet(app: &Entity<BerthApp>, cx: &mut VisualTestContext) -> bool {
     cx.update(|window, cx| {
         let app = app.read(cx);
-        app.sheet_focus.holds_focus(app, cx, window)
+        app.view.sheet_focus.holds_focus(app, cx, window)
     })
 }
 
@@ -36,7 +36,7 @@ fn tab_crosses_the_rail_the_search_the_chips_and_the_headers_before_the_table(
     let (search, table) = app.read_with(&*cx, |app, cx| {
         (
             app.search(SearchKind::Containers).focus_handle(cx),
-            app.table_focus.clone(),
+            app.view.table_focus.clone(),
         )
     });
     // How many columns this window shows, from the same arithmetic the page
@@ -50,7 +50,7 @@ fn tab_crosses_the_rail_the_search_the_chips_and_the_headers_before_the_table(
     // The first stop is the rail's first page: Enter on it goes there.
     testkit::press(cx, "tab");
     testkit::press(cx, "enter");
-    assert_eq!(app.read_with(&*cx, |app, _| app.tab), Tab::Overview);
+    assert_eq!(app.read_with(&*cx, |app, _| app.view.tab), Tab::Overview);
     app.update(cx, |app, cx| app.switch_to(Tab::Containers, cx));
 
     // Then one stop for each of the rail's other pages, the page's action,
@@ -78,7 +78,10 @@ fn tab_crosses_the_rail_the_search_the_chips_and_the_headers_before_the_table(
     testkit::press(cx, "tab");
     testkit::press(cx, "tab");
     testkit::press(cx, "enter");
-    assert_eq!(app.read_with(&*cx, |app, _| app.filter), Filter::Running);
+    assert_eq!(
+        app.read_with(&*cx, |app, _| app.view.filter),
+        Filter::Running
+    );
 
     // Then the headers, which sort. Name is sorted ascending to begin with;
     // Enter on its header turns that round.
@@ -98,7 +101,7 @@ fn tab_crosses_the_rail_the_search_the_chips_and_the_headers_before_the_table(
     // the window, which is the rail's first page.
     testkit::press(cx, "tab");
     testkit::press(cx, "enter");
-    assert_eq!(app.read_with(&*cx, |app, _| app.tab), Tab::Overview);
+    assert_eq!(app.read_with(&*cx, |app, _| app.view.tab), Tab::Overview);
     app.update(cx, |app, cx| app.switch_to(Tab::Containers, cx));
 
     // Back to the table, where the arrow keys move the selection: past the
@@ -115,7 +118,7 @@ fn tab_crosses_the_rail_the_search_the_chips_and_the_headers_before_the_table(
         app.snapshot.containers[rows[0]].id.clone()
     });
     assert_eq!(
-        app.read_with(&*cx, |app, _| app.selected_id.clone()),
+        app.read_with(&*cx, |app, _| app.view.selected_id.clone()),
         Some(first),
         "Down selects the first row"
     );
@@ -135,12 +138,12 @@ fn a_sheet_holds_the_keyboard_until_it_closes(cx: &mut TestAppContext) {
     testkit::draw(cx);
 
     // It moves into the sheet, to the first control it lists.
-    let first = app.read_with(&*cx, |app, _| app.sheet_focus.options[0].clone());
+    let first = app.read_with(&*cx, |app, _| app.view.sheet_focus.options[0].clone());
     assert!(focused(cx, &first), "the sheet takes focus");
 
     // Tab crosses the sheet's controls and nothing else: every one of them,
     // wrapping at each end.
-    let stops = app.read_with(&*cx, |app, cx| app.sheet_focus.stops(app, cx));
+    let stops = app.read_with(&*cx, |app, cx| app.view.sheet_focus.stops(app, cx));
     assert!(stops.len() >= 3, "a cleanup offers options and two buttons");
     let which = |cx: &mut VisualTestContext| {
         stops
@@ -163,19 +166,19 @@ fn a_sheet_holds_the_keyboard_until_it_closes(cx: &mut TestAppContext) {
     // The page behind gets none of its own keys.
     testkit::press(cx, "down");
     assert!(
-        app.read_with(&*cx, |app, _| app.selected_id.is_none()),
+        app.read_with(&*cx, |app, _| app.view.selected_id.is_none()),
         "the arrows don't reach the table behind a sheet"
     );
     testkit::press(cx, page_one());
     assert_eq!(
-        app.read_with(&*cx, |app, _| app.tab),
+        app.read_with(&*cx, |app, _| app.view.tab),
         Tab::Containers,
         "the page shortcuts don't switch pages behind a sheet"
     );
 
     // Escape is the way out, and focus goes back to where it was.
     testkit::press(cx, "escape");
-    assert!(!app.read_with(&*cx, |app, _| app.prune_open));
+    assert!(!app.read_with(&*cx, |app, _| app.view.prune_open));
     testkit::draw(cx);
     assert!(focused(cx, &search), "focus returns to where it was");
 }
@@ -187,11 +190,11 @@ fn a_confirmation_opens_on_the_way_out(cx: &mut TestAppContext) {
     testkit::draw(cx);
 
     // The destructive button is not where focus lands: Cancel is.
-    let cancel = app.read_with(&*cx, |app, _| app.sheet_focus.cancel.clone());
+    let cancel = app.read_with(&*cx, |app, _| app.view.sheet_focus.cancel.clone());
     assert!(focused(cx, &cancel), "a confirmation opens on Cancel");
     testkit::press(cx, "enter");
     assert!(
-        app.read_with(&*cx, |app, _| app.pending.is_none()),
+        app.read_with(&*cx, |app, _| app.view.pending.is_none()),
         "Enter there closes the sheet and does nothing else"
     );
     assert_eq!(

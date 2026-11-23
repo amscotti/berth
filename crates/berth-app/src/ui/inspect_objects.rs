@@ -69,9 +69,13 @@ pub(crate) fn image_pane(
         pane = pane.child(list);
     }
 
-    pane = pane.child(section_title("Layers", app.image_layers.len(), tokens));
-    if app.image_layers.is_empty() {
-        let note = if app.image_layers_loading {
+    pane = pane.child(section_title(
+        "Layers",
+        app.inspector.image_layers.len(),
+        tokens,
+    ));
+    if app.inspector.image_layers.is_empty() {
+        let note = if app.inspector.image_layers_loading {
             "Reading image history…"
         } else {
             "Layer history loads from the live engine."
@@ -92,7 +96,7 @@ pub(crate) fn image_pane(
             .bg(tokens.background)
             .border_1()
             .border_color(tokens.border);
-        for layer in &app.image_layers {
+        for layer in &app.inspector.image_layers {
             let cmd = clean_layer_cmd(&layer.created_by);
             layers_well = layers_well.child(
                 div()
@@ -130,7 +134,7 @@ pub(crate) fn image_pane(
     let name = name.to_owned();
     let id = image.id.clone();
     let label = image.label().to_owned();
-    if app.image_layers.is_empty() {
+    if app.inspector.image_layers.is_empty() {
         pane = pane.child(div().flex_1());
     }
     pane.child(
@@ -145,8 +149,9 @@ pub(crate) fn image_pane(
                 cx.listener({
                     let label = label.clone();
                     move |this, _, _, cx| {
-                        this.creation_open = true;
-                        this.run_image
+                        this.view.creation_open = true;
+                        this.view
+                            .run_image
                             .update(cx, |input, cx| input.set_value(label.clone(), cx));
                         cx.notify();
                     }

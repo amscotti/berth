@@ -59,7 +59,7 @@ impl BerthApp {
 
     /// Show a page, as the screenshot pass does to reach each of them.
     pub fn show_tab(&mut self, tab: Tab) {
-        self.tab = tab;
+        self.view.tab = tab;
     }
 
     // --- review hooks: put the app into a state, without a pointer ---------
@@ -75,7 +75,8 @@ impl BerthApp {
 
     /// Put `text` in the containers search, as if it had been typed.
     pub fn show_search_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.searches[SearchKind::Containers as usize]
+        self.view.lists[SearchKind::Containers as usize]
+            .search
             .update(cx, |input, cx| input.set_value(text, cx));
         cx.notify();
     }
@@ -83,8 +84,8 @@ impl BerthApp {
     /// The cleanup sheet with only options ticked that have nothing left.
     pub fn show_cleanup_with_nothing_to_do(&mut self, cx: &mut Context<Self>) {
         self.open_prune(cx);
-        self.prune_options.images = false;
-        self.prune_options.build_cache = false;
+        self.view.prune_options.images = false;
+        self.view.prune_options.build_cache = false;
         cx.notify();
     }
 
@@ -110,12 +111,12 @@ impl BerthApp {
 
     pub fn select_fixture_container(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
         self.select(0, cx);
-        self.inspector_tab = tab;
-        self.logs_loading = false;
-        self.inspect_loading = false;
-        self.logs_text =
+        self.inspector.tab = tab;
+        self.inspector.logs_loading = false;
+        self.inspector.inspect_loading = false;
+        self.inspector.logs_text =
             "2026-11-07 15:20:01 [notice] 1#1: nginx/1.27.2\n2026-11-07 15:20:01 [notice] 1#1: start worker processes\n172.18.0.1 - - [07/Nov/2026:15:21:10 +0000] \"GET / HTTP/1.1\" 200 615".into();
-        self.inspect_facts = Some(berth_engine::detail::InspectFacts {
+        self.inspector.inspect_facts = Some(berth_engine::detail::InspectFacts {
             started_at: Some(berth_core::format::now() - 18 * 3600),
             restarts: 0,
             exit_code: None,
@@ -154,7 +155,7 @@ impl BerthApp {
             ),
             run_redacted: true,
         });
-        self.detail_top = Some(berth_engine::dto::ContainerTop {
+        self.inspector.detail_top = Some(berth_engine::dto::ContainerTop {
             titles: vec!["PID".into(), "USER".into(), "TIME".into(), "COMMAND".into()],
             processes: vec![
                 vec![
@@ -171,7 +172,7 @@ impl BerthApp {
                 ],
             ],
         });
-        self.detail_changes = vec![
+        self.inspector.detail_changes = vec![
             berth_engine::dto::FsChange {
                 path: "/var/cache/nginx/client_temp".into(),
                 kind: 1,
@@ -191,8 +192,8 @@ impl BerthApp {
     pub fn select_fixture_image(&mut self, cx: &mut Context<Self>) {
         if let Some(image) = self.snapshot.images.first().cloned() {
             self.select_image(&image.id, image.label(), cx);
-            self.image_layers_loading = false;
-            self.image_layers = vec![
+            self.inspector.image_layers_loading = false;
+            self.inspector.image_layers = vec![
                 berth_engine::dto::ImageLayer {
                     id: "sha256:a1".into(),
                     created: berth_core::format::now() - 86_400 * 12,

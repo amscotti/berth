@@ -4,17 +4,17 @@
 //! and real data arrive in M1; the geometry and tokens are already the ones the
 //! final app uses, so the table survives that transition.
 
-use crate::ui::input::{InputEvent, InputState};
 use std::sync::Arc;
 
+use crate::ui::input::InputState;
 use berth_engine::dto::Container;
 use berth_ui::theme::{TintKind, Tokens};
-use gpui::prelude::*;
-use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription, Task};
+use gpui::{Context, Entity, Subscription, Task};
 
-use crate::jobs::mutation::PruneOptions;
+use crate::inspector::Inspector;
 use crate::settings::{self, Appearance};
 use crate::state::{EngineState, HostSample, SharedSnapshot, Snapshot};
+use crate::view::ViewState;
 
 /// The views a window can show, in rail order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -166,7 +166,7 @@ impl SearchKind {
         SearchKind::Events,
     ];
 
-    fn placeholder(self) -> &'static str {
+    pub(crate) fn placeholder(self) -> &'static str {
         match self {
             SearchKind::Containers => "Search containers",
             SearchKind::Images => "Search images",
@@ -207,83 +207,29 @@ impl Filter {
     }
 }
 
-/// The root view.
+/// The shell: the engine's answer, the jobs that keep it current, and the
+/// window and tray it shows in. Everything about what the person is looking
+/// at, or doing, is [`ViewState`]'s or [`crate::inspector::Inspector`]'s.
 pub struct BerthApp {
-    pub(crate) tab: Tab,
-    pub(crate) filter: Filter,
     pub(crate) tokens: Tokens,
     pub(crate) snapshot: SharedSnapshot,
     /// The machine's own figures, from the last pass or the last host sample.
     pub(crate) host: HostSample,
     pub(crate) engine: EngineState,
-    pub(crate) selected_id: Option<String>,
-    pub(crate) selected_name: String,
-    pub(crate) detail_kind: DetailKind,
-    pub(crate) inspector_tab: InspectorTab,
-    pub(crate) searches: [Entity<InputState>; 5],
-    pub(crate) queries: [String; 5],
-    pub(crate) sorts: [(usize, bool); 4],
-    /// The page's own handle: rail, table and inspector. Focus lives here
-    /// unless a sheet is open.
-    pub(crate) focus_handle: FocusHandle,
-    /// The container table's. One stop for all its rows.
-    pub(crate) table_focus: FocusHandle,
-    pub(crate) sheet_focus: crate::focus::SheetFocus,
+    pub(crate) appearance: Appearance,
     pub(crate) appearance_sub: Option<Subscription>,
-    pub(crate) _search_subs: [Subscription; 5],
-    pub(crate) _form_subs: Vec<Subscription>,
     pub(crate) refresh_task: Option<Task<()>>,
     pub(crate) timer_task: Option<Task<()>>,
     pub(crate) host_task: Option<Task<()>>,
     pub(crate) discovery_task: Option<Task<()>>,
     pub(crate) terminal_task: Option<Task<()>>,
+    /// The one engine mutation in flight, whatever asked for it.
+    pub(crate) mutation_task: Option<Task<()>>,
     pub(crate) refresh_wanted: bool,
     /// A rescan asked for while one was already running. It goes next.
     pub(crate) rescan_wanted: bool,
-    pub(crate) appearance: Appearance,
-    pub(crate) socket_input: Entity<InputState>,
-    pub(crate) toast: Option<Toast>,
-    pub(crate) pending: Option<Pending>,
-    pub(crate) mutation_task: Option<Task<()>>,
-    pub(crate) toast_task: Option<Task<()>>,
-    pub(crate) creation_open: bool,
-    pub(crate) pull_input: Entity<InputState>,
-    pub(crate) run_image: Entity<InputState>,
-    pub(crate) run_name: Entity<InputState>,
-    pub(crate) run_ports: Entity<InputState>,
-    pub(crate) run_volumes: Entity<InputState>,
-    pub(crate) run_env: Entity<InputState>,
-    pub(crate) pull_attempted: bool,
-    pub(crate) run_attempted: bool,
-    /// How many env values a clone left empty because they were redacted.
-    pub(crate) run_env_missing: usize,
-    pub(crate) create_kind: Option<CreateKind>,
-    pub(crate) create_name: Entity<InputState>,
-    pub(crate) create_attempted: bool,
-    pub(crate) create_in_flight: bool,
-    pub(crate) prune_open: bool,
-    pub(crate) prune_options: PruneOptions,
-    pub(crate) prune_in_flight: bool,
-    pub(crate) logs_text: String,
-    pub(crate) logs_loading: bool,
-    pub(crate) logs_follow: bool,
-    pub(crate) logs_timestamps: bool,
-    pub(crate) log_search: Entity<InputState>,
-    _log_search_sub: Subscription,
-    pub(crate) inspect_text: Option<String>,
-    pub(crate) inspect_facts: Option<berth_engine::detail::InspectFacts>,
-    pub(crate) detail_top: Option<berth_engine::dto::ContainerTop>,
-    pub(crate) detail_changes: Vec<berth_engine::dto::FsChange>,
-    pub(crate) image_layers: Vec<berth_engine::dto::ImageLayer>,
-    pub(crate) image_layers_loading: bool,
-    pub(crate) inspect_loading: bool,
-    pub(crate) detail_generation: u64,
-    pub(crate) detail_task: Option<Task<()>>,
-    /// The inspector's scroll handles, so Follow can keep the logs at their end.
-    pub(crate) log_scroll: ScrollHandle,
-    pub(crate) inspect_scroll: ScrollHandle,
-    pub(crate) bulk_enabled: bool,
-    pub(crate) bulk_selected: std::collections::BTreeSet<String>,
+    pub(crate) view: ViewState,
+    pub(crate) inspector: Inspector,
     pub(crate) window_handle: Option<gpui::AnyWindowHandle>,
     /// The preferences file, when preferences are persisted at all.
     pub(crate) settings_file: Option<std::path::PathBuf>,
@@ -344,87 +290,10 @@ impl BerthApp {
         settings_file: Option<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let searches =
-            SearchKind::ALL.map(|kind| cx.new(|cx| InputState::new(kind.placeholder(), 190.0, cx)));
-        let _search_subs = std::array::from_fn(|index| {
-            let search = &searches[index];
-            cx.subscribe(
-                search,
-                move |this, input, event: &InputEvent, cx| match event {
-                    InputEvent::Changed | InputEvent::Edited => {
-                        this.queries[index] = input.read(cx).text().to_owned();
-                        cx.notify();
-                    }
-                    InputEvent::Cancelled => {
-                        input.update(cx, |state, cx| state.clear(cx));
-                    }
-                    InputEvent::Submitted => {}
-                },
-            )
-        });
-        let socket_input = cx.new(|cx| InputState::new("/path/to/docker.sock", 320.0, cx));
-        let pull_input = cx.new(|cx| InputState::new("nginx:alpine", 320.0, cx));
-        let run_image = cx.new(|cx| InputState::new("nginx:alpine", 220.0, cx));
-        let run_name = cx.new(|cx| InputState::new("web", 220.0, cx));
-        let run_ports = cx.new(|cx| InputState::new("18080:80", 220.0, cx));
-        let run_volumes = cx.new(|cx| InputState::new("data:/data", 220.0, cx));
-        let run_env = cx.new(|cx| InputState::new("KEY=value", 460.0, cx));
-        let create_name = cx.new(|cx| InputState::new("name", 360.0, cx));
-        let log_search = cx.new(|cx| InputState::new("Search logs", 130.0, cx));
-        let _log_search_sub = cx.subscribe(&log_search, |_, input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Changed | InputEvent::Edited) {
-                let _ = input.read(cx).text();
-                cx.notify();
-            } else if matches!(event, InputEvent::Cancelled) {
-                input.update(cx, |state, cx| state.clear(cx));
-            }
-        });
-        let mut _form_subs = Vec::with_capacity(8);
-        _form_subs.push(cx.subscribe(
-            &create_name,
-            |this, _, event: &InputEvent, cx| match event {
-                InputEvent::Submitted => this.submit_create(cx),
-                InputEvent::Cancelled => this.close_create(cx),
-                InputEvent::Changed | InputEvent::Edited => {}
-            },
-        ));
-        _form_subs.push(
-            cx.subscribe(&pull_input, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Submitted) {
-                    this.start_pull(cx);
-                }
-            }),
-        );
-        for field in [&run_image, &run_name, &run_ports, &run_volumes, &run_env] {
-            _form_subs.push(cx.subscribe(field, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Submitted) {
-                    this.start_run(cx);
-                }
-            }));
-        }
-        _form_subs.push(cx.subscribe(&run_env, |this, _, event: &InputEvent, cx| {
-            // Only the user's own edit retires the note: the clone that
-            // filled the field in must not clear it a moment later.
-            if matches!(event, InputEvent::Edited) && this.run_env_missing != 0 {
-                this.run_env_missing = 0;
-                cx.notify();
-            }
-        }));
-        _form_subs.push(
-            cx.subscribe(&socket_input, |this, input, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Submitted) {
-                    let path = input.read(cx).text().trim().to_owned();
-                    if !path.is_empty() {
-                        this.use_socket(&path, cx);
-                    }
-                }
-            }),
-        );
         let appearance = saved.appearance;
         let mut engine = EngineState::default();
         if !saved.socket.is_empty() {
             engine.preferred_socket = Some(saved.socket.clone());
-            socket_input.update(cx, |input, cx| input.set_value(saved.socket, cx));
         }
         let tokens = match appearance {
             Appearance::Light => berth_ui::theme::light(),
@@ -433,81 +302,27 @@ impl BerthApp {
         };
         berth_ui::theme::ActiveTokens::set(tokens, cx);
         Self {
-            // The real app opens on Overview once the graphs exist. Until then
-            // the table is the fully drawn surface.
-            tab: Tab::Containers,
-            filter: Filter::All,
             tokens,
             snapshot: Arc::new(snapshot),
             host: HostSample::default(),
             engine,
-            selected_id: None,
-            selected_name: String::new(),
-            detail_kind: DetailKind::Container,
-            inspector_tab: InspectorTab::Facts,
-            searches,
-            queries: std::array::from_fn(|_| String::new()),
-            sorts: [(0, true); 4],
-            focus_handle: cx.focus_handle(),
-            table_focus: cx.focus_handle().tab_stop(true),
-            sheet_focus: crate::focus::SheetFocus::new(cx),
+            appearance,
             appearance_sub: None,
-            _bounds_sub: None,
-            settings_file,
-            window: saved.window,
-            settings_task: None,
-            _search_subs,
-            _form_subs,
             refresh_task: None,
             timer_task: None,
             host_task: None,
             discovery_task: None,
             terminal_task: None,
+            mutation_task: None,
             refresh_wanted: false,
             rescan_wanted: false,
-            appearance,
-            socket_input,
-            toast: None,
-            pending: None,
-            mutation_task: None,
-            toast_task: None,
-            creation_open: false,
-            pull_input,
-            run_image,
-            run_name,
-            run_ports,
-            run_volumes,
-            run_env,
-            pull_attempted: false,
-            run_attempted: false,
-            run_env_missing: 0,
-            create_kind: None,
-            create_name,
-            create_attempted: false,
-            create_in_flight: false,
-            prune_open: false,
-            prune_options: PruneOptions::default(),
-            prune_in_flight: false,
-            logs_text: String::new(),
-            logs_loading: false,
-            logs_follow: true,
-            logs_timestamps: false,
-            log_search,
-            _log_search_sub,
-            inspect_text: None,
-            inspect_facts: None,
-            detail_top: None,
-            detail_changes: Vec::new(),
-            image_layers: Vec::new(),
-            image_layers_loading: false,
-            inspect_loading: false,
-            detail_generation: 0,
-            detail_task: None,
-            log_scroll: ScrollHandle::new(),
-            inspect_scroll: ScrollHandle::new(),
-            bulk_enabled: false,
-            bulk_selected: std::collections::BTreeSet::new(),
+            view: ViewState::new(&saved.socket, cx),
+            inspector: Inspector::new(cx),
             window_handle: None,
+            settings_file,
+            window: saved.window,
+            settings_task: None,
+            _bounds_sub: None,
             tray: None,
             tray_task: None,
             quiet_notices_until: 0,
@@ -535,20 +350,24 @@ impl BerthApp {
 
     /// Empty a table's search field.
     pub(crate) fn clear_search(&mut self, kind: SearchKind, cx: &mut Context<Self>) {
-        self.searches[kind as usize].update(cx, |input, cx| input.clear(cx));
+        self.view.lists[kind as usize]
+            .search
+            .update(cx, |input, cx| input.clear(cx));
     }
 
+    /// A table's search field.
     pub(crate) fn search(&self, kind: SearchKind) -> &Entity<InputState> {
-        &self.searches[kind as usize]
+        &self.view.list(kind).search
     }
 
+    /// What was typed into a table's search field.
     pub(crate) fn query(&self, kind: SearchKind) -> &str {
-        &self.queries[kind as usize]
+        &self.view.list(kind).query
     }
 
     pub(crate) fn switch_to(&mut self, tab: Tab, cx: &mut Context<Self>) {
-        if self.tab != tab {
-            self.tab = tab;
+        if self.view.tab != tab {
+            self.view.tab = tab;
             self.clear_selection(cx);
         }
     }

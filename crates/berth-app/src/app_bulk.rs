@@ -6,20 +6,20 @@ use gpui::Context;
 
 impl BerthApp {
     pub(crate) fn toggle_bulk(&mut self, cx: &mut Context<Self>) {
-        self.bulk_enabled = !self.bulk_enabled;
-        self.bulk_selected.clear();
+        self.view.bulk_enabled = !self.view.bulk_enabled;
+        self.view.bulk_selected.clear();
         cx.notify();
     }
 
     pub(crate) fn bulk_toggle(&mut self, id: &str, cx: &mut Context<Self>) {
-        if !self.bulk_selected.remove(id) {
-            self.bulk_selected.insert(id.to_owned());
+        if !self.view.bulk_selected.remove(id) {
+            self.view.bulk_selected.insert(id.to_owned());
         }
         cx.notify();
     }
 
     pub(crate) fn bulk_select_all(&mut self, cx: &mut Context<Self>) {
-        self.bulk_selected = self
+        self.view.bulk_selected = self
             .visible_rows()
             .into_iter()
             .filter_map(|index| self.snapshot.containers.get(index))
@@ -29,20 +29,20 @@ impl BerthApp {
     }
 
     pub(crate) fn bulk_clear(&mut self, cx: &mut Context<Self>) {
-        self.bulk_selected.clear();
+        self.view.bulk_selected.clear();
         cx.notify();
     }
 
     pub(crate) fn bulk_request(&mut self, verb: &str, cx: &mut Context<Self>) {
-        if self.bulk_selected.is_empty() {
+        if self.view.bulk_selected.is_empty() {
             return;
         }
         if verb == "Delete" {
-            self.pending = Some(Pending {
+            self.view.pending = Some(Pending {
                 method: "BULK".into(),
                 path: "delete".into(),
                 verb: verb.into(),
-                name: format!("{} selected", self.bulk_selected.len()),
+                name: format!("{} selected", self.view.bulk_selected.len()),
             });
             cx.notify();
             return;
@@ -78,12 +78,12 @@ impl BerthApp {
     }
 
     pub(crate) fn bulk_execute(&mut self, verb: &str, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self.bulk_selected.iter().cloned().collect();
+        let ids: Vec<String> = self.view.bulk_selected.iter().cloned().collect();
         if ids.is_empty() {
             return;
         }
         if self.execute_batch(ids, verb, cx) {
-            self.bulk_selected.clear();
+            self.view.bulk_selected.clear();
             cx.notify();
         }
     }

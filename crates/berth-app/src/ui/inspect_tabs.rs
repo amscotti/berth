@@ -28,7 +28,7 @@ pub(crate) fn config_tab(
         .overflow_y_scroll()
         .gap(px(10.0));
 
-    let facts = app.inspect_facts.as_ref();
+    let facts = app.inspector.inspect_facts.as_ref();
     let cmd = facts
         .and_then(|l| l.command.as_deref())
         .or_else(|| (!container.command.is_empty()).then_some(container.command.as_str()));
@@ -162,7 +162,7 @@ pub(crate) fn config_tab(
                             .hover(move |style| style.bg(tokens.surface_hover))
                             .aria_label(format!("Inspect volume {vol_name}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.tab = Tab::Volumes;
+                                this.view.tab = Tab::Volumes;
                                 this.select_volume(&vol_name, cx);
                             }))
                     })
@@ -237,7 +237,7 @@ pub(crate) fn config_tab(
     scroll = scroll.child(env_header);
 
     if env.is_empty() {
-        let note = if app.inspect_loading {
+        let note = if app.inspector.inspect_loading {
             "Reading environment…"
         } else {
             "No environment variables reported."
@@ -309,6 +309,7 @@ pub(crate) fn runtime_tab(
         .gap(px(10.0));
 
     let proc_count = app
+        .inspector
         .detail_top
         .as_ref()
         .map(|t| t.processes.len())
@@ -334,7 +335,7 @@ pub(crate) fn runtime_tab(
             "Container is stopped — start it to inspect live processes.",
             tokens,
         ));
-    } else if let Some(top) = &app.detail_top
+    } else if let Some(top) = &app.inspector.detail_top
         && !top.processes.is_empty()
     {
         let pid_ix = top
@@ -406,7 +407,7 @@ pub(crate) fn runtime_tab(
         }
         scroll = scroll.child(proc_well);
     } else {
-        let note = if app.inspect_loading {
+        let note = if app.inspector.inspect_loading {
             "Reading processes…"
         } else {
             "No process list returned by engine."
@@ -416,11 +417,11 @@ pub(crate) fn runtime_tab(
 
     scroll = scroll.child(section_heading(
         "Writable layer changes",
-        app.detail_changes.len(),
+        app.inspector.detail_changes.len(),
         tokens,
     ));
-    if app.detail_changes.is_empty() {
-        let note = if app.inspect_loading {
+    if app.inspector.detail_changes.is_empty() {
+        let note = if app.inspector.inspect_loading {
             "Reading filesystem diff…"
         } else {
             "No modified files in the container's writable layer."
@@ -437,7 +438,7 @@ pub(crate) fn runtime_tab(
             .bg(tokens.background)
             .border_1()
             .border_color(tokens.border);
-        for change in app.detail_changes.iter().take(80) {
+        for change in app.inspector.detail_changes.iter().take(80) {
             let (tag, color) = match change.kind {
                 1 => ("A", tokens.success_text()),
                 2 => ("D", tokens.danger_text()),

@@ -15,17 +15,17 @@ use crate::app::{BerthApp, CreateKind, Pending};
 use crate::ui::kit::{Button, button, caption, checkbox};
 
 pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Option<AnyElement> {
-    let (label, panel) = if let Some(pending) = &app.pending {
+    let (label, panel) = if let Some(pending) = &app.view.pending {
         (
             format!("{} {}?", pending.verb, pending.name),
             confirm_panel(app, pending, tokens, cx),
         )
-    } else if let Some(kind) = app.create_kind {
+    } else if let Some(kind) = app.view.create_kind {
         (
             format!("New {}", kind.noun()),
             create_panel(app, kind, tokens, cx),
         )
-    } else if app.prune_open {
+    } else if app.view.prune_open {
         (
             "Clean up unused data".to_owned(),
             prune_panel(app, tokens, cx),
@@ -118,13 +118,13 @@ fn confirm_panel(
 
     let cancel = button("sheet-Cancel", "Cancel", tokens)
         .width(px(DIALOG_BUTTON_WIDTH))
-        .focus(app.sheet_focus.cancel.clone())
+        .focus(app.view.sheet_focus.cancel.clone())
         .on_click(cx.listener(|this, _, _, cx| this.resolve_pending(false, cx)));
     // The way forward destroys something, so it is the destructive button.
     let confirm = button("sheet-Confirm", "Confirm", tokens)
         .danger()
         .width(px(DIALOG_BUTTON_WIDTH))
-        .focus(app.sheet_focus.confirm.clone())
+        .focus(app.view.sheet_focus.confirm.clone())
         .description("Unavailable until the running engine operation finishes")
         .disabled(busy)
         .on_click(cx.listener(|this, _, _, cx| this.resolve_pending(true, cx)));
@@ -147,20 +147,21 @@ fn create_panel(
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Div {
-    let name = app.create_name.read(cx).text().to_owned();
+    let name = app.view.create_name.read(cx).text().to_owned();
     let error = app
+        .view
         .create_attempted
         .then(|| crate::app_forms::create_name_error(kind, &name, &app.snapshot.volumes))
         .flatten();
 
     let cancel = button("sheet-Cancel", "Cancel", tokens)
         .width(px(DIALOG_BUTTON_WIDTH))
-        .focus(app.sheet_focus.cancel.clone())
+        .focus(app.view.sheet_focus.cancel.clone())
         .on_click(cx.listener(|this, _, _, cx| this.close_create(cx)));
     let create = button("sheet-Create", "Create", tokens)
         .primary()
         .width(px(DIALOG_BUTTON_WIDTH))
-        .focus(app.sheet_focus.create.clone())
+        .focus(app.view.sheet_focus.create.clone())
         .on_click(cx.listener(|this, _, _, cx| this.submit_create(cx)));
 
     let mut panel = div()
@@ -168,7 +169,7 @@ fn create_panel(
         .flex_col()
         .gap(px(8.0))
         .child(sheet_title(format!("New {}", kind.noun()), tokens.text))
-        .child(app.create_name.clone());
+        .child(app.view.create_name.clone());
     if let Some(error) = error {
         panel = panel.child(
             div()
@@ -196,14 +197,14 @@ fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Di
 
     let cancel = button("sheet-Cancel", "Cancel", tokens)
         .width(px(DIALOG_BUTTON_WIDTH))
-        .focus(app.sheet_focus.cancel.clone())
+        .focus(app.view.sheet_focus.cancel.clone())
         .on_click(cx.listener(|this, _, _, cx| this.close_prune(cx)));
     // Cleaning up destroys, so it is the destructive button. It waits only
     // while berth can see there is nothing ticked that would go.
     let clean_up = button("sheet-Clean up", "Clean up", tokens)
         .danger()
         .width(px(DIALOG_BUTTON_WIDTH))
-        .focus(app.sheet_focus.clean_up.clone())
+        .focus(app.view.sheet_focus.clean_up.clone())
         .description("Tick something there is left to clean up")
         .disabled(app.prune_has_work() == Some(false))
         .on_click(cx.listener(|this, _, _, cx| this.run_prune(cx)));
@@ -286,9 +287,9 @@ fn prune_option(
         tokens,
     )
     .figure(amount(app.prune_count(field), bytes))
-    .focus(app.sheet_focus.options[field].clone())
+    .focus(app.view.sheet_focus.options[field].clone())
     .on_click(cx.listener(move |this, _, _, cx| {
-        let options = &mut this.prune_options;
+        let options = &mut this.view.prune_options;
         match field {
             0 => options.containers = !options.containers,
             1 => options.images = !options.images,

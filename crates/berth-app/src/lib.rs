@@ -26,6 +26,7 @@ mod focus;
 #[cfg(test)]
 mod focus_tests;
 mod host;
+mod inspector;
 mod jobs;
 mod settings;
 #[cfg(test)]
@@ -36,6 +37,7 @@ mod terminal;
 mod testkit;
 mod tray;
 mod ui;
+mod view;
 
 use berth_commands::app_actions::Quit;
 use berth_commands::{Platform, install_keymap, menus};

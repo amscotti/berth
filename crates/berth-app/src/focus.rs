@@ -44,7 +44,7 @@ impl SheetFocus {
     /// The open sheet's controls, in the order Tab crosses them and only
     /// those that can be used. Empty when no sheet is open.
     pub(crate) fn stops(&self, app: &BerthApp, cx: &App) -> Vec<FocusHandle> {
-        if app.pending.is_some() {
+        if app.view.pending.is_some() {
             // Confirm waits for a running mutation; while it does, Tab
             // passes it by.
             let mut stops = vec![self.cancel.clone()];
@@ -53,14 +53,14 @@ impl SheetFocus {
             }
             return stops;
         }
-        if app.create_kind.is_some() {
+        if app.view.create_kind.is_some() {
             return vec![
-                app.create_name.read(cx).focus_handle(),
+                app.view.create_name.read(cx).focus_handle(),
                 self.cancel.clone(),
                 self.create.clone(),
             ];
         }
-        if app.prune_open {
+        if app.view.prune_open {
             let offered = if app.prune_build_supported() {
                 PRUNE_OPTIONS
             } else {
@@ -96,31 +96,31 @@ impl BerthApp {
     /// Put keyboard focus where it belongs, before the frame is drawn: in the
     /// sheet while one is open, back on the page when it has closed.
     pub(crate) fn place_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let stops = self.sheet_focus.stops(self, cx);
+        let stops = self.view.sheet_focus.stops(self, cx);
         if !stops.is_empty() {
-            if !self.sheet_focus.holds(&stops, window) {
+            if !self.view.sheet_focus.holds(&stops, window) {
                 // The sheet has just opened. Remember where focus was, then
                 // move it to the sheet's first control, which for a
                 // confirmation is Cancel: the way out, not the way forward.
-                if self.sheet_focus.before.is_none() {
-                    self.sheet_focus.before = Some(
+                if self.view.sheet_focus.before.is_none() {
+                    self.view.sheet_focus.before = Some(
                         window
                             .focused(cx)
-                            .unwrap_or_else(|| self.focus_handle.clone()),
+                            .unwrap_or_else(|| self.view.focus_handle.clone()),
                     );
                 }
                 if let Some(first) = stops.first() {
                     first.focus(window, cx);
                 }
             }
-        } else if let Some(before) = self.sheet_focus.before.take() {
+        } else if let Some(before) = self.view.sheet_focus.before.take() {
             // Back to where it was. If that control is gone the window drops
             // the focus to what contains it, and the line below catches a
             // window left with nothing focused.
             before.focus(window, cx);
         }
         if window.focused(cx).is_none() {
-            self.focus_handle.focus(window, cx);
+            self.view.focus_handle.focus(window, cx);
         }
     }
 
@@ -133,7 +133,7 @@ impl BerthApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let stops = self.sheet_focus.stops(self, cx);
+        let stops = self.view.sheet_focus.stops(self, cx);
         let Some(last) = stops.len().checked_sub(1) else {
             if forward {
                 window.focus_next(cx);

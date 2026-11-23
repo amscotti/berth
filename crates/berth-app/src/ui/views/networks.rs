@@ -116,8 +116,8 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         } else {
             network.id.clone()
         };
-        let selected = app.detail_kind == DetailKind::Network
-            && app.selected_id.as_deref() == Some(click_id.as_str());
+        let selected = app.view.detail_kind == DetailKind::Network
+            && app.view.selected_id.as_deref() == Some(click_id.as_str());
         let click_name = network.name.clone();
         let mut row = div()
             .id(SharedString::from(format!("network-{click_id}")))

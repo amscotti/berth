@@ -27,7 +27,7 @@ fn the_fixture_neither_reads_nor_writes_anyones_preferences(cx: &mut TestAppCont
     // Changing the appearance and the engine saves nothing anywhere.
     app.update(cx, |app, cx| app.save_settings(cx));
     settle(cx);
-    assert!(app.read_with(&*cx, |app, _| app.toast.is_none()));
+    assert!(app.read_with(&*cx, |app, _| app.view.toast.is_none()));
 }
 
 #[gpui::test]
@@ -88,7 +88,7 @@ fn a_save_that_fails_is_said(cx: &mut TestAppContext) {
         app.save_settings(cx);
     });
     cx.run_until_parked();
-    let toast = app.read_with(&*cx, |app, _| app.toast.clone());
+    let toast = app.read_with(&*cx, |app, _| app.view.toast.clone());
     assert!(
         toast
             .as_ref()
