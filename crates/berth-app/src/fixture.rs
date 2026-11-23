@@ -15,6 +15,7 @@ use berth_engine::stats::Sample;
 use berth_ui::theme::Tokens;
 use gpui::Context;
 
+use crate::actions::{ContainerAction, Pending, Target};
 use crate::app::{BerthApp, CreateKind, InspectorTab, SearchKind, Tab};
 use crate::settings;
 use crate::state::{HostSample, Snapshot};
@@ -98,11 +99,12 @@ impl BerthApp {
 
     pub fn confirm_first_delete(&mut self, cx: &mut Context<Self>) {
         if let Some(container) = self.snapshot.containers.first() {
-            self.confirm_action(
-                "DELETE".into(),
-                format!("/containers/{}?force=1", container.id),
-                "Delete".into(),
-                container.name().to_owned(),
+            self.confirm(
+                Pending::One(Target::Container {
+                    action: ContainerAction::Delete,
+                    id: container.id.clone(),
+                    name: container.name().to_owned(),
+                }),
                 cx,
             );
         }

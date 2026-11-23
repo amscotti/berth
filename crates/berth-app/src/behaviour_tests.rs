@@ -5,6 +5,7 @@ use berth_engine::dto::Port;
 use berth_engine::test_support::MockEngine;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
+use crate::actions::{ContainerAction, Pending, Target};
 use crate::app::{BerthApp, CreateKind, Filter};
 use crate::jobs::mutation::{PruneOptions, Request};
 use crate::testkit;
@@ -21,9 +22,9 @@ fn stop(socket: &str) -> Request {
     Request::Action {
         socket: socket.to_owned(),
         api: "v1.43".into(),
-        method: "POST".into(),
+        method: "POST",
         path: "/containers/demo-1/stop".into(),
-        verb: "Stopped".into(),
+        verb: "Stopped",
     }
 }
 
@@ -313,11 +314,12 @@ fn a_sheet_opened_over_another_replaces_it_whole(cx: &mut TestAppContext) {
             "the create sheet takes the slot"
         );
 
-        app.confirm_action(
-            "DELETE".into(),
-            "/containers/demo-1".into(),
-            "Delete".into(),
-            "demo-1".into(),
+        app.confirm(
+            Pending::One(Target::Container {
+                action: ContainerAction::Delete,
+                id: "demo-1".into(),
+                name: "demo-1".into(),
+            }),
             cx,
         );
         assert!(

@@ -8,6 +8,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, div, px};
 
 use crate::app::BerthApp;
+use crate::jobs::engine_ops::EngineOp;
 use crate::ui::kit::{Button, button, caption, card, card_header, icon_chip};
 use crate::ui::table::{empty_state, page_header};
 
@@ -183,8 +184,8 @@ fn runtime_card(
     }
     if ops_supported(runtime.kind) {
         let mut row = div().flex().flex_row().gap(px(6.0)).pt(px(2.0));
-        for verb in machine_ops(runtime) {
-            row = row.child(machine_button(verb, index, runtime, ground, tokens, cx));
+        for (index, op) in machine_ops(runtime).iter().enumerate() {
+            row = row.child(machine_button(*op, index, runtime, ground, tokens, cx));
         }
         card = card.child(row);
     }
@@ -198,52 +199,45 @@ fn ops_supported(kind: Kind) -> bool {
 /// What can be done to a machine. One that is answering can be stopped or
 /// restarted; one that isn't can only be started. Offering the others is
 /// offering a refusal.
-pub(crate) fn machine_ops(runtime: &Runtime) -> &'static [&'static str] {
+pub(crate) fn machine_ops(runtime: &Runtime) -> &'static [EngineOp] {
     if !ops_supported(runtime.kind) {
         return &[];
     }
     if runtime.reachable {
-        &["Stop", "Restart"]
+        &[EngineOp::Stop, EngineOp::Restart]
     } else {
-        &["Start"]
+        &[EngineOp::Start]
     }
 }
 
 /// A machine command. Stopping a machine takes every container on it down,
 /// so it is drawn as the destructive action it is.
 fn machine_button(
-    label: &str,
+    op: EngineOp,
     index: usize,
     runtime: &Runtime,
     on: gpui::Hsla,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Button {
-    let verb = label.to_ascii_lowercase();
     let kind = runtime.kind;
     let socket = runtime.socket.clone();
-    // The names come from `machine_ops`, so they are known at compile time.
-    let label = match label {
-        "Stop" => "Stop",
-        "Restart" => "Restart",
-        _ => "Start",
-    };
     let button = button(
-        SharedString::from(format!("runtime-op-{index}-{verb}")),
-        label,
+        SharedString::from(format!("runtime-op-{index}-{}", op.word())),
+        op.label(),
         tokens,
     )
     .small();
-    let button = if label == "Stop" {
+    let button = if op == EngineOp::Stop {
         // A wash is a tint of what it is on, and on the active engine's card
         // that isn't a plain card.
         button.danger_wash().on_surface(on)
     } else {
         button
     };
-    button.on_click(cx.listener(move |this, _, _, cx| {
-        this.open_engine_op(&verb, kind, socket.clone(), cx);
-    }))
+    button.on_click(
+        cx.listener(move |this, _, _, cx| this.open_engine_op(op, kind, socket.clone(), cx)),
+    )
 }
 
 #[cfg(test)]
@@ -257,9 +251,9 @@ mod tests {
             reachable: true,
             ..Default::default()
         };
-        assert_eq!(machine_ops(&runtime), ["Stop", "Restart"]);
+        assert_eq!(machine_ops(&runtime), [EngineOp::Stop, EngineOp::Restart]);
         runtime.reachable = false;
-        assert_eq!(machine_ops(&runtime), ["Start"]);
+        assert_eq!(machine_ops(&runtime), [EngineOp::Start]);
         // Not a machine at all.
         runtime.kind = Kind::Dockerd;
         assert!(machine_ops(&runtime).is_empty());

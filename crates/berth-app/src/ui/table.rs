@@ -7,6 +7,7 @@ use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Role, SharedString, div, px};
 
+use crate::actions::ContainerAction;
 use crate::app::{BerthApp, Filter, SearchKind, Tab};
 use crate::ui::kit::{Button, button, caption, chip};
 use crate::ui::table_cells as cells;
@@ -370,10 +371,9 @@ fn bulk_bar(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
                 .on_click(cx.listener(|this, _, _, cx| this.bulk_clear(cx))),
         )
         .child(div().flex_1())
-        .child(bulk_action("Start", tokens, none_selected, cx))
-        .child(bulk_action("Restart", tokens, none_selected, cx))
-        .child(bulk_action("Stop", tokens, none_selected, cx))
-        .child(bulk_action("Delete", tokens, none_selected, cx))
+        .children(
+            ContainerAction::BULK.map(|action| bulk_action(action, tokens, none_selected, cx)),
+        )
         .child(
             button("bulk-Cancel", "Cancel", tokens)
                 .small()
@@ -384,14 +384,19 @@ fn bulk_bar(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
 /// Something to do to every selected container. With nothing selected there is
 /// nothing to do, and the button says so instead of doing nothing at all.
 fn bulk_action(
-    label: &'static str,
+    action: ContainerAction,
     tokens: Tokens,
     none_selected: bool,
     cx: &mut Context<BerthApp>,
 ) -> Button {
-    let button = button(SharedString::from(format!("bulk-{label}")), label, tokens).small();
+    let button = button(
+        SharedString::from(format!("bulk-{}", action.label())),
+        action.label(),
+        tokens,
+    )
+    .small();
     // Deleting destroys; starting and stopping don't.
-    let button = if label == "Delete" {
+    let button = if action.destroys() {
         button.danger_wash()
     } else {
         button
@@ -399,5 +404,5 @@ fn bulk_action(
     button
         .description("Select at least one container")
         .disabled(none_selected)
-        .on_click(cx.listener(move |this, _, _, cx| this.bulk_request(label, cx)))
+        .on_click(cx.listener(move |this, _, _, cx| this.bulk_request(action, cx)))
 }

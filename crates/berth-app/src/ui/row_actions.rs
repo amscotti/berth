@@ -11,53 +11,46 @@ use gpui::{Context, IntoElement, SharedString, div, px};
 use berth_engine::dto::{Actions, Container};
 use berth_ui::theme::Tokens;
 
+use crate::actions::ContainerAction;
 use crate::app::BerthApp;
 use crate::ui::kit::button;
 
 /// One action a row offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RowAction {
-    pub label: &'static str,
-    /// Tells two pills on one row apart in the element tree.
-    pub slot: u8,
-    pub danger: bool,
-    pub method: &'static str,
-    pub path: String,
-    /// The verb the toast uses once it has happened: "Stopped", "Restarted".
-    pub past: &'static str,
-    /// Whether it asks first.
-    pub confirm: bool,
+    pub(crate) action: ContainerAction,
+    pub(crate) id: String,
+    /// Where its pill sits in the row. Fixed for each action, so a pill is
+    /// the same element whether or not the others are offered, and two pills
+    /// on one row are told apart.
+    pub(crate) slot: u8,
 }
 
 /// What a row offers for a container: what its state allows, then Delete,
 /// which is always offered unless the container is already on its way out.
 pub(crate) fn row_actions(id: &str, actions: Actions, removable: bool) -> Vec<RowAction> {
     let mut offered = Vec::new();
-    let mut offer = |label, slot, danger, method, suffix, past, confirm| {
+    let mut offer = |action, slot| {
         offered.push(RowAction {
-            label,
+            action,
+            id: id.to_owned(),
             slot,
-            danger,
-            method,
-            path: format!("/containers/{id}{suffix}"),
-            past,
-            confirm,
         });
     };
     if actions.resume {
-        offer("Resume", 5, false, "POST", "/unpause", "Resumed", false);
+        offer(ContainerAction::Resume, 5);
     }
     if actions.start {
-        offer("Start", 3, false, "POST", "/start", "Started", false);
+        offer(ContainerAction::Start, 3);
     }
     if actions.stop {
-        offer("Stop", 0, false, "POST", "/stop", "Stopped", false);
+        offer(ContainerAction::Stop, 0);
     }
     if actions.restart {
-        offer("Restart", 1, false, "POST", "/restart", "Restarted", false);
+        offer(ContainerAction::Restart, 1);
     }
     if removable {
-        offer("Delete", 2, true, "DELETE", "?force=1", "Delete", true);
+        offer(ContainerAction::Delete, 2);
     }
     offered
 }
@@ -81,17 +74,17 @@ pub(crate) fn action_cell(
         .gap(px(4.0));
     for action in actions {
         let name = name.clone();
-        // Deleting destroys: it is the one action drawn in the danger colour.
         let button = button(
             SharedString::from(format!("action-{id}-{}", action.slot)),
-            action.label,
+            action.action.label(),
             tokens,
         )
         .small()
         // The table is the tab stop. Enter opens the row, and its inspector
         // offers every action in it; Tab must not cross a hundred rows.
         .tab_stop(false);
-        let button = if action.danger {
+        // Deleting destroys: it is the one action drawn in the danger colour.
+        let button = if action.action.destroys() {
             button.danger_wash()
         } else {
             button
@@ -99,22 +92,7 @@ pub(crate) fn action_cell(
         cell = cell.child(button.on_click(cx.listener(move |this, _, _, cx| {
             // The press is for the action, not for opening the row.
             cx.stop_propagation();
-            if action.confirm {
-                this.confirm_action(
-                    action.method.to_owned(),
-                    action.path.clone(),
-                    action.past.to_owned(),
-                    name.clone(),
-                    cx,
-                );
-            } else {
-                this.run_action(
-                    action.method.to_owned(),
-                    action.path.clone(),
-                    action.past.to_owned(),
-                    cx,
-                );
-            }
+            this.act_on(action.action, &action.id, &name, cx);
         })));
     }
     cell
@@ -131,7 +109,7 @@ mod tests {
         };
         row_actions("c", container.actions(), state != "removing")
             .into_iter()
-            .map(|action| action.label)
+            .map(|action| action.action.label())
             .collect()
     }
 
@@ -158,13 +136,19 @@ mod tests {
         assert_eq!(
             actions
                 .iter()
-                .map(|action| action.confirm)
+                .map(|action| action.action.destroys())
                 .collect::<Vec<_>>(),
             [false, false, true]
         );
-        assert_eq!(actions[0].path, "/containers/abc/stop");
-        assert_eq!(actions[2].path, "/containers/abc?force=1");
-        assert_eq!(actions[2].method, "DELETE");
+        assert_eq!(
+            actions[0].action.path(&actions[0].id),
+            "/containers/abc/stop"
+        );
+        assert_eq!(
+            actions[2].action.path(&actions[2].id),
+            "/containers/abc?force=1"
+        );
+        assert_eq!(actions[2].action.method(), "DELETE");
         // Every pill on the row has its own place in the element tree.
         let slots: std::collections::BTreeSet<u8> =
             actions.iter().map(|action| action.slot).collect();
@@ -181,7 +165,7 @@ mod tests {
         assert_eq!(
             actions
                 .iter()
-                .map(|action| action.danger)
+                .map(|action| action.action.destroys())
                 .collect::<Vec<_>>(),
             [false, false, true]
         );

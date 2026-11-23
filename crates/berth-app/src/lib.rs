@@ -5,6 +5,7 @@
 //! jobs land in later milestones; the shape of the shell is already the final
 //! one.
 
+mod actions;
 mod app;
 mod app_actions;
 mod app_bulk;

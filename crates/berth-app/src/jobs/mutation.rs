@@ -7,7 +7,9 @@ use berth_engine::discovery::Dialect;
 use berth_engine::discovery::Kind;
 use berth_engine::prune;
 
-use super::engine_ops;
+use crate::actions::ContainerAction;
+
+use super::engine_ops::{self, EngineOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PruneOptions {
@@ -35,9 +37,9 @@ pub enum Request {
     Action {
         socket: String,
         api: String,
-        method: String,
+        method: &'static str,
         path: String,
-        verb: String,
+        verb: &'static str,
     },
     CreateVolume {
         socket: String,
@@ -70,15 +72,16 @@ pub enum Request {
         options: PruneOptions,
     },
     EngineOp {
-        verb: String,
+        op: EngineOp,
         kind: Kind,
         socket: String,
     },
+    /// One action on each of the containers, in order.
     Bulk {
         socket: String,
         api: String,
-        actions: Vec<(String, String)>,
-        verb: String,
+        action: ContainerAction,
+        ids: Vec<String>,
     },
 }
 
@@ -103,7 +106,7 @@ pub fn run(request: Request) -> Outcome {
             method,
             path,
             verb,
-        } => action(&socket, &api, &method, &path, &verb),
+        } => action(&socket, &api, method, &path, verb),
         Request::CreateVolume { socket, api, name } => {
             let client = Client::new(socket).with_api(api);
             match client.create_volume(&name) {
@@ -144,23 +147,23 @@ pub fn run(request: Request) -> Outcome {
             dialect,
             options,
         } => prune_stores(&socket, &api, dialect, &options),
-        Request::EngineOp { verb, kind, socket } => engine_ops::run(&verb, kind, &socket),
+        Request::EngineOp { op, kind, socket } => engine_ops::run(op, kind, &socket),
         Request::Bulk {
             socket,
             api,
-            actions,
-            verb,
-        } => bulk(&socket, &api, &actions, &verb),
+            action,
+            ids,
+        } => bulk(&socket, &api, action, &ids),
     }
 }
 
-fn bulk(socket: &str, api: &str, actions: &[(String, String)], verb: &str) -> Outcome {
+fn bulk(socket: &str, api: &str, action: ContainerAction, ids: &[String]) -> Outcome {
     let client = Client::new(socket).with_api(api);
-    let total = actions.len();
+    let total = ids.len();
     let mut done = 0;
     let mut first_error: Option<String> = None;
-    for (method, path) in actions {
-        match client.action(method, path) {
+    for id in ids {
+        match client.action(action.method(), &action.path(id)) {
             Ok(()) => done += 1,
             Err(error) => {
                 if first_error.is_none() {
@@ -170,9 +173,9 @@ fn bulk(socket: &str, api: &str, actions: &[(String, String)], verb: &str) -> Ou
         }
     }
     if let Some(error) = first_error {
-        return bad(format!("{verb} {done} of {total}: {error}"));
+        return bad(format!("{} {done} of {total}: {error}", action.label()));
     }
-    ok(format!("{verb} {done} of {total} containers"))
+    ok(format!("{} {done} of {total} containers", action.label()))
 }
 
 fn action(socket: &str, api: &str, method: &str, path: &str, verb: &str) -> Outcome {
@@ -427,6 +430,39 @@ mod tests {
         // The steps after the failure still ran.
         assert_eq!(engine.count("/volumes/prune"), 1);
         assert_eq!(engine.count("/build/prune"), 1);
+    }
+
+    #[test]
+    fn a_batch_sends_its_one_action_to_every_container_and_says_how_many() {
+        let engine = MockEngine::start();
+        engine.on("POST /containers/").ok("");
+        engine.on("DELETE /containers/").error(500, "it is running");
+        let batch = |action: ContainerAction, ids: &[&str]| {
+            run(Request::Bulk {
+                socket: engine.socket(),
+                api: "v1.43".into(),
+                action,
+                ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            })
+        };
+
+        let outcome = batch(ContainerAction::Stop, &["web", "odd name"]);
+        assert!(!outcome.bad, "{}", outcome.message);
+        assert_eq!(outcome.message, "Stop 2 of 2 containers");
+        assert_eq!(engine.count("/containers/web/stop"), 1);
+        assert_eq!(engine.count("/containers/odd%20name/stop"), 1);
+
+        // Every container is tried even once one has failed, and the count
+        // says how far it got.
+        let outcome = batch(ContainerAction::Delete, &["web", "db"]);
+        assert!(outcome.bad);
+        assert_eq!(
+            outcome.message,
+            "Delete 0 of 2: engine returned 500: it is running"
+        );
+        assert_eq!(engine.count("/containers/web?force=1"), 1);
+        assert_eq!(engine.count("/containers/db?force=1"), 1);
+        assert_eq!(engine.count("/containers/"), 4, "nothing else was sent");
     }
 
     #[test]

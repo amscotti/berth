@@ -10,7 +10,8 @@ use std::collections::BTreeSet;
 use gpui::prelude::*;
 use gpui::{Entity, FocusHandle, Subscription, Task};
 
-use crate::app::{BerthApp, CreateKind, DetailKind, Filter, Pending, SearchKind, Tab, Toast};
+use crate::actions::Pending;
+use crate::app::{BerthApp, CreateKind, DetailKind, Filter, SearchKind, Tab, Toast};
 use crate::focus::SheetFocus;
 use crate::jobs::mutation::PruneOptions;
 use crate::ui::input::{InputEvent, InputState};
@@ -58,7 +59,7 @@ impl Sheet {
     /// technology.
     pub(crate) fn label(&self) -> String {
         match self {
-            Sheet::Confirm(pending) => format!("{} {}?", pending.verb, pending.name),
+            Sheet::Confirm(pending) => pending.title(),
             Sheet::Create { kind, .. } => format!("New {}", kind.noun()),
             Sheet::Prune(_) => "Clean up unused data".to_owned(),
         }

@@ -16,6 +16,7 @@ use super::inspect_shared::{
     fact, inspector_button, inspector_delete, inspector_tab, inspector_toggle, pane_shell,
 };
 use super::inspect_tabs::{config_tab, runtime_tab};
+use crate::actions::ContainerAction;
 use crate::app::InspectorTab;
 use crate::ui::kit::button;
 
@@ -286,26 +287,19 @@ pub(crate) fn container_pane(
             .w_full()
             .gap(px(6.0))
             .when(actions.resume, |this| {
-                this.child(lifecycle("Resume", "/unpause", "Resumed", &id, tokens, cx))
+                this.child(lifecycle(ContainerAction::Resume, &id, &name, tokens, cx))
             })
             .when(actions.pause, |this| {
-                this.child(lifecycle("Pause", "/pause", "Paused", &id, tokens, cx))
+                this.child(lifecycle(ContainerAction::Pause, &id, &name, tokens, cx))
             })
             .when(actions.start, |this| {
-                this.child(lifecycle("Start", "/start", "Started", &id, tokens, cx))
+                this.child(lifecycle(ContainerAction::Start, &id, &name, tokens, cx))
             })
             .when(actions.restart, |this| {
-                this.child(lifecycle(
-                    "Restart",
-                    "/restart",
-                    "Restarted",
-                    &id,
-                    tokens,
-                    cx,
-                ))
+                this.child(lifecycle(ContainerAction::Restart, &id, &name, tokens, cx))
             })
             .when(actions.stop, |this| {
-                this.child(lifecycle("Stop", "/stop", "Stopped", &id, tokens, cx))
+                this.child(lifecycle(ContainerAction::Stop, &id, &name, tokens, cx))
             })
             .when(actions.terminal, |this| {
                 this.child(inspector_button(
@@ -341,13 +335,7 @@ pub(crate) fn container_pane(
                         let id = id.clone();
                         let name = name.clone();
                         move |this, _, _, cx| {
-                            this.confirm_action(
-                                "DELETE".into(),
-                                format!("/containers/{id}?force=1"),
-                                "Delete".into(),
-                                name.clone(),
-                                cx,
-                            );
+                            this.act_on(ContainerAction::Delete, &id, &name, cx);
                         }
                     }),
                 ))
@@ -469,28 +457,21 @@ pub(crate) fn log_body(app: &crate::app::BerthApp, cx: &gpui::App) -> String {
     }
 }
 
-/// A button for one container lifecycle verb. The request path is built when
-/// it is pressed.
+/// A button for one container lifecycle action. The request is made when it
+/// is pressed.
 fn lifecycle(
-    label: &'static str,
-    route: &'static str,
-    past: &'static str,
+    action: ContainerAction,
     id: &str,
+    name: &str,
     tokens: Tokens,
     cx: &mut gpui::Context<crate::app::BerthApp>,
 ) -> impl IntoElement {
     let id = id.to_owned();
+    let name = name.to_owned();
     inspector_button(
-        label,
+        action.label(),
         tokens,
-        cx.listener(move |this, _, _, cx| {
-            this.run_action(
-                "POST".into(),
-                format!("/containers/{id}{route}"),
-                past.into(),
-                cx,
-            )
-        }),
+        cx.listener(move |this, _, _, cx| this.act_on(action, &id, &name, cx)),
     )
 }
 

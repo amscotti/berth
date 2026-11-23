@@ -12,6 +12,34 @@ use berth_engine::discovery::{Kind, podman_machine_name};
 
 use super::mutation::Outcome;
 
+/// A command to the machine behind an engine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EngineOp {
+    Start,
+    Stop,
+    Restart,
+}
+
+impl EngineOp {
+    /// The word the machine's own tool takes.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            EngineOp::Start => "start",
+            EngineOp::Stop => "stop",
+            EngineOp::Restart => "restart",
+        }
+    }
+
+    /// What a button, and a confirmation, call it.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            EngineOp::Start => "Start",
+            EngineOp::Stop => "Stop",
+            EngineOp::Restart => "Restart",
+        }
+    }
+}
+
 /// How long a machine command may run before berth stops waiting for it.
 const LIMIT: Duration = Duration::from_secs(300);
 /// How often the runner checks whether a machine command has finished.
@@ -21,9 +49,10 @@ const POLL: Duration = Duration::from_millis(25);
 const DEFAULT_PATH: &str =
     "/opt/homebrew/bin:/usr/local/bin:/opt/podman/bin:/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// Run `verb` (`start`, `stop` or `restart`) on the machine behind `socket`.
-pub(super) fn run(verb: &str, kind: Kind, socket: &str) -> Outcome {
-    let steps = match plan(verb, kind, socket) {
+/// Run `op` on the machine behind `socket`.
+pub(super) fn run(op: EngineOp, kind: Kind, socket: &str) -> Outcome {
+    let verb = op.word();
+    let steps = match plan(op, kind, socket) {
         Ok(steps) => steps,
         Err(message) => {
             return Outcome {
@@ -69,7 +98,12 @@ pub(super) fn run(verb: &str, kind: Kind, socket: &str) -> Outcome {
 
 /// The commands a machine operation runs, in order. Lima and Podman restart
 /// by stopping, then starting. `Err` when the engine has no machine command.
-pub(super) fn plan(verb: &str, kind: Kind, socket: &str) -> Result<Vec<Vec<String>>, &'static str> {
+pub(super) fn plan(
+    op: EngineOp,
+    kind: Kind,
+    socket: &str,
+) -> Result<Vec<Vec<String>>, &'static str> {
+    let verb = op.word();
     let words = |parts: &[&str]| {
         parts
             .iter()
@@ -84,7 +118,7 @@ pub(super) fn plan(verb: &str, kind: Kind, socket: &str) -> Result<Vec<Vec<Strin
                 .nth(1)
                 .and_then(|rest| rest.split('/').next())
                 .unwrap_or("default");
-            if verb == "restart" {
+            if op == EngineOp::Restart {
                 Ok(vec![
                     words(&["limactl", "stop", name]),
                     words(&["limactl", "start", name]),
@@ -95,7 +129,7 @@ pub(super) fn plan(verb: &str, kind: Kind, socket: &str) -> Result<Vec<Vec<Strin
         }
         Kind::PodmanMachine => {
             let name = podman_machine_name(socket).unwrap_or("podman-machine-default");
-            if verb == "restart" {
+            if op == EngineOp::Restart {
                 Ok(vec![
                     words(&["podman", "machine", "stop", name]),
                     words(&["podman", "machine", "start", name]),
@@ -179,11 +213,11 @@ mod tests {
     fn machine_commands_are_planned_per_kind() {
         let lima = "/Users/me/.lima/docker/sock/docker.sock";
         assert_eq!(
-            plan("stop", Kind::Lima, lima),
+            plan(EngineOp::Stop, Kind::Lima, lima),
             Ok(steps(&[&["limactl", "stop", "docker"]]))
         );
         assert_eq!(
-            plan("restart", Kind::Lima, lima),
+            plan(EngineOp::Restart, Kind::Lima, lima),
             Ok(steps(&[
                 &["limactl", "stop", "docker"],
                 &["limactl", "start", "docker"]
@@ -191,25 +225,29 @@ mod tests {
         );
         // A socket outside the usual layout still names the default instance.
         assert_eq!(
-            plan("start", Kind::Lima, "/tmp/docker.sock"),
+            plan(EngineOp::Start, Kind::Lima, "/tmp/docker.sock"),
             Ok(steps(&[&["limactl", "start", "default"]]))
         );
 
         assert_eq!(
-            plan("restart", Kind::Colima, "/x"),
+            plan(EngineOp::Restart, Kind::Colima, "/x"),
             Ok(steps(&[&["colima", "restart"]]))
         );
 
         let podman = "/Users/me/.local/share/containers/podman/machine/dev-vm/podman.sock";
         assert_eq!(
-            plan("restart", Kind::PodmanMachine, podman),
+            plan(EngineOp::Restart, Kind::PodmanMachine, podman),
             Ok(steps(&[
                 &["podman", "machine", "stop", "dev-vm"],
                 &["podman", "machine", "start", "dev-vm"],
             ]))
         );
         assert_eq!(
-            plan("start", Kind::PodmanMachine, "/run/podman/podman.sock"),
+            plan(
+                EngineOp::Start,
+                Kind::PodmanMachine,
+                "/run/podman/podman.sock"
+            ),
             Ok(steps(&[&[
                 "podman",
                 "machine",
@@ -226,7 +264,7 @@ mod tests {
             Kind::Podman,
         ] {
             assert_eq!(
-                plan("stop", kind, "/x"),
+                plan(EngineOp::Stop, kind, "/x"),
                 Err("this engine has no machine command"),
                 "{kind:?}"
             );

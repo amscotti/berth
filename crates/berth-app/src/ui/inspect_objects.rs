@@ -11,6 +11,7 @@ use gpui::{Context, Div, FontWeight, IntoElement, SharedString, div, px};
 use super::inspect_shared::{fact, inspector_button, inspector_delete, pane_shell, short_id};
 use super::table::pill;
 use super::tabular;
+use crate::actions::{Pending, Removal, Target};
 use crate::app::BerthApp;
 use crate::ui::kit::link;
 
@@ -161,11 +162,12 @@ pub(crate) fn image_pane(
                 "Delete",
                 tokens,
                 cx.listener(move |this, _, _, cx| {
-                    this.confirm_action(
-                        "DELETE".into(),
-                        format!("/images/{}?force=1", berth_engine::client::encode(&id)),
-                        "Delete".into(),
-                        name.clone(),
+                    this.confirm(
+                        Pending::One(Target::Removal {
+                            what: Removal::Image,
+                            id: id.clone(),
+                            name: name.clone(),
+                        }),
                         cx,
                     );
                 }),
@@ -240,11 +242,12 @@ pub(crate) fn volume_pane(
         "Remove",
         tokens,
         cx.listener(move |this, _, _, cx| {
-            this.confirm_action(
-                "DELETE".into(),
-                format!("/volumes/{}", berth_engine::client::encode(&name)),
-                "Remove".into(),
-                name.clone(),
+            this.confirm(
+                Pending::One(Target::Removal {
+                    what: Removal::Volume,
+                    id: name.clone(),
+                    name: name.clone(),
+                }),
                 cx,
             );
         }),
@@ -324,11 +327,12 @@ pub(crate) fn network_pane(
             "Remove",
             tokens,
             cx.listener(move |this, _, _, cx| {
-                this.confirm_action(
-                    "DELETE".into(),
-                    format!("/networks/{}", berth_engine::client::encode(&id)),
-                    "Remove".into(),
-                    name.clone(),
+                this.confirm(
+                    Pending::One(Target::Removal {
+                        what: Removal::Network,
+                        id: id.clone(),
+                        name: name.clone(),
+                    }),
                     cx,
                 );
             }),

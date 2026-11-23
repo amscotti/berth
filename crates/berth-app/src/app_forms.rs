@@ -1,6 +1,8 @@
 //! Container/image creation, mutation dispatch and cleanup sheets.
 
+use crate::actions::{ContainerAction, Pending, Target};
 use crate::app::*;
+use crate::jobs::engine_ops::EngineOp;
 use crate::jobs::mutation::{self, PruneOptions, Request};
 use crate::view::Sheet;
 use berth_core::validation;
@@ -316,54 +318,28 @@ impl BerthApp {
 
     pub(crate) fn open_engine_op(
         &mut self,
-        verb: &str,
+        op: EngineOp,
         kind: berth_engine::discovery::Kind,
         socket: String,
         cx: &mut Context<Self>,
     ) {
-        if verb == "start" {
-            self.start_mutation(
-                Request::EngineOp {
-                    verb: verb.to_owned(),
-                    kind,
-                    socket,
-                },
-                cx,
-            );
+        // Starting a machine stops nothing, so it needs no confirmation.
+        if op == EngineOp::Start {
+            self.start_mutation(Request::EngineOp { op, kind, socket }, cx);
             return;
         }
-        self.open_sheet(
-            Sheet::Confirm(Pending {
-                method: "ENGINE".to_owned(),
-                path: socket,
-                verb: verb.to_owned(),
-                name: kind.label().to_owned(),
-            }),
-            cx,
-        );
+        self.confirm(Pending::Engine { op, kind, socket }, cx);
     }
 
     // --- mutations ---------------------------------------------------------
 
-    pub(crate) fn confirm_action(
-        &mut self,
-        method: String,
-        path: String,
-        verb: String,
-        name: String,
-        cx: &mut Context<Self>,
-    ) {
-        self.open_sheet(
-            Sheet::Confirm(Pending {
-                method,
-                path,
-                verb,
-                name,
-            }),
-            cx,
-        );
+    /// Hold `pending` until it is confirmed: it destroys something, or stops
+    /// a machine and everything running on it.
+    pub(crate) fn confirm(&mut self, pending: Pending, cx: &mut Context<Self>) {
+        self.open_sheet(Sheet::Confirm(pending), cx);
     }
 
+    /// Do what was confirmed, or only close the sheet.
     pub(crate) fn resolve_pending(&mut self, ok: bool, cx: &mut Context<Self>) {
         let Some(Sheet::Confirm(pending)) = self.view.sheet.take() else {
             return;
@@ -372,46 +348,43 @@ impl BerthApp {
             cx.notify();
             return;
         }
-        if pending.method == "BULK" {
-            self.bulk_execute(&pending.verb, cx);
-            return;
+        match pending {
+            Pending::One(target) => self.run_action(&target, cx),
+            Pending::Batch { action, .. } => self.bulk_execute(action, cx),
+            Pending::Engine { op, kind, socket } => {
+                self.start_mutation(Request::EngineOp { op, kind, socket }, cx);
+            }
         }
-        if pending.method == "ENGINE" {
-            let kind = berth_engine::discovery::kind_of(&pending.path);
-            self.start_mutation(
-                Request::EngineOp {
-                    verb: pending.verb,
-                    kind,
-                    socket: pending.path,
-                },
-                cx,
-            );
-            return;
-        }
-        self.run_action(pending.method, pending.path, pending.verb, cx);
     }
 
-    pub(crate) fn run_action(
+    /// Do `action` to the container `id`, called `name`. Delete asks first;
+    /// the rest don't.
+    pub(crate) fn act_on(
         &mut self,
-        method: String,
-        path: String,
-        verb: String,
+        action: ContainerAction,
+        id: &str,
+        name: &str,
         cx: &mut Context<Self>,
     ) {
+        let target = Target::Container {
+            action,
+            id: id.to_owned(),
+            name: name.to_owned(),
+        };
+        if action.destroys() {
+            self.confirm(Pending::One(target), cx);
+        } else {
+            self.run_action(&target, cx);
+        }
+    }
+
+    /// Ask the engine for what `target` is, with nothing to confirm first.
+    fn run_action(&mut self, target: &Target, cx: &mut Context<Self>) {
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
         };
-        self.start_mutation(
-            Request::Action {
-                socket: client.socket().to_owned(),
-                api: client.api().to_owned(),
-                method,
-                path,
-                verb,
-            },
-            cx,
-        );
+        self.start_mutation(target.request(&client), cx);
     }
 
     /// Start an engine mutation. False when one is already running: the

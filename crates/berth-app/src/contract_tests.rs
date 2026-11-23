@@ -203,6 +203,38 @@ fn each_corner_draws_from_its_own_state() {
     }
 }
 
+/// An action is typed, not spelled out where a button is and compared where
+/// it is run: no `"BULK"`, no `"ENGINE"`, and no method, verb or machine
+/// command as a string held up against another.
+#[test]
+fn an_action_is_typed_not_spelled_out() {
+    const SPELLED: [&str; 12] = [
+        "\"BULK\"",
+        "\"ENGINE\"",
+        "== \"Delete\"",
+        "== \"Start\"",
+        "== \"Stop\"",
+        "== \"Restart\"",
+        "== \"delete\"",
+        "== \"start\"",
+        "== \"stop\"",
+        "== \"restart\"",
+        "\"DELETE\".into()",
+        "\"POST\".into()",
+    ];
+    for (path, source) in sources() {
+        for (line, text) in source.lines().enumerate() {
+            for word in SPELLED {
+                assert!(
+                    !text.contains(word),
+                    "{} spells an action out: {word}",
+                    place(&path, line)
+                );
+            }
+        }
+    }
+}
+
 /// An icon that nothing draws is a file in the bundle for nothing.
 #[test]
 fn every_icon_is_drawn() {

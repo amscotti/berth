@@ -11,7 +11,8 @@ use berth_ui::typography;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, FontWeight, Role, SharedString, div, px};
 
-use crate::app::{BerthApp, CreateKind, Pending};
+use crate::actions::Pending;
+use crate::app::{BerthApp, CreateKind};
 use crate::jobs::mutation::PruneOptions;
 use crate::ui::kit::{Button, button, caption, checkbox};
 use crate::view::Sheet;
@@ -85,25 +86,23 @@ fn confirm_panel(
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Div {
-    let machine = pending.method == "ENGINE";
-    let title = format!("{} {}?", pending.verb, pending.name);
+    let title = pending.title();
     // Confirm waits for a running mutation, instead of closing the sheet and
     // dropping the action when the request is refused.
     let busy = app.mutating();
     // A confirmation names what it costs. A machine takes its whole fleet
     // down with it: say how many.
-    let body = if machine {
-        format!(
+    let body = match pending {
+        Pending::Engine { kind, .. } => format!(
             "{} on {} will stop with the engine.",
             format::count(
                 app.snapshot.running(),
                 "running container",
                 "running containers"
             ),
-            pending.name
-        )
-    } else {
-        "This cannot be undone.".to_owned()
+            kind.label()
+        ),
+        _ => "This cannot be undone.".to_owned(),
     };
 
     let cancel = button("sheet-Cancel", "Cancel", tokens)

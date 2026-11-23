@@ -52,6 +52,13 @@ BERTH_SOCKET=/path/to.sock cargo run -p berth-app
   and image tasks compare their generation before touching state.
 - **Selection is by id**, re-resolved after every commit. Never hold a pointer
   into a previous snapshot.
+- **One sheet at a time.** A sheet is a variant of `Sheet` (`view.rs`) and
+  holds what only it needs. `open_sheet` replaces whatever was open and
+  `close_sheet` is the one way out; no flag beside it says a sheet is open.
+- **Actions are typed.** `actions.rs` is the one place that knows the request
+  a container action or a removal makes, and `EngineOp` a machine command.
+  Nothing between a button and the engine passes a method, a path or a verb
+  as a string; `contract_tests` holds it.
 - **Tokens live in `berth-ui`.** A view must not invent a colour or a spacing
   value that the design contract already owns.
 - **Accessibility from day one.** Every control gets a role and a name. Tables

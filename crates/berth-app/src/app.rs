@@ -272,14 +272,6 @@ pub struct Toast {
     pub bad: bool,
 }
 
-#[derive(Clone, Debug)]
-pub struct Pending {
-    pub method: String,
-    pub path: String,
-    pub verb: String,
-    pub name: String,
-}
-
 impl BerthApp {
     /// The running app: empty, with the preferences as they were left and a
     /// file to write them to.
