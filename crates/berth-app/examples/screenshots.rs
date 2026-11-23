@@ -72,6 +72,7 @@ fn main() -> anyhow::Result<()> {
         ("inspector-image", 7),
         ("containers-bulk", 8),
         ("sheet-cleanup-nothing", 9),
+        ("search-filled", 10),
     ] {
         let handle = cx.open_window(size(px(1280.0), px(760.0)), |_window, cx| {
             cx.new(|cx| {
@@ -90,7 +91,8 @@ fn main() -> anyhow::Result<()> {
                         app.select_fixture_image(cx);
                     }
                     8 => app.show_bulk(cx),
-                    _ => app.show_cleanup_with_nothing_to_do(cx),
+                    9 => app.show_cleanup_with_nothing_to_do(cx),
+                    _ => app.show_search_text("web", cx),
                 }
                 app
             })

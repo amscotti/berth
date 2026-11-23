@@ -10,7 +10,7 @@ than relying on pixels:
 | Rail pages | `TabList` | "Pages", vertical |
 | Rail item | `Tab` | page name + live figure, selected state |
 | Page header | text | page title and count |
-| Search fields | `TextInput` | placeholder ("Search containers", …) |
+| Search fields | `TextInput` | placeholder ("Search containers", …); with text, a `Button` named "Clear search containers" |
 | Buttons | `Button` | the label; an icon-only button is named for what it does ("Close inspector"); a port is "Open port 8080" |
 | Filter chips | `RadioButton` | All / Running / Stopped, toggled |
 | Appearance, engine choice | `RadioButton` in a `RadioGroup` | toggled |
@@ -40,6 +40,11 @@ Keyboard paths:
   then the inspector. (GPUI binds nothing to Tab; the app does.)
 - Enter and Space press the control that has focus; Enter or Space on a
   header sorts by it.
+- In a field: a click puts the caret where it is clicked, a drag selects, a
+  second click selects the word, and the caret stays in view in long text.
+  Cmd/Ctrl+Z steps back a word at a time, Cmd+Shift+Z (Ctrl+Y) steps forward
+  again. Tab from a field with text reaches its clear button; pressing it
+  empties the field and gives it focus back.
 - Up and Down move the table's selection.
 - Esc closes a sheet, empties a focused field, or clears the inspector.
 - Enter submits a focused form.

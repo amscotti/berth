@@ -200,3 +200,55 @@ fn a_confirmation_opens_on_the_way_out(cx: &mut TestAppContext) {
         "nothing was deleted"
     );
 }
+
+/// The clear button exists only while there is something to clear, Tab
+/// reaches it, and pressing it empties the field and hands focus straight
+/// back.
+#[gpui::test]
+fn a_search_with_text_gains_a_clear_button_that_tab_reaches(cx: &mut TestAppContext) {
+    let (app, cx) = testkit::fixture(cx);
+    let search = app.read_with(&*cx, |app, cx| {
+        app.search(SearchKind::Containers).focus_handle(cx)
+    });
+    testkit::tab_until(cx, |cx| focused(cx, &search), Tab::ALL.len() + 2);
+    assert!(focused(cx, &search), "the search is focused");
+    let query = |cx: &mut VisualTestContext| {
+        app.read_with(&*cx, |app, _| app.query(SearchKind::Containers).to_owned())
+    };
+
+    cx.simulate_input("web");
+    assert_eq!(query(cx), "web");
+    // The clear button is the next stop after the field, before the chips.
+    testkit::press(cx, "tab");
+    assert!(
+        !focused(cx, &search),
+        "Tab left the field, for its clear button"
+    );
+    testkit::press(cx, "enter");
+    assert_eq!(query(cx), "", "the button cleared the search");
+    assert!(
+        focused(cx, &search),
+        "and gave the field focus back, ready for the next search"
+    );
+}
+
+/// Every edit reaches the page, Backspace included: the table follows what
+/// the field says, not what it said a keystroke ago.
+#[gpui::test]
+fn a_backspace_in_the_search_reaches_the_table(cx: &mut TestAppContext) {
+    let (app, cx) = testkit::fixture(cx);
+    let search = app.read_with(&*cx, |app, cx| {
+        app.search(SearchKind::Containers).focus_handle(cx)
+    });
+    testkit::tab_until(cx, |cx| focused(cx, &search), Tab::ALL.len() + 2);
+    assert!(focused(cx, &search));
+
+    // "ew" is in neither fixture container's name; "e" is in both.
+    cx.simulate_input("ew");
+    assert_eq!(app.read_with(&*cx, |app, _| app.visible_rows().len()), 0);
+    cx.simulate_keystrokes("backspace");
+    app.read_with(&*cx, |app, _| {
+        assert_eq!(app.query(SearchKind::Containers), "e");
+        assert_eq!(app.visible_rows().len(), 2, "the table followed the edit");
+    });
+}

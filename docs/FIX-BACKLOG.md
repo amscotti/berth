@@ -4,7 +4,7 @@
 **Created:** 2026-11-23
 **Baseline:** `ebe5f59`
 **Source:** the code and UX review of 2026-11-23
-**Next:** X1
+**Next:** A1
 **Purpose:** every finding from that review as checkable work, in the order to
 do it. Anyone, or any sub-agent, should be able to take the next unticked row
 and know what "done" means without re-reading the review.
@@ -206,8 +206,8 @@ with a recorded result.
 Not in the review. Each was checked against the baseline while turning the
 review into rows. Take each with the phase it names.
 
-- [ ] **X1** (S) Search fields have no clear button, though the spec (§3.4) says one appears when there is text, and `xmark.svg` is bundled for it. `ui/input.rs`, `ui/table.rs:69–100`. Done when (G/H): the button appears only with text and clears the field. Take with Phase 2. Feeds D1, A6.
-- [ ] **X2** (M) Text fields don't behave like text fields. `ui/input.rs`. A click always puts the caret at the end (`:169`); there is no drag-selection; long text doesn't scroll to the caret; there is no undo; the IME candidate position is guessed from an average character width (`:397`). Use the text system's real glyph positions. Done when (G): a click mid-word puts the caret there; a drag selects. Take with Phase 2.
+- [x] **X1** (S) Search fields have no clear button, though the spec (§3.4) says one appears when there is text, and `xmark.svg` is bundled for it. `ui/input.rs`, `ui/table.rs:69–100`. Done when (G/H): the button appears only with text and clears the field. Take with Phase 2. Feeds D1, A6. `focus_tests::a_search_with_text_gains_a_clear_button_that_tab_reaches`; `search-filled.png`.
+- [x] **X2** (M) Text fields don't behave like text fields. `ui/input.rs`. A click always puts the caret at the end (`:169`); there is no drag-selection; long text doesn't scroll to the caret; there is no undo; the IME candidate position is guessed from an average character width (`:397`). Use the text system's real glyph positions. Done when (G): a click mid-word puts the caret there; a drag selects. Take with Phase 2. *(the positions come from the text system's layout of the line, in `ui/input_text.rs`; `ui/input_tests.rs` covers the click, the drag, the caret staying in view, undo and redo, and the IME bounds. The test platform loads no fonts, so a test there can't show a wide "W" next to a narrow "i": it holds the field to reporting the layout it draws by.)*
 - [ ] **X3** (S) Confirmations should name what they cost, as the spec asks (§2.2). `ui/sheets.rs:65–126`. Engine stop: "N running containers on <name> will stop with the engine"; image delete: "used by N containers"; container delete: running (so force-stopped) and its stack. Done when (H): the three sheets. Take with Phase 4. Feeds D1.
 - [ ] **X4** (S) Image inspector: "Run…" is offered for dangling images and fills the form with the word `untagged`; an image with several tags shows only its first. `ui/inspect_objects.rs:139–151`, `berth-engine/src/dto.rs:301`. Done when (G): no Run… on a dangling image; every tag is visible. Take with Phase 4.
 - [ ] **X5** (M) Raw Inspect for images, volumes and networks, and the facts people look up. `ui/inspect_objects.rs`, `berth-engine/src/dto.rs:347`. Only containers have an Inspect tab; the network inspector shows no subnet or gateway. Done when (H): each of the four inspectors has an Inspect tab, and a network shows its subnet. Take with Phase 4. Depends B13.
@@ -219,6 +219,7 @@ review into rows. Take each with the phase it names.
 - [ ] **X11** (M) Optional: discover Docker contexts. `berth-engine/src/discovery.rs:77–81` reads a `unix://` `DOCKER_HOST` and the known paths; it doesn't read `~/.docker/contexts`, and says nothing about a `tcp://` host. Done when (U): a context's socket is a candidate. Take with Phase 5.
 - [ ] **X12** (S) Optional: let the Disk page's figures lead somewhere. `ui/views/disk.rs:36–47`. Each store links to its view, and the page shows the disk history that is recorded but not drawn. Done when (H): the page. Take with Phase 4. Depends U11.
 - [ ] **X13** (S) Say how far an image cleanup reaches, and confirm that is right. `berth-engine/src/prune.rs:39`. Docker is asked for `dangling=false`, which is `docker image prune -a`: every image no container uses goes, tagged or not. The sheet now says so (X7), but the reference app's intent isn't recorded anywhere. If it meant dangling images only, send `dangling=true` and change the sentence back. Done when (M): `docs/PRODUCT-SPEC.md` §2 says which, and a test pins the filter. Take with Phase 5. Feeds D1.
+- [x] **X14** (S) A key that deleted text never told the page. `ui/input.rs`. Backspace, Delete, Cmd+Backspace and Alt+Backspace changed the buffer and redrew the field, but raised no `Changed`, so the table kept filtering on the text before the key until the next character was typed. Found while doing X2. Done when (G): `focus_tests::a_backspace_in_the_search_reaches_the_table`.
 
 ## Carried over from `TODO.md`
 

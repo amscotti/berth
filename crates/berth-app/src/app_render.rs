@@ -22,6 +22,13 @@ impl BerthApp {
         self.toggle_bulk(cx);
     }
 
+    /// Put `text` in the containers search, as if it had been typed.
+    pub fn show_search_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.searches[SearchKind::Containers as usize]
+            .update(cx, |input, cx| input.set_value(text, cx));
+        cx.notify();
+    }
+
     /// The cleanup sheet with only options ticked that have nothing left.
     pub fn show_cleanup_with_nothing_to_do(&mut self, cx: &mut Context<Self>) {
         self.open_prune(cx);
