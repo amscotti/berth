@@ -51,7 +51,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked --features berth-app/test-driver -- -D warnings
 
       - name: Build
         run: cargo build --workspace --locked
@@ -83,7 +83,7 @@ jobs:
           key: macos-gpui-${{ hashFiles('Cargo.lock') }}
 
       - name: Render the shell
-        run: cargo run -p berth-app --example screenshots
+        run: cargo run -p berth-app --example screenshots --features test-driver
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v4

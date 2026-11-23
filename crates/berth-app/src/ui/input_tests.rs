@@ -227,3 +227,63 @@ fn before_anything_is_published_a_field_follows_the_window(cx: &mut TestAppConte
         InputState::new("Search", 190.0, cx)
     });
 }
+
+#[gpui::test]
+fn the_stages_of_a_composed_character_are_one_step_to_undo(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    let (input, cx) = field("", cx);
+    // An IME writes a character a stroke at a time, rewriting as it goes.
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(None, "n", None, window, cx);
+            input.replace_and_mark_text_in_range(Some(0..1), "ni", None, window, cx);
+            input.replace_and_mark_text_in_range(Some(0..2), "に", None, window, cx);
+            input.unmark_text(window, cx);
+        })
+    });
+    assert_eq!(text_of(&input, cx), "に");
+    cx.simulate_keystrokes("cmd-z");
+    assert_eq!(
+        text_of(&input, cx),
+        "",
+        "the whole character came back out at once"
+    );
+}
+
+#[gpui::test]
+fn the_platform_reads_and_sets_the_selection_in_its_own_units(cx: &mut TestAppContext) {
+    use gpui::{EntityInputHandler, UTF16Selection};
+    let (input, cx) = field("aにb", cx);
+    cx.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            // UTF-16 counts the kana as one, where bytes count three.
+            let mut adjusted = None;
+            let read = input
+                .text_for_range(1..2, &mut adjusted, window, cx)
+                .expect("the field answered");
+            assert_eq!(read, "に");
+            assert_eq!(adjusted, Some(1..2));
+            assert_eq!(input.text_length_utf16(window, cx), Some(3));
+            assert_eq!(input.marked_text_range(window, cx), None);
+
+            input.set_selected_text_range(1..2, window, cx);
+            assert_eq!(
+                input.selection(),
+                Some((1, 4)),
+                "in bytes, as the buffer keeps them"
+            );
+            let UTF16Selection { range, reversed } = input
+                .selected_text_range(false, window, cx)
+                .expect("the field answered");
+            assert_eq!((range, reversed), (1..2, false));
+            // A point over the "b" is the third character, in the platform's count.
+            let from = input.drawn_from();
+            let b_starts = super::text::Line::new("aにb", gpui::black(), window).x_of(4);
+            let x = from + px(super::text::PAD) + px(b_starts + 1.0);
+            assert_eq!(
+                input.character_index_for_point(point(x, px(0.0)), window, cx),
+                Some(3)
+            );
+        })
+    });
+}

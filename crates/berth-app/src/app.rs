@@ -14,7 +14,7 @@ use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription, Task};
 
 use crate::jobs::mutation::PruneOptions;
 use crate::settings::{self, Appearance};
-use crate::state::{EngineState, SharedSnapshot, Snapshot, fixture_snapshot};
+use crate::state::{EngineState, SharedSnapshot, Snapshot};
 
 /// The views a window can show, in rail order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -239,7 +239,6 @@ pub struct BerthApp {
     pub(crate) refresh_wanted: bool,
     /// A rescan asked for while one was already running. It goes next.
     pub(crate) rescan_wanted: bool,
-    pub(crate) fixture: bool,
     pub(crate) appearance: Appearance,
     pub(crate) socket_input: Entity<InputState>,
     pub(crate) toast: Option<Toast>,
@@ -321,43 +320,12 @@ pub struct Pending {
 
 impl BerthApp {
     pub fn new(tokens: Tokens, cx: &mut Context<Self>) -> Self {
-        Self::with_snapshot(tokens, Snapshot::empty(), false, cx)
+        Self::with_snapshot(tokens, Snapshot::empty(), cx)
     }
 
-    /// Headless screenshots and layout tests use the fixture; the running app
-    /// always starts empty and waits for a real snapshot.
-    pub fn new_fixture(tokens: Tokens, cx: &mut Context<Self>) -> Self {
-        let mut app = Self::with_snapshot(tokens, fixture_snapshot(), true, cx);
-        app.engine.runtimes = vec![crate::state::fixture_runtime()];
-        app.engine.active = 0;
-        app.engine.last_update = berth_core::format::now();
-        app.engine.loading = false;
-        app.engine.df = app.snapshot.df.clone();
-        app.engine.df_at = app.snapshot.df_at;
-        for step in 0..24 {
-            app.engine.history.push(berth_core::history::Sample {
-                cpu: 4.0 + (step as f32 * 0.7) % 9.0,
-                cpu_known: true,
-                mem: (4.2 + (step as f32 * 0.06) % 0.8) * 1024.0 * 1024.0,
-                mem_known: true,
-                running: if step > 12 { 2.0 } else { 1.0 },
-                disk: (103.0 + step as f32 * 0.05) * 1024.0 * 1024.0,
-                host_cpu: 42.0 + step as f32,
-                host_mem: 43.0 * 1024.0 * 1024.0 * 1024.0,
-            });
-        }
-        app
-    }
-
-    /// Used by the headless screenshot binary to reach every page.
-    pub fn show_tab(&mut self, tab: Tab) {
-        self.tab = tab;
-    }
-
-    pub fn with_snapshot(
+    pub(crate) fn with_snapshot(
         tokens: Tokens,
         snapshot: Snapshot,
-        fixture: bool,
         cx: &mut Context<Self>,
     ) -> Self {
         let searches =
@@ -478,7 +446,6 @@ impl BerthApp {
             terminal_task: None,
             refresh_wanted: false,
             rescan_wanted: false,
-            fixture,
             appearance,
             socket_input,
             toast: None,

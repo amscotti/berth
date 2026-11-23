@@ -19,6 +19,8 @@ mod assets;
 mod behaviour_tests;
 #[cfg(test)]
 mod contract_tests;
+#[cfg(any(test, feature = "test-driver"))]
+mod fixture;
 mod focus;
 #[cfg(test)]
 mod focus_tests;
@@ -42,11 +44,11 @@ use gpui::{
 
 pub use app::{BerthApp, CreateKind, Filter, InspectorTab, Tab};
 pub use assets::Assets;
-pub use state::{Snapshot, fixture_snapshot, fixture_snapshot_with};
+pub use state::Snapshot;
 
-pub fn state_for_perf(count: usize) -> Snapshot {
-    fixture_snapshot_with(count)
-}
+/// The fixture, for the screenshot and performance examples.
+#[cfg(any(test, feature = "test-driver"))]
+pub use fixture::{fixture_snapshot, fixture_snapshot_with, state_for_perf};
 
 /// Launch the application.
 pub fn run() {

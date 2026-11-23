@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
         });
     let snapshot = berth_app::state_for_perf(100);
     let handle = cx.open_window(size(px(1280.0), px(760.0)), |_window, cx| {
-        cx.new(|cx| BerthApp::with_snapshot(theme::light(), snapshot, true, cx))
+        cx.new(|cx| BerthApp::with_fixture(theme::light(), snapshot, cx))
     })?;
     cx.run_until_parked();
     let started = Instant::now();

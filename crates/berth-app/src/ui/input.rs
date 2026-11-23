@@ -136,6 +136,12 @@ impl InputState {
         self.buffer.selection()
     }
 
+    /// Where the field was last drawn from.
+    #[cfg(test)]
+    pub(crate) fn drawn_from(&self) -> gpui::Pixels {
+        self.drawn_from.get()
+    }
+
     /// How far the text is pushed left.
     #[cfg(test)]
     pub(crate) fn scroll(&self) -> f32 {

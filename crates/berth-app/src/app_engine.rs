@@ -72,10 +72,8 @@ impl BerthApp {
         crate::tray::set_title(tray, &title);
     }
 
+    /// Find an engine and start reading it.
     pub fn start(&mut self, cx: &mut Context<Self>) {
-        if self.fixture {
-            return;
-        }
         self.start_discovery(cx);
     }
 
@@ -406,7 +404,7 @@ mod tests {
     /// The fixture engine, on a socket that exists nowhere: the tasks a scan
     /// or a refresh spawns must never reach this machine's real engine.
     fn runtime() -> berth_engine::discovery::Runtime {
-        let mut runtime = crate::state::fixture_runtime();
+        let mut runtime = crate::fixture::fixture_runtime();
         runtime.socket = "/nowhere/berth-test.sock".into();
         runtime
     }

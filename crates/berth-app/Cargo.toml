@@ -7,7 +7,8 @@ repository.workspace = true
 description = "berth: a native container monitor"
 
 [features]
-# Test-only local control socket; never enabled in release artifacts.
+# The fixture and the hooks that put the app into a state, for the screenshot
+# and performance examples. Never enabled in release artifacts.
 test-driver = []
 
 [lib]
@@ -17,6 +18,15 @@ path = "src/lib.rs"
 [[bin]]
 name = "berth"
 path = "src/main.rs"
+
+# Both run on the fixture, so both need it.
+[[example]]
+name = "screenshots"
+required-features = ["test-driver"]
+
+[[example]]
+name = "perf"
+required-features = ["test-driver"]
 
 [dependencies]
 gpui = { workspace = true }

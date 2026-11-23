@@ -196,7 +196,7 @@ fn a_confirmation_opens_on_the_way_out(cx: &mut TestAppContext) {
     );
     assert_eq!(
         app.read_with(&*cx, |app, _| app.snapshot.containers.len()),
-        crate::state::fixture_snapshot().containers.len(),
+        crate::fixture::fixture_snapshot().containers.len(),
         "nothing was deleted"
     );
 }

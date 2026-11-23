@@ -169,7 +169,10 @@ Drives the platform accessibility tree:
 ### Test driver (feature-gated)
 
 A newline-delimited JSON service on a Unix socket, compiled only with
-`--features test-driver`:
+`--features test-driver`. Until the driver exists that feature is what
+carries the fixture (`crates/berth-app/src/fixture.rs`) the screenshot and
+performance examples run on; none of it is in a release build. The driver,
+when it comes, belongs behind the same feature. Its commands:
 
 - `hello` — version, pid, capabilities;
 - `status` — tab, theme, engine state, selection, bulk mode, sheet, counts;
