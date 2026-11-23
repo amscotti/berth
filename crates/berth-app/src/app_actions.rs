@@ -310,7 +310,7 @@ impl BerthApp {
 
     pub(crate) fn toggle_sort(&mut self, table: usize, col: usize, cx: &mut Context<Self>) {
         self.view.lists[table].toggle_sort(col);
-        cx.notify();
+        self.redraw_page(cx);
     }
 
     pub(crate) fn visible_rows(&self) -> Vec<usize> {

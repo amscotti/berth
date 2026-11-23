@@ -34,7 +34,7 @@ impl BerthApp {
             this.update(cx, |app, cx| app.finish_detail(outcome, cx))
                 .ok();
         }));
-        cx.notify();
+        self.redraw_inspector(cx);
     }
 
     /// Apply one detail read. A read from an older generation is simply
@@ -72,7 +72,7 @@ impl BerthApp {
             }
             Err(error) => Some(format!("could not read inspect: {error}")),
         };
-        cx.notify();
+        self.redraw_inspector(cx);
     }
 
     fn finish_image_detail(&mut self, outcome: detail::ImageOutcome, cx: &mut Context<Self>) {
@@ -87,7 +87,7 @@ impl BerthApp {
         if let Ok(layers) = outcome.layers {
             self.inspector.image_layers = layers;
         }
-        cx.notify();
+        self.redraw_inspector(cx);
     }
 
     pub(crate) fn open_terminal(&mut self, cx: &mut Context<Self>) {
@@ -160,13 +160,13 @@ impl BerthApp {
         if unread {
             self.start_detail(cx);
         }
-        cx.notify();
+        self.redraw_inspector(cx);
     }
 
     pub(crate) fn toggle_log_timestamps(&mut self, cx: &mut Context<Self>) {
         self.inspector.logs_timestamps = !self.inspector.logs_timestamps;
         self.start_detail(cx);
-        cx.notify();
+        self.redraw_inspector(cx);
     }
 
     pub(crate) fn copy_logs(&mut self, cx: &mut Context<Self>) {

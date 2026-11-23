@@ -36,10 +36,10 @@ pub(crate) struct Inspector {
 impl Inspector {
     pub(crate) fn new(cx: &mut gpui::Context<crate::app::BerthApp>) -> Self {
         let log_search = cx.new(|cx| InputState::new("Search logs", 130.0, cx));
-        let _log_search_sub = cx.subscribe(&log_search, |_, input, event: &InputEvent, cx| {
+        let _log_search_sub = cx.subscribe(&log_search, |this, input, event: &InputEvent, cx| {
             if matches!(event, InputEvent::Changed | InputEvent::Edited) {
                 let _ = input.read(cx).text();
-                cx.notify();
+                this.redraw_inspector(cx);
             } else if matches!(event, InputEvent::Cancelled) {
                 input.update(cx, |state, cx| state.clear(cx));
             }

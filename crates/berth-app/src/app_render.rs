@@ -7,7 +7,8 @@ use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FocusHandle, Focusable, IntoElement, Render, Role, Window, div, px,
+    AnyElement, Context, FocusHandle, Focusable, IntoElement, Render, Role, StyleRefinement,
+    Window, div, px,
 };
 
 impl BerthApp {
@@ -74,11 +75,12 @@ impl Focusable for BerthApp {
     }
 }
 
-impl Render for BerthApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.place_focus(window, cx);
-        let window_width: f32 = window.viewport_size().width.into();
-        let widths = layout::for_window(window_width, self.view.selected_id.is_some());
+impl BerthApp {
+    /// The page: the rail, and the main column with whatever page is showing.
+    /// Drawn by the page's own view ([`Subview`]), which asks the shell, so
+    /// that everything which draws a page still has the shell in hand.
+    pub(crate) fn render_page(&mut self, viewport: f32, cx: &mut Context<Self>) -> AnyElement {
+        let widths = layout::for_window(viewport, self.view.selected_id.is_some());
         let tokens = self.tokens;
         let columns = layout::container_columns(widths.content, self.view.bulk_enabled);
 
@@ -138,10 +140,9 @@ impl Render for BerthApp {
                     .child(body),
             );
 
-        // The page: rail, table and inspector. Its shortcuts are bound here
-        // and not on the root, so that a sheet, which is not inside it, owns
-        // the keyboard while it is open.
-        let page = div()
+        // Its shortcuts are bound here and not on the root, so that a sheet,
+        // which is not inside it, owns the keyboard while it is open.
+        div()
             .id("berth-page")
             .track_focus(&self.view.focus_handle)
             .key_context("Berth")
@@ -166,9 +167,36 @@ impl Render for BerthApp {
             .min_w(px(0.0))
             .child(rail::rail(self, widths, cx))
             .child(main)
-            .children(self.detail_pane(widths.pane, tokens, cx))
-            .children(toast::overlay(self, tokens, cx));
+            .into_any_element()
+    }
 
+    /// The inspector, when something is selected. Drawn by the inspector's
+    /// own view ([`Subview`]).
+    pub(crate) fn render_inspector(
+        &mut self,
+        viewport: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let widths = layout::for_window(viewport, true);
+        self.detail_pane(widths.pane, self.tokens, cx)
+    }
+}
+
+impl Render for BerthApp {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.place_focus(window, cx);
+        #[cfg(test)]
+        {
+            self.draws += 1;
+        }
+        let tokens = self.tokens;
+        let viewport = f32::from(window.viewport_size().width);
+        let pane_open = self.view.selected_id.is_some();
+        let widths = layout::for_window(viewport, pane_open);
+        // The page and the inspector are views of their own (`subviews`),
+        // each kept from one frame to the next until it changes. A view kept
+        // that way takes its size from here, not from what it draws: the
+        // page has what the row leaves, the inspector its own width.
         div()
             .id("berth-root")
             .role(Role::Application)
@@ -185,7 +213,17 @@ impl Render for BerthApp {
             .text_color(tokens.text)
             .text_size(px(type_scale::BODY))
             .relative()
-            .child(page)
+            .child(
+                self.page
+                    .clone()
+                    .cached(StyleRefinement::default().flex_1().min_w(px(0.0)).h_full()),
+            )
+            .children(pane_open.then(|| {
+                self.pane
+                    .clone()
+                    .cached(StyleRefinement::default().w(px(widths.pane)).h_full())
+            }))
+            .children(toast::overlay(self, tokens, cx))
             .children(sheets::overlay(self, tokens, cx))
     }
 }

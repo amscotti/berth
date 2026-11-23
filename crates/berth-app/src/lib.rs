@@ -32,6 +32,9 @@ mod settings;
 #[cfg(test)]
 mod settings_tests;
 mod state;
+mod subviews;
+#[cfg(test)]
+mod subviews_tests;
 mod terminal;
 #[cfg(test)]
 mod testkit;

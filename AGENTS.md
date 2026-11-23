@@ -70,6 +70,14 @@ BERTH_SOCKET=/path/to.sock cargo run -p berth-app
   variable heights.
 - Store every `Task` and `Subscription` in the owning struct. Dropping one
   silently cancels the work or the observation.
+- A view added with `.child(entity)` is redrawn whenever its parent is. Only
+  `.cached(style)` keeps a view from one frame to the next until it is
+  notified, and it then takes its size from that style, not from what it
+  draws. The page and the inspector are kept this way (`subviews.rs`); the
+  shell redraws on every frame and draws nothing else.
+- `cx.notify()` on the shell redraws both corners. A change only one of them
+  shows is announced with `redraw_page` or `redraw_inspector`, and
+  `contract_tests` holds each corner to drawing from its own state.
 - Text shaping is UI-thread work. Shape only visible rows.
 - GPUI has no text-input widget, tray API, or SF Symbols. The plan budgets for
   all three.

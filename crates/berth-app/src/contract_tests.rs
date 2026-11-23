@@ -148,6 +148,61 @@ fn dead_code_is_deleted_not_forgiven() {
     }
 }
 
+/// The page and the inspector redraw apart (`subviews`), which is only
+/// honest while each draws from its own state: the page never shows the
+/// inspector's, and the inspector never shows the tables'. A scoped redraw
+/// (`redraw_page`, `redraw_inspector`) would leave what broke this stale.
+#[test]
+fn each_corner_draws_from_its_own_state() {
+    const PAGE: [&str; 6] = [
+        "src/ui/table.rs",
+        "src/ui/table_cells.rs",
+        "src/ui/rail.rs",
+        "src/ui/row_actions.rs",
+        "src/ui/toast.rs",
+        "src/ui/views/",
+    ];
+    const PANE: [&str; 4] = [
+        "src/ui/inspector.rs",
+        "src/ui/inspect_tabs.rs",
+        "src/ui/inspect_objects.rs",
+        "src/ui/inspect_shared.rs",
+    ];
+    // What the tables are searched, sorted and selected by.
+    const TABLES: [&str; 7] = [
+        ".lists[",
+        ".search(",
+        ".query(",
+        ".sort_for(",
+        ".visible_rows(",
+        ".bulk_",
+        ".view.filter",
+    ];
+    for (path, source) in sources() {
+        let shown = place(&path, 0);
+        let on_page = PAGE.iter().any(|file| shown.starts_with(file));
+        let in_pane = PANE.iter().any(|file| shown.starts_with(file));
+        for (line, text) in source.lines().enumerate() {
+            if on_page {
+                assert!(
+                    !text.contains(".inspector."),
+                    "{} draws the inspector's state on the page",
+                    place(&path, line)
+                );
+            }
+            if in_pane {
+                for read in TABLES {
+                    assert!(
+                        !text.contains(read),
+                        "{} draws the tables' state in the inspector: {read}",
+                        place(&path, line)
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// An icon that nothing draws is a file in the bundle for nothing.
 #[test]
 fn every_icon_is_drawn() {

@@ -106,7 +106,7 @@ impl ViewState {
                 move |this, input, event: &InputEvent, cx| match event {
                     InputEvent::Changed | InputEvent::Edited => {
                         this.view.lists[index].query = input.read(cx).text().to_owned();
-                        cx.notify();
+                        this.redraw_page(cx);
                     }
                     InputEvent::Cancelled => {
                         input.update(cx, |state, cx| state.clear(cx));

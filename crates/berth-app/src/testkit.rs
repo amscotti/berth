@@ -87,6 +87,15 @@ pub(crate) fn draw(cx: &mut VisualTestContext) {
     cx.simulate_event(gpui::MouseMoveEvent::default());
 }
 
+/// Draw the window without touching the mouse or the keyboard, for tests
+/// that count what a change redraws. A mouse move (`draw`) counts as
+/// switching to the mouse, and GPUI then redraws the whole window once,
+/// views it was keeping included; this changes nothing on screen, so only
+/// what was notified is drawn.
+pub(crate) fn redraw(cx: &mut VisualTestContext) {
+    cx.simulate_modifiers_change(gpui::Modifiers::default());
+}
+
 /// Press a key as a person would: down, then up. GPUI's own helper sends the
 /// down stroke only, and a control is pressed by the release.
 pub(crate) fn press(cx: &mut VisualTestContext, key: &'static str) {

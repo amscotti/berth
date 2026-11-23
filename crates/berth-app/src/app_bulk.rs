@@ -8,14 +8,14 @@ impl BerthApp {
     pub(crate) fn toggle_bulk(&mut self, cx: &mut Context<Self>) {
         self.view.bulk_enabled = !self.view.bulk_enabled;
         self.view.bulk_selected.clear();
-        cx.notify();
+        self.redraw_page(cx);
     }
 
     pub(crate) fn bulk_toggle(&mut self, id: &str, cx: &mut Context<Self>) {
         if !self.view.bulk_selected.remove(id) {
             self.view.bulk_selected.insert(id.to_owned());
         }
-        cx.notify();
+        self.redraw_page(cx);
     }
 
     pub(crate) fn bulk_select_all(&mut self, cx: &mut Context<Self>) {
@@ -25,12 +25,12 @@ impl BerthApp {
             .filter_map(|index| self.snapshot.containers.get(index))
             .map(|container| container.id.clone())
             .collect();
-        cx.notify();
+        self.redraw_page(cx);
     }
 
     pub(crate) fn bulk_clear(&mut self, cx: &mut Context<Self>) {
         self.view.bulk_selected.clear();
-        cx.notify();
+        self.redraw_page(cx);
     }
 
     pub(crate) fn bulk_request(&mut self, verb: &str, cx: &mut Context<Self>) {

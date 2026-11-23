@@ -126,8 +126,15 @@ Cover:
 - action slot: second mutation refused; completion refreshes; queued switch
   resumes.
 - appearance: System/Light/Dark resolves the right tokens; observer updates.
+- what redraws: a search edit redraws the page and a log read the inspector,
+  a steady screen draws nothing, and each corner draws from its own state
+  (`subviews_tests`, `contract_tests`).
 
 Store every `Task` and `Subscription` in the view; dropping silently cancels.
+
+A test that counts draws uses `testkit::redraw`. `testkit::draw` moves the
+mouse, and the switch from keyboard to mouse makes GPUI redraw the whole
+window once, views it was keeping included.
 
 ---
 

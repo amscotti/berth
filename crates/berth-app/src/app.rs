@@ -9,11 +9,12 @@ use std::sync::Arc;
 use crate::ui::input::InputState;
 use berth_engine::dto::Container;
 use berth_ui::theme::{TintKind, Tokens};
-use gpui::{Context, Entity, Subscription, Task};
+use gpui::{AppContext, Context, Entity, Subscription, Task};
 
 use crate::inspector::Inspector;
 use crate::settings::{self, Appearance};
 use crate::state::{EngineState, HostSample, SharedSnapshot, Snapshot};
+use crate::subviews::Subview;
 use crate::view::ViewState;
 
 /// The views a window can show, in rail order.
@@ -230,6 +231,13 @@ pub struct BerthApp {
     pub(crate) rescan_wanted: bool,
     pub(crate) view: ViewState,
     pub(crate) inspector: Inspector,
+    /// The page and the inspector, each drawn by a view of its own so that a
+    /// change in one doesn't redraw the other. See `subviews`.
+    pub(crate) page: Entity<Subview>,
+    pub(crate) pane: Entity<Subview>,
+    /// How many times the shell itself has been drawn. Tests read it.
+    #[cfg(test)]
+    pub(crate) draws: u32,
     pub(crate) window_handle: Option<gpui::AnyWindowHandle>,
     /// The preferences file, when preferences are persisted at all.
     pub(crate) settings_file: Option<std::path::PathBuf>,
@@ -301,7 +309,8 @@ impl BerthApp {
             Appearance::System => tokens,
         };
         berth_ui::theme::ActiveTokens::set(tokens, cx);
-        Self {
+        let shell = cx.weak_entity();
+        let app = Self {
             tokens,
             snapshot: Arc::new(snapshot),
             host: HostSample::default(),
@@ -318,6 +327,10 @@ impl BerthApp {
             rescan_wanted: false,
             view: ViewState::new(&saved.socket, cx),
             inspector: Inspector::new(cx),
+            page: cx.new(|_| Subview::page(shell.clone())),
+            pane: cx.new(|_| Subview::inspector(shell.clone())),
+            #[cfg(test)]
+            draws: 0,
             window_handle: None,
             settings_file,
             window: saved.window,
@@ -326,7 +339,12 @@ impl BerthApp {
             tray: None,
             tray_task: None,
             quiet_notices_until: 0,
-        }
+        };
+        // The two views watch the shell; they can only start once it exists.
+        let shell = cx.entity();
+        app.page.update(cx, |page, cx| page.watch(&shell, cx));
+        app.pane.update(cx, |pane, cx| pane.watch(&shell, cx));
+        app
     }
 
     pub fn set_appearance_subscription(&mut self, subscription: Subscription) {
