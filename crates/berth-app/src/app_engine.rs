@@ -269,7 +269,10 @@ impl BerthApp {
             snapshot.events = refresh::merge_events(&self.snapshot.events, &snapshot.events);
         }
         if !snapshot.events_error {
-            self.engine.events_since = snapshot.last_update;
+            // A time on the engine's own clock, not the host's: a VM's clock
+            // drifts, and events would be skipped.
+            self.engine.events_since =
+                berth_engine::events::cursor(&snapshot.events, self.engine.events_since);
         }
 
         let cores = self

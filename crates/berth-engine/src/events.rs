@@ -125,6 +125,20 @@ pub fn has(events: &[Event], event: &Event) -> bool {
     events.iter().any(|kept| same(kept, event))
 }
 
+/// Where the next interval should start: one second before the newest event
+/// already in the ring. That is a time on the *engine's* clock. The host's
+/// clock can't be used: a VM's clock drifts, and events would be asked for
+/// from a point the engine hasn't reached yet. The ring's dedupe covers the
+/// one-second overlap, and the cursor never moves backwards.
+pub fn cursor(ring: &[Event], current: i64) -> i64 {
+    ring.iter()
+        .map(|event| event.time_nano)
+        .max()
+        .map_or(current, |newest| {
+            (newest.div_euclid(1_000_000_000) - 1).max(current)
+        })
+}
+
 fn same(a: &Event, b: &Event) -> bool {
     a.time_nano == b.time_nano && a.action == b.action && a.id == b.id && a.actor.id == b.actor.id
 }
@@ -187,6 +201,18 @@ mod tests {
         let merged = merge(&[], &fresh, 3);
         assert_eq!(merged.len(), 3);
         assert_eq!(merged[0].time_nano, 9);
+    }
+
+    #[test]
+    fn the_cursor_is_the_newest_event_on_the_engine_clock() {
+        // An engine clock far behind the host's: the host time must not win,
+        // or every event would be asked for from a point past itself.
+        let ring = vec![event(900_500_000_000, "start", "a", "web")];
+        assert_eq!(cursor(&ring, 0), 899);
+        assert_eq!(cursor(&ring, 850), 899);
+        // Never backwards, and unchanged with nothing to learn from.
+        assert_eq!(cursor(&ring, 950), 950);
+        assert_eq!(cursor(&[], 42), 42);
     }
 
     #[test]

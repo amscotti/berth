@@ -78,13 +78,13 @@ pub(crate) fn disk_card(
                             .gap(px(12.0))
                             .child(legend(
                                 "images",
-                                stores.images.max(0) as u64,
+                                format::measured(stores.images),
                                 tokens.accent_fill(),
                                 tokens,
                             ))
                             .child(legend(
                                 "containers",
-                                stores.containers.max(0) as u64,
+                                format::measured(stores.containers),
                                 tokens.success,
                                 tokens,
                             )),
@@ -97,13 +97,13 @@ pub(crate) fn disk_card(
                             .gap(px(12.0))
                             .child(legend(
                                 "volumes",
-                                stores.volumes.max(0) as u64,
+                                format::measured(stores.volumes),
                                 tokens.store_volume(),
                                 tokens,
                             ))
                             .child(legend(
                                 "build cache",
-                                stores.build_cache.max(0) as u64,
+                                format::measured(stores.build_cache),
                                 tokens.muted,
                                 tokens,
                             )),
@@ -136,7 +136,7 @@ pub(crate) fn disk_card(
     card
 }
 
-fn legend(label: &str, bytes: u64, color: gpui::Hsla, tokens: Tokens) -> Div {
+fn legend(label: &str, figure: String, color: gpui::Hsla, tokens: Tokens) -> Div {
     div()
         .flex()
         .flex_row()
@@ -147,6 +147,6 @@ fn legend(label: &str, bytes: u64, color: gpui::Hsla, tokens: Tokens) -> Div {
             div()
                 .text_size(px(11.0))
                 .text_color(tokens.muted)
-                .child(format!("{} {}", label, format::bytes(bytes))),
+                .child(format!("{label} {figure}")),
         )
 }

@@ -137,6 +137,51 @@ pub struct Mount {
     pub rw: bool,
 }
 
+/// What can be done to a container in its current state. An action the engine
+/// will refuse should not be on screen: it turns a clear state into an error
+/// toast.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Actions {
+    pub start: bool,
+    pub stop: bool,
+    pub restart: bool,
+    pub pause: bool,
+    pub resume: bool,
+    /// A shell can be opened only into a container that is running and not
+    /// paused: `exec` into a paused container hangs.
+    pub terminal: bool,
+}
+
+impl Actions {
+    pub fn for_state(state: &str) -> Self {
+        match state {
+            "running" => Self {
+                stop: true,
+                restart: true,
+                pause: true,
+                terminal: true,
+                ..Default::default()
+            },
+            "paused" => Self {
+                stop: true,
+                resume: true,
+                ..Default::default()
+            },
+            // Restarting can only be interrupted.
+            "restarting" => Self {
+                stop: true,
+                ..Default::default()
+            },
+            "created" | "exited" | "dead" => Self {
+                start: true,
+                ..Default::default()
+            },
+            // `removing`, and anything an engine adds later: nothing.
+            _ => Self::default(),
+        }
+    }
+}
+
 impl Container {
     /// The first name, without Docker's leading slash.
     pub fn name(&self) -> &str {
@@ -171,6 +216,11 @@ impl Container {
 
     pub fn is_up(&self) -> bool {
         self.is_running() || self.is_paused() || self.state == "restarting"
+    }
+
+    /// What the engine will accept for this container right now.
+    pub fn actions(&self) -> Actions {
+        Actions::for_state(&self.state)
     }
 
     /// The healthcheck verdict, when there is one. It rides at the end of the
@@ -481,75 +531,4 @@ pub struct ImageLayer {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_container_entry_parses_with_its_api_spelling() {
-        let json = r#"{
-            "Id": "abc123",
-            "Names": ["/web"],
-            "Image": "nginx:alpine",
-            "State": "running",
-            "Status": "Up 2 hours",
-            "Labels": {"com.docker.compose.project": "shop"},
-            "Ports": [{"PrivatePort": 80, "PublicPort": 8080, "Type": "tcp", "IP": "0.0.0.0"}]
-        }"#;
-        let container: Container = serde_json::from_str(json).expect("parse");
-        assert_eq!(container.id, "abc123");
-        assert_eq!(container.name(), "web");
-        assert_eq!(container.project(), Some("shop"));
-        assert!(container.is_up());
-        assert_eq!(container.ports[0].public_port, Some(8080));
-    }
-
-    #[test]
-    fn missing_fields_default_instead_of_failing() {
-        let container: Container = serde_json::from_str("{}").expect("parse");
-        assert_eq!(container.name(), "");
-        assert!(!container.is_up());
-        let image: Image = serde_json::from_str("{}").expect("parse");
-        assert!(image.dangling());
-        assert_eq!(image.label(), "untagged");
-    }
-
-    #[test]
-    fn podman_is_detected_from_the_version_components() {
-        let version: Version = serde_json::from_str(
-            r#"{"Version":"5.0.0","Components":[{"Name":"Podman Engine","Version":"5.0.0"}]}"#,
-        )
-        .expect("parse");
-        assert!(version.is_podman());
-    }
-
-    #[test]
-    fn a_network_counts_attached_containers() {
-        let network: Network =
-            serde_json::from_str(r#"{"Name":"bridge","Id":"n1","Containers":{"a":{},"b":{}}}"#)
-                .expect("parse");
-        assert_eq!(network.attached(), 2);
-        assert!(network.builtin());
-    }
-    #[test]
-    fn top_changes_and_image_layers_parse_their_api_shapes() {
-        let top: ContainerTop = serde_json::from_str(
-            r#"{"Titles":["PID","USER","COMMAND"],"Processes":[["1","root","nginx"]]}"#,
-        )
-        .expect("top");
-        assert_eq!(top.titles[0], "PID");
-        assert_eq!(top.processes[0][2], "nginx");
-
-        let changes: Vec<FsChange> =
-            serde_json::from_str(r#"[{"Path":"/run/x","Kind":1},{"Path":"/etc/y","Kind":0}]"#)
-                .expect("changes");
-        assert_eq!(changes.len(), 2);
-        assert_eq!(changes[0].kind, 1);
-
-        let layers: Vec<ImageLayer> = serde_json::from_str(
-            r#"[{"Id":"sha256:a","Created":1,"CreatedBy":"cmd","Size":40,"Comment":""}]"#,
-        )
-        .expect("layers");
-        assert_eq!(layers[0].id, "sha256:a");
-        assert_eq!(layers[0].size, 40);
-    }
-}
+mod tests;

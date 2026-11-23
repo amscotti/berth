@@ -14,7 +14,9 @@ use crate::dto::{
 };
 use crate::events::{Event, parse_events};
 use crate::guards;
-use crate::transport::{DEFAULT_TIMEOUT, DF_TIMEOUT, Response, TransportError, UnixClient};
+use crate::transport::{
+    DEFAULT_TIMEOUT, DF_TIMEOUT, EVENTS_WINDOW, PRUNE_TIMEOUT, Response, TransportError, UnixClient,
+};
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -183,9 +185,24 @@ impl Client {
         self.get_list("/networks", DEFAULT_TIMEOUT)
     }
 
+    /// The events between `since` and `until`, in Unix seconds on the engine's
+    /// clock. The engine holds this stream open until its own clock reaches
+    /// `until`, so the answer is sampled: what has arrived within
+    /// [`EVENTS_WINDOW`] is taken, and a stream still open is not an error.
     pub fn events(&self, since: i64, until: i64) -> Result<Vec<Event>, ClientError> {
         let path = format!("/events?since={since}&until={until}");
-        let response = self.call("GET", &path, b"", false, DEFAULT_TIMEOUT)?;
+        let response = UnixClient::new(self.socket.as_str())
+            .with_timeout(DEFAULT_TIMEOUT)
+            .request_quiet("GET", &self.prefixed(&path), b"", EVENTS_WINDOW)?;
+        let Some(response) = response else {
+            return Ok(Vec::new());
+        };
+        if !response.ok_for(false) {
+            return Err(ClientError::Engine {
+                status: response.status,
+                message: engine_message(&response),
+            });
+        }
         Ok(parse_events(&response.body))
     }
 
@@ -213,6 +230,13 @@ impl Client {
     }
 
     pub fn inspect(&self, id: &str) -> Result<ContainerDetail, ClientError> {
+        self.get(&format!("/containers/{}/json", encode(id)), DEFAULT_TIMEOUT)
+    }
+
+    /// The engine's inspect document for a container, whole. The typed
+    /// [`ContainerDetail`] keeps only what berth reads; an Inspect tab should
+    /// show what the engine said, not what berth modelled.
+    pub fn inspect_document(&self, id: &str) -> Result<serde_json::Value, ClientError> {
         self.get(&format!("/containers/{}/json", encode(id)), DEFAULT_TIMEOUT)
     }
 
@@ -299,9 +323,11 @@ impl Client {
         Ok(parsed.id)
     }
 
-    /// POST a prune route and return the bytes it reclaimed.
+    /// POST a prune route and return the bytes it reclaimed. A prune deletes
+    /// as it goes, so it gets a long budget: giving up early would report a
+    /// failure while the engine is still freeing space.
     pub fn prune(&self, path: &str) -> Result<u64, ClientError> {
-        let response = self.call("POST", path, b"", false, DEFAULT_TIMEOUT)?;
+        let response = self.call("POST", path, b"", false, PRUNE_TIMEOUT)?;
         if response.body.is_empty() {
             return Ok(0);
         }

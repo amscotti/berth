@@ -7,6 +7,8 @@ pub mod image_ref;
 pub mod text;
 pub mod validation;
 
-pub use format::{ago, bytes, bytes_signed, clock, count, duration, now, percent, started};
+pub use format::{
+    ago, bytes, bytes_signed, clock, count, duration, measured, now, percent, started,
+};
 pub use history::{History, Which};
 pub use text::TextBuffer;

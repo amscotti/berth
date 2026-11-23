@@ -299,10 +299,6 @@ impl Render for BerthApp {
     }
 }
 
-pub(crate) fn pretty_inspect(detail: &berth_engine::detail::ContainerDetail) -> String {
-    serde_json::to_string_pretty(detail).unwrap_or_else(|_| "{}".to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

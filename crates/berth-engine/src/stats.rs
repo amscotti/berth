@@ -174,17 +174,29 @@ pub fn all_sampled(containers: &[crate::dto::Container], stats: &[Sample]) -> bo
     })
 }
 
-/// Container memory for the overview and menu bar, saturating.
+/// Container memory for the overview and menu bar. Only samples with a known
+/// working set are summed: an unmeasured container must not count as zero.
 pub fn memory_used(containers: &[crate::dto::Container], stats: &[Sample]) -> u64 {
     containers
         .iter()
         .enumerate()
-        .filter(|(index, container)| {
-            container.is_up() && stats.get(*index).is_some_and(|sample| sample.sampled)
-        })
+        .filter(|(index, container)| container.is_up() && has_memory(stats.get(*index)))
         .fold(0u64, |total, (index, _)| {
             total.saturating_add(stats[index].mem)
         })
+}
+
+/// True only when every up container answered with a known working set.
+/// Without that, the sum above is a lower bound and has to say so.
+pub fn all_memory_known(containers: &[crate::dto::Container], stats: &[Sample]) -> bool {
+    containers
+        .iter()
+        .enumerate()
+        .all(|(index, container)| !container.is_up() || has_memory(stats.get(index)))
+}
+
+fn has_memory(sample: Option<&Sample>) -> bool {
+    sample.is_some_and(|sample| sample.sampled && sample.mem_known)
 }
 
 #[cfg(test)]
@@ -343,6 +355,7 @@ mod tests {
                 cpu: 10.0,
                 cpu_known: true,
                 mem: 5,
+                mem_known: true,
                 ..Default::default()
             },
             Sample {
@@ -350,16 +363,25 @@ mod tests {
                 cpu: 10.0,
                 cpu_known: true,
                 mem: 7,
+                mem_known: true,
                 ..Default::default()
             },
         ];
         assert_eq!(aggregate_cpu_percent(&containers, &stats, 4.0), Some(5.0));
         assert_eq!(memory_used(&containers, &stats), 12);
         assert!(all_sampled(&containers, &stats));
+        assert!(all_memory_known(&containers, &stats));
 
         stats[1].sampled = false;
         assert_eq!(aggregate_cpu_percent(&containers, &stats, 4.0), None);
         assert!(!all_sampled(&containers, &stats));
         assert_eq!(memory_used(&containers, &stats), 5);
+
+        // Answered, but without a working set: that is unknown, not zero.
+        stats[1].sampled = true;
+        stats[1].mem_known = false;
+        assert_eq!(memory_used(&containers, &stats), 5);
+        assert!(!all_memory_known(&containers, &stats));
+        assert!(all_sampled(&containers, &stats));
     }
 }

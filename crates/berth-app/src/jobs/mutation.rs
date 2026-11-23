@@ -2,11 +2,11 @@
 //! and machine commands. The worker owns every copied string and returns a
 //! sentence for the rail toast.
 
-use std::process::Command;
-
 use berth_engine::client::Client;
-use berth_engine::discovery::{Kind, podman_machine_name};
+use berth_engine::discovery::Kind;
 use berth_engine::prune::{self, Engine};
+
+use super::engine_ops;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PruneOptions {
@@ -87,6 +87,13 @@ pub struct Outcome {
     pub bad: bool,
 }
 
+impl Outcome {
+    /// A failure the toast shows as an error.
+    pub(super) fn bad(message: String) -> Self {
+        Self { message, bad: true }
+    }
+}
+
 pub fn run(request: Request) -> Outcome {
     match request {
         Request::Action {
@@ -136,7 +143,7 @@ pub fn run(request: Request) -> Outcome {
             engine,
             options,
         } => prune_engine(&socket, &api, engine, &options),
-        Request::EngineOp { verb, kind, socket } => engine_op(&verb, kind, &socket),
+        Request::EngineOp { verb, kind, socket } => engine_ops::run(&verb, kind, &socket),
         Request::Bulk {
             socket,
             api,
@@ -277,87 +284,33 @@ fn prune_engine(socket: &str, api: &str, engine: Engine, options: &PruneOptions)
         engine,
     );
     let mut freed = 0u64;
+    let mut failures = Vec::new();
+    // Every step runs even when an earlier one fails: a store that can't be
+    // pruned is no reason to leave the others full.
     for (kind, routes) in plan {
         for route in routes {
             match client.prune(route) {
                 Ok(bytes) => prune::add_reclaimed(&mut freed, bytes),
-                Err(error) => {
-                    return bad(format!("{}: {}", kind.label(), error.message()));
-                }
+                Err(error) => failures.push((kind.label(), error.message())),
             }
         }
     }
-    ok(format!("Reclaimed {}", berth_core::format::bytes(freed)))
-}
-
-fn engine_op(verb: &str, kind: Kind, socket: &str) -> Outcome {
-    let mut steps: Vec<Vec<String>> = Vec::new();
-    match kind {
-        Kind::Colima => {
-            steps.push(vec!["colima".into(), verb.into()]);
-        }
-        Kind::Lima => {
-            let name = socket
-                .split("/.lima/")
-                .nth(1)
-                .and_then(|rest| rest.split('/').next())
-                .unwrap_or("default")
-                .to_owned();
-            if verb == "restart" {
-                steps.push(vec!["limactl".into(), "stop".into(), name.clone()]);
-                steps.push(vec!["limactl".into(), "start".into(), name]);
-            } else {
-                steps.push(vec!["limactl".into(), verb.into(), name]);
-            }
-        }
-        Kind::PodmanMachine => {
-            let name = podman_machine_name(socket)
-                .unwrap_or("podman-machine-default")
-                .to_owned();
-            if verb == "restart" {
-                steps.push(vec![
-                    "podman".into(),
-                    "machine".into(),
-                    "stop".into(),
-                    name.clone(),
-                ]);
-                steps.push(vec![
-                    "podman".into(),
-                    "machine".into(),
-                    "start".into(),
-                    name,
-                ]);
-            } else {
-                steps.push(vec!["podman".into(), "machine".into(), verb.into(), name]);
-            }
-        }
-        _ => return bad("this engine has no machine command".to_owned()),
+    if failures.is_empty() {
+        return ok(format!("Reclaimed {}", berth_core::format::bytes(freed)));
     }
-
-    let default_path =
-        "/opt/homebrew/bin:/usr/local/bin:/opt/podman/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-    let path = match std::env::var("PATH") {
-        Ok(existing) if !existing.is_empty() => format!("{default_path}:{existing}"),
-        _ => default_path.to_owned(),
-    };
-    for step in steps {
-        let Some((program, args)) = step.split_first() else {
-            continue;
-        };
-        let output = Command::new(program).args(args).env("PATH", &path).output();
-        match output {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                let text = String::from_utf8_lossy(&output.stderr);
-                return bad(format!(
-                    "{program} {verb} failed: {}",
-                    text.lines().next().unwrap_or("no output")
-                ));
-            }
-            Err(error) => return bad(format!("could not run {program}: {error}")),
+    // Name each store once, then the first error in full.
+    let mut stores = Vec::new();
+    for (store, _) in &failures {
+        if !stores.contains(store) {
+            stores.push(*store);
         }
     }
-    ok(format!("{} engine", verb))
+    bad(format!(
+        "Reclaimed {} · {} failed: {}",
+        berth_core::format::bytes(freed),
+        stores.join(", "),
+        failures[0].1
+    ))
 }
 
 fn ok(message: String) -> Outcome {
@@ -374,6 +327,7 @@ fn bad(message: String) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use berth_engine::test_support::MockEngine;
 
     #[test]
     fn a_run_body_has_ports_env_and_binds() {
@@ -395,6 +349,51 @@ mod tests {
     #[test]
     fn an_invalid_port_is_refused_before_a_request() {
         assert!(container_body("nginx", "8080", "", "").is_err());
+    }
+
+    #[test]
+    fn prune_runs_every_step_and_reports_what_it_freed_and_what_failed() {
+        let engine = MockEngine::start();
+        engine
+            .on("POST /containers/prune")
+            .ok(r#"{"SpaceReclaimed":100}"#)
+            .on("POST /images/prune")
+            .error(500, "image prune refused")
+            .on("POST /volumes/prune")
+            .ok(r#"{"SpaceReclaimed":50}"#)
+            .on("POST /build/prune")
+            .ok(r#"{"SpaceReclaimed":25}"#);
+        let outcome = prune_engine(
+            &engine.socket(),
+            "v1.43",
+            Engine::Docker,
+            &PruneOptions {
+                containers: true,
+                images: true,
+                volumes: true,
+                networks: false,
+                build_cache: true,
+            },
+        );
+        assert!(outcome.bad);
+        assert!(
+            outcome.message.contains("Reclaimed 175 B"),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("unused images"),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("image prune refused"),
+            "{}",
+            outcome.message
+        );
+        // The steps after the failure still ran.
+        assert_eq!(engine.count("/volumes/prune"), 1);
+        assert_eq!(engine.count("/build/prune"), 1);
     }
 
     #[test]

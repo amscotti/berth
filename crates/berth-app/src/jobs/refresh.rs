@@ -15,6 +15,11 @@ use berth_engine::stats::{Sample, all_sampled};
 
 use crate::state::Snapshot;
 
+/// How far back to read events on the first pass, in seconds, before there is
+/// a cursor to continue from. The engine keeps its most recent events, so this
+/// shows what happened just before berth was opened.
+pub const EVENTS_BACKFILL: i64 = 5 * 60;
+
 /// What the worker needs. Everything is copied; no state is shared.
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -80,13 +85,19 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
         .map_err(|error| RefreshError::core(error, generation))?;
 
     let now = format::now();
+    // `since` is a time on the engine's clock (see `events::cursor`), carried
+    // over from the last pass. `until` is on the host's; the client samples
+    // the stream, so a clock that has drifted only costs the sample window.
+    let since = if request.events_since > 0 {
+        request.events_since
+    } else {
+        now - EVENTS_BACKFILL
+    };
     let mut events = Vec::new();
     let mut events_error = false;
-    if request.events_since > 0 {
-        match client.events(request.events_since, now) {
-            Ok(fresh) => events = fresh,
-            Err(_) => events_error = true,
-        }
+    match client.events(since, now.max(since + 1)) {
+        Ok(fresh) => events = fresh,
+        Err(_) => events_error = true,
     }
 
     let df = if request.want_df {
@@ -195,7 +206,9 @@ const _REFRESH_PERIOD: Duration = Duration::from_secs(5);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use berth_engine::test_support::MockEngine;
+    use berth_engine::test_support::{MockEngine, Reply};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const CONTAINERS: &str =
         r#"[{"Id":"a","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 1 hour"}]"#;
@@ -204,6 +217,11 @@ mod tests {
 
     /// A mock with one running container and every route a pass visits.
     fn scripted() -> MockEngine {
+        scripted_events(Reply::ok(""))
+    }
+
+    /// `scripted`, with `/events` answering `events`.
+    fn scripted_events(events: Reply) -> MockEngine {
         let engine = MockEngine::start();
         engine
             .on("GET /containers/json")
@@ -217,7 +235,7 @@ mod tests {
             .on("GET /networks")
             .ok("[]")
             .on("GET /events")
-            .ok("")
+            .reply(events)
             .on("GET /system/df")
             .ok(DF);
         engine
@@ -247,6 +265,77 @@ mod tests {
         assert_eq!(df.reclaimable(), 40);
         assert_eq!(engine.count("/stats"), 1);
         assert_eq!(engine.count("/system/df"), 1);
+    }
+
+    #[test]
+    fn the_events_cursor_follows_the_engine_clock() {
+        // The engine's clock reads a minute behind the host's. Like a real
+        // engine, the mock answers with every event stamped at or after
+        // `since`. A second event happens after the first pass.
+        let host_now = format::now();
+        // Times on the engine's clock, in seconds as `since` is. The event
+        // itself carries nanoseconds.
+        let older = host_now - 60;
+        let newer = host_now - 30;
+        let event = |seconds: i64, name: &str| {
+            format!(
+                r#"{{"status":"start","id":"{name}","Type":"container","Action":"start","Actor":{{"ID":"{name}","Attributes":{{"name":"{name}"}}}},"time":{seconds},"timeNano":{}}}"#,
+                seconds * 1_000_000_000
+            )
+        };
+        let requests = Arc::new(AtomicUsize::new(0));
+        let engine = scripted_events(Reply::With(Arc::new(move |request| {
+            let since = request
+                .path
+                .split("since=")
+                .nth(1)
+                .and_then(|rest| rest.split('&').next())
+                .and_then(|since| since.parse::<i64>().ok())
+                .unwrap_or(0);
+            let first = requests.fetch_add(1, Ordering::SeqCst) == 0;
+            let mut events = Vec::new();
+            if since <= older {
+                events.push(event(older, "web"));
+            }
+            if since <= newer && !first {
+                events.push(event(newer, "api"));
+            }
+            Reply::ok(events.join("\n"))
+        })));
+        fn names(events: &[Event]) -> Vec<&str> {
+            events.iter().map(|event| event.name()).collect()
+        }
+
+        // The first pass backfills far enough to reach the older event.
+        let first = load(request(engine.socket())).expect("pass");
+        assert!(!first.snapshot.events_error);
+        assert_eq!(names(&first.snapshot.events), ["web"]);
+
+        // With the host's clock as the cursor, the engine is asked for events
+        // from a time it hasn't reached, and the newer one is never returned.
+        let mut lost = request(engine.socket());
+        lost.events_since = first.snapshot.last_update;
+        let lost = load(lost).expect("pass");
+        assert!(lost.snapshot.events.is_empty());
+
+        // With the engine's own clock it arrives.
+        let mut next = request(engine.socket());
+        next.events_since = berth_engine::events::cursor(&first.snapshot.events, 0);
+        let second = load(next).expect("pass");
+        // Merged into the ring as a commit would: newest first, no duplicate.
+        let ring = merge_events(&first.snapshot.events, &second.snapshot.events);
+        assert_eq!(names(&ring), ["api", "web"]);
+    }
+
+    #[test]
+    fn an_events_stream_the_engine_holds_open_is_sampled_not_failed() {
+        // An engine whose clock is behind the host's never reaches `until`.
+        let engine = scripted_events(Reply::Hang);
+        let started = std::time::Instant::now();
+        let outcome = load(request(engine.socket())).expect("a held stream is not a failed pass");
+        assert!(!outcome.snapshot.events_error);
+        assert!(outcome.snapshot.events.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
     }
 
     #[test]

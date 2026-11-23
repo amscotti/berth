@@ -50,7 +50,7 @@ impl Drop for TempDir {
 }
 
 /// One answer the mock can give.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Reply {
     /// A status with a JSON body.
     Json(u16, String),
@@ -69,6 +69,30 @@ pub enum Reply {
     Hang,
     /// Headers that promise `promised` bytes, then `sent` bytes, then close.
     Truncated { promised: usize, sent: usize },
+    /// Answer with each of these on one connection, in order, then close. A
+    /// `Hang` in the middle holds the stream open first.
+    Then(Vec<Reply>),
+    /// Compute the answer from the request.
+    With(Arc<dyn Fn(&Request) -> Reply + Send + Sync>),
+}
+
+impl std::fmt::Debug for Reply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Reply::Json(status, _) => write!(f, "Json({status}, ..)"),
+            Reply::Body(_) => f.write_str("Body(..)"),
+            Reply::Chunked(pieces) => write!(f, "Chunked({} pieces)", pieces.len()),
+            Reply::Raw(bytes) => write!(f, "Raw({} bytes)", bytes.len()),
+            Reply::After(delay, reply) => write!(f, "After({delay:?}, {reply:?})"),
+            Reply::Trickle { gap, pieces } => {
+                write!(f, "Trickle({gap:?}, {} pieces)", pieces.len())
+            }
+            Reply::Hang => f.write_str("Hang"),
+            Reply::Truncated { promised, sent } => write!(f, "Truncated({promised}, {sent})"),
+            Reply::Then(steps) => write!(f, "Then({steps:?})"),
+            Reply::With(_) => f.write_str("With(..)"),
+        }
+    }
 }
 
 impl Reply {
@@ -283,7 +307,7 @@ fn handle(stream: &mut UnixStream, shared: &Shared) {
         return;
     };
     let reply = answer(shared, &request);
-    write_reply(stream, &reply, &shared.stopped);
+    write_reply(stream, &reply, &request, &shared.stopped);
 }
 
 fn read_request(stream: &mut UnixStream) -> Option<Request> {
@@ -378,52 +402,66 @@ fn head(status: u16, length: Option<usize>) -> String {
     head
 }
 
-fn write_reply(stream: &mut UnixStream, reply: &Reply, stopped: &AtomicBool) {
+fn write_reply(stream: &mut UnixStream, reply: &Reply, request: &Request, stopped: &AtomicBool) {
+    write_one(stream, reply, request, stopped);
+    let _ = stream.flush();
+    let _ = stream.shutdown(Shutdown::Write);
+}
+
+/// Write one answer. False once the mock has been told to stop.
+fn write_one(
+    stream: &mut UnixStream,
+    reply: &Reply,
+    request: &Request,
+    stopped: &AtomicBool,
+) -> bool {
     match reply {
         Reply::Json(status, body) => {
             let _ = stream.write_all(head(*status, Some(body.len())).as_bytes());
             let _ = stream.write_all(body.as_bytes());
+            true
         }
         Reply::Body(body) => {
             let _ = stream.write_all(head(200, Some(body.len())).as_bytes());
             let _ = stream.write_all(body);
+            true
         }
         Reply::Chunked(pieces) => {
-            let _ = stream.write_all(head(200, None).as_bytes());
+            if !write_all(stream, head(200, None).as_bytes(), stopped) {
+                return false;
+            }
             for piece in pieces {
-                if write_all(stream, format!("{:x}\r\n", piece.len()).as_bytes(), stopped)
+                let size = format!("{:x}\r\n", piece.len());
+                if !(write_all(stream, size.as_bytes(), stopped)
                     && write_all(stream, piece, stopped)
-                    && write_all(stream, b"\r\n", stopped)
+                    && write_all(stream, b"\r\n", stopped))
                 {
-                    continue;
+                    return false;
                 }
-                return;
             }
-            let _ = write_all(stream, b"0\r\n\r\n", stopped);
+            write_all(stream, b"0\r\n\r\n", stopped)
         }
-        Reply::Raw(bytes) => {
-            let _ = write_all(stream, bytes, stopped);
-        }
+        Reply::Raw(bytes) => write_all(stream, bytes, stopped),
+        Reply::Then(steps) => steps
+            .iter()
+            .all(|step| write_one(stream, step, request, stopped)),
+        Reply::With(build) => write_one(stream, &build(request), request, stopped),
         Reply::After(delay, reply) => {
-            if pause(*delay, stopped) {
-                write_reply(stream, reply, stopped);
-            }
+            pause(*delay, stopped) && write_one(stream, reply, request, stopped)
         }
-        Reply::Trickle { gap, pieces } => {
-            for piece in pieces {
-                if !pause(*gap, stopped) || !write_all(stream, piece, stopped) {
-                    return;
-                }
-            }
+        Reply::Trickle { gap, pieces } => pieces
+            .iter()
+            .all(|piece| pause(*gap, stopped) && write_all(stream, piece, stopped)),
+        Reply::Hang => {
+            hold(stream, stopped);
+            true
         }
-        Reply::Hang => hold(stream, stopped),
         Reply::Truncated { promised, sent } => {
             let _ = stream.write_all(head(200, Some(*promised)).as_bytes());
             let _ = stream.write_all(&vec![0u8; *sent]);
+            true
         }
     }
-    let _ = stream.flush();
-    let _ = stream.shutdown(Shutdown::Write);
 }
 
 fn write_all(stream: &mut UnixStream, bytes: &[u8], stopped: &AtomicBool) -> bool {

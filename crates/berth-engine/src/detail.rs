@@ -207,7 +207,7 @@ fn extract_env(env: Option<&[String]>) -> Vec<(String, String, bool)> {
         if key.is_empty() || key.starts_with("com.docker.compose.") {
             continue;
         }
-        let secret = looks_secret(key);
+        let secret = is_secret(key, value);
         let display = if secret {
             "<redacted>".to_owned()
         } else {
@@ -402,7 +402,7 @@ fn append_env(out: &mut String, env: Option<&[String]>, redacted: &mut bool) {
         if key.starts_with("com.docker.compose.") {
             continue;
         }
-        let value = if looks_secret(key) {
+        let value = if is_secret(key, value) {
             *redacted = true;
             "<redacted>"
         } else {
@@ -411,6 +411,24 @@ fn append_env(out: &mut String, env: Option<&[String]>, redacted: &mut bool) {
         out.push_str(" -e ");
         out.push_str(&quote(&format!("{key}={value}")));
     }
+}
+
+/// Whether an environment value is shown redacted: the key says it is a
+/// credential, or the value is a URL that carries one.
+fn is_secret(key: &str, value: &str) -> bool {
+    looks_secret(key) || has_userinfo(value)
+}
+
+/// True for `scheme://user:password@host`. A bare `user@host` is a name, not a
+/// credential, so only an at-sign with a colon before it counts.
+fn has_userinfo(value: &str) -> bool {
+    let Some((_, rest)) = value.split_once("://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    authority
+        .rsplit_once('@')
+        .is_some_and(|(userinfo, _)| userinfo.contains(':'))
 }
 
 fn looks_secret(key: &str) -> bool {
@@ -527,5 +545,34 @@ mod tests {
                 ("API_KEY".to_owned(), "<redacted>".to_owned(), true),
             ]
         );
+    }
+
+    #[test]
+    fn credentials_inside_urls_are_redacted_too() {
+        let raw = br#"{
+            "Name":"/db",
+            "Config":{"Image":"postgres","Env":[
+                "DATABASE_URL=postgres://admin:hunter2@db:5432/app",
+                "SITE=https://example.com/@team",
+                "LOGIN=admin@db"
+            ]}
+        }"#;
+        let life = Lifetime::from_inspect(raw).expect("parse");
+        assert_eq!(
+            life.env,
+            vec![
+                ("DATABASE_URL".to_owned(), "<redacted>".to_owned(), true),
+                (
+                    "SITE".to_owned(),
+                    "https://example.com/@team".to_owned(),
+                    false
+                ),
+                ("LOGIN".to_owned(), "admin@db".to_owned(), false),
+            ]
+        );
+        let command = life.run_cmd.expect("run command");
+        assert!(command.contains("DATABASE_URL=<redacted>"), "{command}");
+        assert!(!command.contains("hunter2"), "{command}");
+        assert!(life.run_redacted);
     }
 }

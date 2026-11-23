@@ -44,7 +44,7 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
         .child(metric("CONTAINERS", stores.containers, tokens))
         .child(metric("VOLUMES", stores.volumes, tokens))
         .child(metric("BUILD CACHE", stores.build_cache, tokens))
-        .child(metric("RECLAIMABLE", free.total(), tokens));
+        .child(metric("RECLAIMABLE", Some(free.total()), tokens));
 
     let bar = graph::stacked_bar(
         vec![
@@ -161,7 +161,7 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     content.into_any_element()
 }
 
-fn metric(label: &'static str, bytes: i64, tokens: Tokens) -> Div {
+fn metric(label: &'static str, bytes: Option<i64>, tokens: Tokens) -> Div {
     div()
         .flex()
         .flex_col()
@@ -179,11 +179,11 @@ fn metric(label: &'static str, bytes: i64, tokens: Tokens) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .font_features(crate::ui::tabular())
                 .text_color(tokens.text)
-                .child(format::bytes(bytes.max(0) as u64)),
+                .child(format::measured(bytes)),
         )
 }
 
-fn legend(label: &str, bytes: i64, color: Hsla, tokens: Tokens) -> Div {
+fn legend(label: &str, bytes: Option<i64>, color: Hsla, tokens: Tokens) -> Div {
     div()
         .flex()
         .flex_row()
@@ -194,7 +194,7 @@ fn legend(label: &str, bytes: i64, color: Hsla, tokens: Tokens) -> Div {
             div()
                 .text_size(px(11.5))
                 .text_color(tokens.muted)
-                .child(format!("{} {}", label, format::bytes(bytes.max(0) as u64))),
+                .child(format!("{label} {}", format::measured(bytes))),
         )
 }
 

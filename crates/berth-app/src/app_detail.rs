@@ -1,7 +1,6 @@
 //! Inspector detail jobs.
 
 use crate::app::*;
-use crate::app_render::pretty_inspect;
 use crate::jobs::detail;
 use gpui::Context;
 
@@ -53,9 +52,10 @@ impl BerthApp {
             .logs
             .unwrap_or_else(|error| format!("could not read logs: {error}"));
         self.inspect_text = match outcome.inspect {
-            Ok(detail) => {
-                self.detail_lifetime = Some(berth_engine::detail::Lifetime::from_detail(&detail));
-                Some(pretty_inspect(&detail))
+            Ok(inspect) => {
+                self.detail_lifetime =
+                    Some(berth_engine::detail::Lifetime::from_detail(&inspect.detail));
+                Some(inspect.json)
             }
             Err(error) => Some(format!("could not read inspect: {error}")),
         };

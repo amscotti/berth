@@ -40,13 +40,8 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
     } else {
         "—".to_owned()
     };
-    let disk_total = snapshot
-        .df
-        .as_ref()
-        .map(|df| df.stores().total())
-        .unwrap_or(0);
-    let disk_value = if ready && connected && snapshot.df.is_some() {
-        format::bytes(disk_total.max(0) as u64)
+    let disk_value = if ready && connected {
+        format::measured(snapshot.store_bytes())
     } else {
         "—".to_owned()
     };

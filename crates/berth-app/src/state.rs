@@ -8,7 +8,7 @@ use std::sync::Arc;
 use berth_core::format;
 use berth_core::history::History;
 use berth_engine::client::Client;
-use berth_engine::df::Df;
+use berth_engine::df::{Df, Usage};
 use berth_engine::discovery::{Dialect, Kind, Runtime};
 use berth_engine::dto::{Container, Image, Info, Network, Port, UsageData, Version, Volume};
 use berth_engine::events::{Actor, Event};
@@ -64,10 +64,11 @@ impl Snapshot {
         all_sampled(&self.containers, &self.stats)
     }
 
+    /// What the engine's stores hold, or `None` when no store has been
+    /// measured. A measured empty engine is `Some(0)`, not unknown.
     pub fn store_bytes(&self) -> Option<i64> {
-        let df = self.df.as_ref()?;
-        let total = df.stores().total();
-        (total > 0).then_some(total)
+        let stores = self.df.as_ref()?.stores();
+        (!stores.is_unmeasured()).then_some(stores.total())
     }
 
     pub fn df_reclaimable(&self) -> Option<i64> {
@@ -282,12 +283,20 @@ pub fn fixture_snapshot() -> Snapshot {
             sampled: true,
         },
     ];
+    // Every store measured, as a current engine reports them. The volume
+    // figure matches the fixture's one volume.
     let df = Df {
-        image_usage: Some(berth_engine::df::Usage {
+        image_usage: Some(Usage {
             total_size: 103 * 1024 * 1024,
             reclaimable: 13 * 1024 * 1024,
             ..Default::default()
         }),
+        container_usage: Some(Usage::default()),
+        volume_usage: Some(Usage {
+            total_size: 32 * 1024 * 1024,
+            ..Default::default()
+        }),
+        build_cache_usage: Some(Usage::default()),
         ..Default::default()
     };
     let images = vec![
@@ -451,6 +460,7 @@ pub type SharedSnapshot = Arc<Snapshot>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Tab;
 
     #[test]
     fn a_hundred_container_fixture_is_complete() {
@@ -460,5 +470,29 @@ mod tests {
         assert_eq!(snapshot.running(), 100);
         assert!(snapshot.stats_complete());
         assert_eq!(snapshot.containers[99].name(), "perf-99");
+    }
+
+    #[test]
+    fn store_figures_tell_an_unmeasured_engine_from_an_empty_one() {
+        let mut snapshot = fixture_snapshot();
+        let total = 103 * 1024 * 1024 + 32 * 1024 * 1024;
+        assert_eq!(snapshot.store_bytes(), Some(total));
+        assert_eq!(Tab::Disk.figure(&snapshot, 1), "135 MiB");
+
+        // Nothing measured: unknown, not zero.
+        snapshot.df = Some(Df::default());
+        assert_eq!(snapshot.store_bytes(), None);
+        assert_eq!(Tab::Disk.figure(&snapshot, 1), "—");
+
+        // Measured, and empty: that is a real zero.
+        snapshot.df = Some(Df {
+            image_usage: Some(Usage::default()),
+            ..Default::default()
+        });
+        assert_eq!(snapshot.store_bytes(), Some(0));
+        assert_eq!(Tab::Disk.figure(&snapshot, 1), "0 B");
+
+        snapshot.df = None;
+        assert_eq!(snapshot.store_bytes(), None);
     }
 }

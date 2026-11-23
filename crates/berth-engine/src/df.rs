@@ -11,21 +11,68 @@ use serde::{Deserialize, Serialize};
 
 use crate::dto::{Image, UsageData, Volume};
 
-/// Bytes each engine store holds.
+/// Bytes each engine store holds. A store is `None` when the engine didn't
+/// measure it or doesn't have it: that is unknown, not zero.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Bytes {
-    pub images: i64,
-    pub containers: i64,
-    pub volumes: i64,
-    pub build_cache: i64,
+    pub images: Option<i64>,
+    pub containers: Option<i64>,
+    pub volumes: Option<i64>,
+    pub build_cache: Option<i64>,
+}
+
+/// One of the engine's disk stores.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Store {
+    Images,
+    Containers,
+    Volumes,
+    BuildCache,
+}
+
+impl Store {
+    pub const ALL: [Store; 4] = [
+        Store::Images,
+        Store::Containers,
+        Store::Volumes,
+        Store::BuildCache,
+    ];
+
+    /// The name the legends use.
+    pub fn label(self) -> &'static str {
+        match self {
+            Store::Images => "images",
+            Store::Containers => "containers",
+            Store::Volumes => "volumes",
+            Store::BuildCache => "build cache",
+        }
+    }
 }
 
 impl Bytes {
+    pub fn get(self, store: Store) -> Option<i64> {
+        match store {
+            Store::Images => self.images,
+            Store::Containers => self.containers,
+            Store::Volumes => self.volumes,
+            Store::BuildCache => self.build_cache,
+        }
+    }
+
+    /// The sum of the measured stores, saturating.
     pub fn total(self) -> i64 {
-        self.images
-            .saturating_add(self.containers)
-            .saturating_add(self.volumes)
-            .saturating_add(self.build_cache)
+        Store::ALL
+            .into_iter()
+            .filter_map(|store| self.get(store))
+            .fold(0i64, |total, bytes| total.saturating_add(bytes))
+    }
+
+    /// True when the engine measured no store at all, so there is no figure to
+    /// show, not even zero.
+    pub fn is_unmeasured(self) -> bool {
+        Store::ALL
+            .into_iter()
+            .all(|store| self.get(store).is_none())
     }
 }
 
@@ -109,57 +156,56 @@ pub struct Df {
 
 impl Df {
     /// The four figures the rail, overview, disk view and prune sheet share.
+    /// A store is `None` when the engine didn't measure it or doesn't have it:
+    /// that is an unknown, not a zero.
     pub fn stores(&self) -> Bytes {
         let images = if let Some(usage) = self.image_usage {
-            usage.total_size
+            Some(usage.total_size)
         } else if self.layers_size > 0 {
             // LayersSize counts each layer once; summing per-image Size would
             // count shared layers again.
-            clamp_u64(self.layers_size)
-        } else if let Some(images) = &self.images {
-            images.iter().fold(0i64, |total, image| {
-                total.saturating_add(clamp_u64(image.size))
-            })
+            Some(clamp_u64(self.layers_size))
         } else {
-            0
-        };
-
-        let containers = if let Some(usage) = self.container_usage {
-            usage.total_size
-        } else if let Some(containers) = &self.containers {
-            containers
-                .iter()
-                .filter(|container| container.size_rw > 0)
-                .fold(0i64, |total, container| {
-                    total.saturating_add(container.size_rw)
+            self.images.as_ref().map(|images| {
+                images.iter().fold(0i64, |total, image| {
+                    total.saturating_add(clamp_u64(image.size))
                 })
-        } else {
-            0
-        };
-
-        let volumes = if let Some(usage) = self.volume_usage {
-            usage.total_size
-        } else if let Some(volumes) = &self.volumes {
-            volumes.iter().fold(0i64, |total, volume| {
-                // -1 means "not measured"; adding it would shrink the total.
-                match volume.usage_data {
-                    Some(UsageData { size, .. }) if size > 0 => total.saturating_add(size),
-                    _ => total,
-                }
             })
-        } else {
-            0
         };
 
-        let build_cache = if let Some(usage) = self.build_cache_usage {
-            usage.total_size
-        } else if let Some(cache) = &self.build_cache {
-            cache
-                .iter()
-                .filter(|item| !item.shared && item.size > 0)
-                .fold(0i64, |total, item| total.saturating_add(item.size))
-        } else {
-            0
+        let containers = match self.container_usage {
+            Some(usage) => Some(usage.total_size),
+            None => self.containers.as_ref().map(|containers| {
+                containers
+                    .iter()
+                    .filter(|container| container.size_rw > 0)
+                    .fold(0i64, |total, container| {
+                        total.saturating_add(container.size_rw)
+                    })
+            }),
+        };
+
+        let volumes = match self.volume_usage {
+            Some(usage) => Some(usage.total_size),
+            None => self.volumes.as_ref().map(|volumes| {
+                volumes.iter().fold(0i64, |total, volume| {
+                    // -1 means "not measured"; adding it would shrink the total.
+                    match volume.usage_data {
+                        Some(UsageData { size, .. }) if size > 0 => total.saturating_add(size),
+                        _ => total,
+                    }
+                })
+            }),
+        };
+
+        let build_cache = match self.build_cache_usage {
+            Some(usage) => Some(usage.total_size),
+            None => self.build_cache.as_ref().map(|cache| {
+                cache
+                    .iter()
+                    .filter(|item| !item.shared && item.size > 0)
+                    .fold(0i64, |total, item| total.saturating_add(item.size))
+            }),
         };
 
         Bytes {
@@ -263,15 +309,19 @@ impl Df {
 
     pub fn shares(&self) -> Shares {
         let stores = self.stores();
-        let total = stores.total().max(0) as f32;
+        let measured = |store: Store| stores.get(store).unwrap_or(0).max(0) as f32;
+        let total = measured(Store::Images)
+            + measured(Store::Containers)
+            + measured(Store::Volumes)
+            + measured(Store::BuildCache);
         if total <= 0.0 {
             return Shares::default();
         }
         Shares {
-            images: stores.images.max(0) as f32 / total,
-            containers: stores.containers.max(0) as f32 / total,
-            volumes: stores.volumes.max(0) as f32 / total,
-            build_cache: stores.build_cache.max(0) as f32 / total,
+            images: measured(Store::Images) / total,
+            containers: measured(Store::Containers) / total,
+            volumes: measured(Store::Volumes) / total,
+            build_cache: measured(Store::BuildCache) / total,
         }
     }
 }
@@ -328,7 +378,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(df.stores().images, 100);
+        assert_eq!(df.stores().images, Some(100));
         assert_eq!(df.reclaimable_by_store().images, 40);
         assert_eq!(df.total_bytes(), 200);
         assert_eq!(df.reclaimable(), 75);
@@ -387,10 +437,10 @@ mod tests {
             ..Default::default()
         };
         let stores = df.stores();
-        assert_eq!(stores.images, 500);
-        assert_eq!(stores.containers, 109);
-        assert_eq!(stores.volumes, 10);
-        assert_eq!(stores.build_cache, 61);
+        assert_eq!(stores.images, Some(500));
+        assert_eq!(stores.containers, Some(109));
+        assert_eq!(stores.volumes, Some(10));
+        assert_eq!(stores.build_cache, Some(61));
         let free = df.reclaimable_by_store();
         assert_eq!(free.containers, 10);
         assert_eq!(free.volumes, 7);
@@ -418,8 +468,29 @@ mod tests {
             ]),
             ..Default::default()
         };
-        assert_eq!(df.stores().volumes, 8);
+        assert_eq!(df.stores().volumes, Some(8));
         assert_eq!(df.reclaimable_by_store().volumes, 8);
+    }
+
+    #[test]
+    fn an_unmeasured_store_is_unknown_not_zero() {
+        let empty = Df::default();
+        assert!(empty.stores().is_unmeasured());
+        assert_eq!(empty.stores().get(Store::Volumes), None);
+
+        // A measured empty store is a real zero.
+        let measured = Df {
+            volume_usage: Some(Usage {
+                total_size: 0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let stores = measured.stores();
+        assert!(!stores.is_unmeasured());
+        assert_eq!(stores.get(Store::Volumes), Some(0));
+        assert_eq!(stores.get(Store::Images), None);
+        assert_eq!(stores.total(), 0);
     }
 
     #[test]
