@@ -87,6 +87,12 @@ fn runtime_card(
 ) -> impl IntoElement {
     let active = index == app.engine.active;
     let tint = tint(tokens, TintKind::Runtimes);
+    // The active engine's card is tinted, and its buttons are drawn for that.
+    let ground = if active {
+        tokens.active_wash()
+    } else {
+        tokens.surface
+    };
 
     let choose: AnyElement = if active {
         div()
@@ -117,11 +123,7 @@ fn runtime_card(
     let mut card = card(tokens)
         .gap(px(6.0))
         .p(px(14.0))
-        .bg(if active {
-            tokens.active_wash()
-        } else {
-            tokens.surface
-        })
+        .bg(ground)
         .border_color(if active { tokens.accent } else { tokens.border })
         .child(
             div()
@@ -182,7 +184,7 @@ fn runtime_card(
     if ops_supported(runtime.kind) {
         let mut row = div().flex().flex_row().gap(px(6.0)).pt(px(2.0));
         for verb in machine_ops(runtime) {
-            row = row.child(machine_button(verb, index, runtime, tokens, cx));
+            row = row.child(machine_button(verb, index, runtime, ground, tokens, cx));
         }
         card = card.child(row);
     }
@@ -213,6 +215,7 @@ fn machine_button(
     label: &str,
     index: usize,
     runtime: &Runtime,
+    on: gpui::Hsla,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Button {
@@ -232,7 +235,9 @@ fn machine_button(
     )
     .small();
     let button = if label == "Stop" {
-        button.danger_wash()
+        // A wash is a tint of what it is on, and on the active engine's card
+        // that isn't a plain card.
+        button.danger_wash().on_surface(on)
     } else {
         button
     };

@@ -113,6 +113,33 @@ fn a_wash_control_shows_hover_without_spending_contrast() {
 }
 
 #[test]
+fn a_destructive_wash_stays_a_tint_on_whatever_it_sits_on() {
+    // Mixed for a plain card, the wash is within a shade of the active
+    // engine's card in the light theme, and the button loses its shape there.
+    for (name, tokens) in themes() {
+        for (what, over) in [
+            ("a card", tokens.surface),
+            ("the active engine's card", tokens.active_wash()),
+            ("a row", tokens.alt_row()),
+        ] {
+            let wash = tokens.danger_wash_on(over);
+            let apart = contrast_ratio(wash, over);
+            assert!(
+                apart >= 1.05,
+                "{name}: the destructive wash on {what} is {apart:.3}:1 from it, so invisible"
+            );
+            readable(
+                name,
+                &format!("destructive wash on {what}"),
+                tokens.danger_text(),
+                wash,
+                4.5,
+            );
+        }
+    }
+}
+
+#[test]
 fn warning_and_success_text_clear_their_pill_wash() {
     for (name, tokens) in themes() {
         let warn = tokens.warning_text();

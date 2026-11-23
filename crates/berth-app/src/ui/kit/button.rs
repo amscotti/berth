@@ -34,8 +34,12 @@ enum Variant {
 }
 
 impl Variant {
-    /// The fill, the ink and the focus ring.
-    fn palette(self, tokens: Tokens) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla) {
+    /// The fill, the ink and the focus ring, on `on`.
+    fn palette(
+        self,
+        tokens: Tokens,
+        on: Option<gpui::Hsla>,
+    ) -> (gpui::Hsla, gpui::Hsla, gpui::Hsla) {
         match self {
             Variant::Primary => (
                 tokens.accent,
@@ -50,7 +54,7 @@ impl Variant {
             Variant::Secondary => (tokens.surface_hover, tokens.text, tokens.focus_ring()),
             Variant::Ghost => (tokens.invisible(), tokens.muted, tokens.focus_ring()),
             Variant::DangerWash => (
-                tokens.danger_wash(),
+                tokens.danger_wash_on(on.unwrap_or(tokens.surface)),
                 tokens.danger_text(),
                 tokens.focus_ring(),
             ),
@@ -80,6 +84,9 @@ pub(crate) struct Button {
     icon_only: bool,
     /// Figures that line up in a column: a port number.
     tabular: bool,
+    /// What the button sits on, when that isn't a plain card and its fill is
+    /// a wash: a wash is a tint of what it is on.
+    on: Option<gpui::Hsla>,
     enabled: bool,
     tab_stop: bool,
     focus: Option<FocusHandle>,
@@ -104,6 +111,7 @@ pub(crate) fn button(
         icon: None,
         icon_only: false,
         tabular: false,
+        on: None,
         enabled: true,
         tab_stop: true,
         focus: None,
@@ -174,6 +182,14 @@ impl Button {
         self
     }
 
+    /// The button sits on `over` rather than on a plain card. The active
+    /// engine's card is tinted, and a wash mixed for a plain card is no tint
+    /// of it: the button would lose its shape there.
+    pub(crate) fn on_surface(mut self, over: gpui::Hsla) -> Self {
+        self.on = Some(over);
+        self
+    }
+
     /// What assistive technology calls the button, when its label alone
     /// doesn't say what pressing it does: the label is "8080", the name is
     /// "Open port 8080".
@@ -223,7 +239,7 @@ impl IntoElement for Button {
     fn into_element(self) -> Stateful<Div> {
         let tokens = self.tokens;
         let variant = self.variant;
-        let (fill, ink, ring) = variant.palette(tokens);
+        let (fill, ink, ring) = variant.palette(tokens, self.on);
         let height = if self.small {
             layout::CONTROL_SMALL
         } else {
@@ -345,7 +361,7 @@ mod tests {
     /// Where a button's ink is read: on its own fill, or, with no fill of
     /// its own, on the page and on a card.
     fn grounds(variant: Variant, tokens: Tokens) -> Vec<(&'static str, gpui::Hsla)> {
-        let (fill, _, _) = variant.palette(tokens);
+        let (fill, _, _) = variant.palette(tokens, None);
         match variant {
             Variant::Ghost => vec![
                 ("on the page", tokens.background),
@@ -369,8 +385,8 @@ mod tests {
                 Variant::DangerWash,
                 Variant::Port,
             ] {
-                let (_, ink, _) = variant.palette(tokens);
-                let (fill, _, _) = variant.palette(tokens);
+                let (_, ink, _) = variant.palette(tokens, None);
+                let (fill, _, _) = variant.palette(tokens, None);
                 let mut states = grounds(variant, tokens);
                 // Only a filled button moves its fill under the pointer.
                 match variant {
@@ -409,7 +425,7 @@ mod tests {
                 Variant::DangerWash,
                 Variant::Port,
             ] {
-                let (_, _, ring) = variant.palette(tokens);
+                let (_, _, ring) = variant.palette(tokens, None);
                 for (what, over) in grounds(variant, tokens) {
                     let ratio = berth_ui::theme::contrast_ratio(ring, over);
                     assert!(

@@ -222,9 +222,10 @@ impl Tokens {
         match self.theme {
             // A 12% wash of the fill drops the raw #d06a4f below 4.5:1, and
             // so does the first lighter word token when the wash sits on a
-            // card rather than the page, which is where Delete lives. This
-            // one clears 4.5:1 on both, without changing the destructive fill.
-            Theme::Dark => hex(0xd97b61),
+            // card rather than the page, which is where Delete lives, or on
+            // the active engine's tinted card, where Stop lives. This one
+            // clears 4.5:1 on all three, without changing the fill.
+            Theme::Dark => hex(0xdd8469),
             Theme::Light => hex(0x8f2f1c),
         }
     }
@@ -302,7 +303,14 @@ impl Tokens {
     /// The background behind destructive text. Mixed over a card, where
     /// Delete lives.
     pub fn danger_wash(self) -> Hsla {
-        washed(self.surface, self.danger_text(), wash::DANGER)
+        self.danger_wash_on(self.surface)
+    }
+
+    /// The background behind destructive text drawn on `over`. A wash mixed
+    /// for a plain card vanishes on a tinted one, such as the active engine's;
+    /// mixed for what it is on, it is a tint of that.
+    pub fn danger_wash_on(self, over: Hsla) -> Hsla {
+        washed(over, self.danger_text(), wash::DANGER)
     }
 
     /// The veil behind a sheet. Translucent by nature: it covers the page.

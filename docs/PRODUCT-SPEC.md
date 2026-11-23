@@ -157,14 +157,16 @@ structure but uses berth's own palette. The port must preserve the tokens, not
 Derived, text-safe variants (must be implemented as functions, not reused
 fills). The dark `danger_text` and `muted_text_pill` are a step lighter than
 the first port had them: at `#d4745a` on a 12% wash and `#9b9282` on a 14%
-one they read 4.4:1, just under the floor the tests hold.
+one they read 4.4:1, just under the floor the tests hold. A wash is mixed for
+what it sits on; on the active engine's tinted card the first lighter
+`danger_text` read 4.48:1, hence `#dd8469`.
 
 | Token | Light | Dark |
 |---|---|---|
 | `accent_fill` (bars/graphs) | `#b26a1e` | `#e3a44b` |
 | `warning` (text) | `#7a4700` | `#ff9f0a` |
 | `success_text` | `#3f5c2e` | `#83a76d` |
-| `danger_text` | `#8f2f1c` | `#d97b61` |
+| `danger_text` | `#8f2f1c` | `#dd8469` |
 | `accent_text_pill` | `#7d430f` | `#e3a44b` |
 | `muted_text_pill` | `#5a5245` | `#9f9686` |
 | `running_text` | `#7a4700` | `#d9a441` |
