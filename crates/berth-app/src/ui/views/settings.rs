@@ -137,7 +137,7 @@ pub fn settings(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
                         chip(
                             ("engine-choice", index),
                             runtime.name.clone(),
-                            index == app.engine.active,
+                            app.engine.active_index() == Some(index),
                             tokens,
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {

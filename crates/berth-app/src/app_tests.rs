@@ -47,3 +47,17 @@ fn rail_figures_come_from_the_snapshot() {
     assert_eq!(Tab::Settings.figure(&snapshot, 1), "");
     assert!(Tab::Disk.figure(&snapshot, 1).contains("MiB"));
 }
+
+#[gpui::test]
+fn the_fixture_starts_on_its_engine(cx: &mut gpui::TestAppContext) {
+    let (app, cx) = crate::testkit::fixture(cx);
+    app.read_with(&*cx, |app, _| {
+        assert_eq!(app.engine.active_index(), Some(0));
+        assert_eq!(
+            app.engine
+                .active_runtime()
+                .map(|runtime| runtime.name.as_str()),
+            Some("Lima · lima-berth-docker")
+        );
+    });
+}

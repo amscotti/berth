@@ -128,29 +128,30 @@ impl BerthApp {
     fn adopt(&mut self, runtimes: Vec<berth_engine::discovery::Runtime>, cx: &mut Context<Self>) {
         use berth_engine::discovery::identity;
         let connected = self.engine.client.is_some();
-        let same_engine = self
+        // The engine being read is known by identity, and looked up in the
+        // list when it is asked for, so a list that has been reordered, or
+        // has lost the engine, needs no index put right.
+        let still_listed = self
             .engine
             .identity
             .as_ref()
             .filter(|_| connected)
-            .and_then(|current| {
+            .is_some_and(|current| {
                 runtimes
                     .iter()
-                    .position(|runtime| runtime.reachable && current == &identity(runtime))
+                    .any(|runtime| runtime.reachable && current == &identity(runtime))
             });
         self.engine.runtimes = runtimes;
-        if let Some(index) = same_engine {
-            self.engine.active = index;
+        if still_listed {
             return;
         }
-        if let Some(index) = self
+        if let Some(runtime) = self
             .engine
             .runtimes
             .iter()
-            .position(|runtime| runtime.reachable)
+            .find(|runtime| runtime.reachable)
+            .cloned()
         {
-            self.engine.active = index;
-            let runtime = self.engine.runtimes[index].clone();
             self.engine.install(&runtime);
             self.start_refresh(cx);
         } else {
@@ -440,9 +441,39 @@ mod tests {
             assert!(app.engine.df.is_some());
             assert_eq!(app.engine.events_since, 42);
             assert_eq!(
-                app.engine.active, 1,
+                app.engine.active_index(),
+                Some(1),
                 "the list may reorder; the engine stays"
             );
+        });
+    }
+
+    /// The engine being read is known by identity. One that has left the list
+    /// is no longer the engine, whatever has taken its place in the list.
+    #[gpui::test]
+    fn an_engine_that_left_the_list_is_no_longer_the_active_one(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            let runtime = runtime();
+            app.adopt_runtimes(vec![runtime.clone()], app.engine.generation, cx);
+            assert_eq!(
+                app.engine.active_runtime().map(|it| &it.socket),
+                Some(&runtime.socket)
+            );
+
+            // A scan that finds nothing answering, and not the engine either.
+            let stranger = berth_engine::discovery::Runtime {
+                socket: "/nowhere/stranger.sock".into(),
+                ..Default::default()
+            };
+            app.adopt_runtimes(vec![stranger], app.engine.generation, cx);
+            assert!(app.engine.client.is_none(), "nothing is being read");
+            assert_eq!(
+                app.engine.active_index(),
+                None,
+                "the stranger that took its place is not the engine"
+            );
+            assert!(app.engine.active_runtime().is_none());
         });
     }
 

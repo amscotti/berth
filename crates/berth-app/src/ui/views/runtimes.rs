@@ -85,7 +85,7 @@ fn runtime_card(
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> impl IntoElement {
-    let active = index == app.engine.active;
+    let active = app.engine.active_index() == Some(index);
     let tint = tint(tokens, TintKind::Runtimes);
     // The active engine's card is tinted, and its buttons are drawn for that.
     let ground = if active {

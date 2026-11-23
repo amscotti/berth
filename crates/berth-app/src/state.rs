@@ -111,12 +111,15 @@ pub struct HostSample {
 #[derive(Clone, Debug, Default)]
 pub struct EngineState {
     pub runtimes: Vec<Runtime>,
-    pub active: usize,
     pub socket: Option<String>,
     pub api: Option<String>,
     pub dialect: Dialect,
     pub client: Option<Client>,
     pub generation: u64,
+    /// The engine being read, by identity rather than by place in the list:
+    /// it is looked up in `runtimes` whenever it is asked for, so a rescan
+    /// that reorders the list, or drops the engine, can't point berth at
+    /// another one.
     pub identity: Option<String>,
     pub preferred_socket: Option<String>,
     pub loading: bool,
@@ -130,8 +133,17 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    /// Where the engine being read is in the list, if it is still there.
+    pub fn active_index(&self) -> Option<usize> {
+        let identity = self.identity.as_ref()?;
+        self.runtimes
+            .iter()
+            .position(|runtime| berth_engine::discovery::identity(runtime) == *identity)
+    }
+
     pub fn active_runtime(&self) -> Option<&Runtime> {
-        self.runtimes.get(self.active)
+        let index = self.active_index()?;
+        self.runtimes.get(index)
     }
 
     pub fn reachable(&self) -> usize {

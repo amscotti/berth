@@ -246,7 +246,6 @@ impl BerthApp {
         if !runtime.reachable {
             return;
         }
-        self.engine.active = index;
         self.engine.install(&runtime);
         self.engine.preferred_socket = Some(runtime.socket.clone());
         self.refresh_task = None;

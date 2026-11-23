@@ -25,7 +25,7 @@ impl BerthApp {
         let mut app = Self::with_snapshot(tokens, fixture_snapshot(), cx);
         app.host = fixture_host();
         app.engine.runtimes = vec![fixture_runtime()];
-        app.engine.active = 0;
+        app.engine.identity = Some(berth_engine::discovery::identity(&app.engine.runtimes[0]));
         app.engine.last_update = format::now();
         app.engine.loading = false;
         app.engine.df = app.snapshot.df.clone();
