@@ -1,7 +1,7 @@
 //! Action handlers and engine-choice methods.
 
 use crate::app::*;
-use crate::settings::{self, Appearance};
+use crate::settings::Appearance;
 use berth_commands::app_actions::*;
 use gpui::{Context, Window};
 
@@ -227,15 +227,7 @@ impl BerthApp {
             Appearance::Dark => berth_ui::theme::dark(),
             Appearance::System => berth_ui::theme::for_appearance(window.appearance()),
         };
-        let data = settings::Data {
-            appearance,
-            socket: self.engine.preferred_socket.clone().unwrap_or_default(),
-        };
-        cx.background_executor()
-            .spawn(async move {
-                let _ = settings::save(&data);
-            })
-            .detach();
+        self.save_settings(cx);
         cx.notify();
     }
 
@@ -257,15 +249,7 @@ impl BerthApp {
         snapshot.df_at = 0;
         snapshot.df_error.clear();
         self.snapshot = std::sync::Arc::new(snapshot);
-        let data = settings::Data {
-            appearance: self.appearance,
-            socket: runtime.socket,
-        };
-        cx.background_executor()
-            .spawn(async move {
-                let _ = settings::save(&data);
-            })
-            .detach();
+        self.save_settings(cx);
         self.start_refresh(cx);
         cx.notify();
     }
@@ -273,15 +257,7 @@ impl BerthApp {
     pub(crate) fn use_socket(&mut self, path: &str, cx: &mut Context<Self>) {
         let path = path.strip_prefix("unix://").unwrap_or(path);
         self.engine.preferred_socket = Some(path.to_owned());
-        let data = settings::Data {
-            appearance: self.appearance,
-            socket: path.to_owned(),
-        };
-        cx.background_executor()
-            .spawn(async move {
-                let _ = settings::save(&data);
-            })
-            .detach();
+        self.save_settings(cx);
         self.start_discovery(cx);
     }
 

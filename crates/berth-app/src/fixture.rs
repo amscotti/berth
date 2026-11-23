@@ -16,13 +16,20 @@ use berth_ui::theme::Tokens;
 use gpui::Context;
 
 use crate::app::{BerthApp, CreateKind, InspectorTab, SearchKind, Tab};
+use crate::settings;
 use crate::state::{HostSample, Snapshot};
 
 impl BerthApp {
     /// An app on the fixture, as the screenshots and the tests start one. The
     /// running app always starts empty and waits for a real snapshot.
     pub fn new_fixture(tokens: Tokens, cx: &mut Context<Self>) -> Self {
-        let mut app = Self::with_snapshot(tokens, fixture_snapshot(), cx);
+        let mut app = Self::with_settings(
+            tokens,
+            fixture_snapshot(),
+            settings::Data::default(),
+            None,
+            cx,
+        );
         app.host = fixture_host();
         app.engine.runtimes = vec![fixture_runtime()];
         app.engine.identity = Some(berth_engine::discovery::identity(&app.engine.runtimes[0]));
@@ -47,7 +54,7 @@ impl BerthApp {
 
     /// An app on a snapshot of the caller's, for the performance pass.
     pub fn with_fixture(tokens: Tokens, snapshot: Snapshot, cx: &mut Context<Self>) -> Self {
-        Self::with_snapshot(tokens, snapshot, cx)
+        Self::with_settings(tokens, snapshot, settings::Data::default(), None, cx)
     }
 
     /// Show a page, as the screenshot pass does to reach each of them.

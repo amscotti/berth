@@ -285,6 +285,13 @@ pub struct BerthApp {
     pub(crate) bulk_enabled: bool,
     pub(crate) bulk_selected: std::collections::BTreeSet<String>,
     pub(crate) window_handle: Option<gpui::AnyWindowHandle>,
+    /// The preferences file, when preferences are persisted at all.
+    pub(crate) settings_file: Option<std::path::PathBuf>,
+    /// Where the window was last seen, to open there next time.
+    pub(crate) window: Option<settings::Window>,
+    /// The wait for the window to be still before that is written.
+    pub(crate) settings_task: Option<Task<()>>,
+    _bounds_sub: Option<Subscription>,
     pub(crate) tray: Option<crate::tray::Tray>,
     pub(crate) tray_task: Option<Task<()>>,
     pub(crate) quiet_notices_until: i64,
@@ -320,13 +327,21 @@ pub struct Pending {
 }
 
 impl BerthApp {
-    pub fn new(tokens: Tokens, cx: &mut Context<Self>) -> Self {
-        Self::with_snapshot(tokens, Snapshot::empty(), cx)
+    /// The running app: empty, with the preferences as they were left and a
+    /// file to write them to.
+    pub fn new(tokens: Tokens, saved: settings::Data, cx: &mut Context<Self>) -> Self {
+        Self::with_settings(tokens, Snapshot::empty(), saved, settings::path(), cx)
     }
 
-    pub(crate) fn with_snapshot(
+    /// An app on `snapshot`, with `saved` preferences, written to
+    /// `settings_file` when there is one. Tests and the screenshots start
+    /// here with nothing saved and no file, so they neither read nor write
+    /// the preferences of whoever runs them.
+    pub(crate) fn with_settings(
         tokens: Tokens,
         snapshot: Snapshot,
+        saved: settings::Data,
+        settings_file: Option<std::path::PathBuf>,
         cx: &mut Context<Self>,
     ) -> Self {
         let searches =
@@ -405,7 +420,6 @@ impl BerthApp {
                 }
             }),
         );
-        let saved = settings::load();
         let appearance = saved.appearance;
         let mut engine = EngineState::default();
         if !saved.socket.is_empty() {
@@ -438,6 +452,10 @@ impl BerthApp {
             table_focus: cx.focus_handle().tab_stop(true),
             sheet_focus: crate::focus::SheetFocus::new(cx),
             appearance_sub: None,
+            _bounds_sub: None,
+            settings_file,
+            window: saved.window,
+            settings_task: None,
             _search_subs,
             _form_subs,
             refresh_task: None,
@@ -498,6 +516,12 @@ impl BerthApp {
 
     pub fn set_appearance_subscription(&mut self, subscription: Subscription) {
         self.appearance_sub = Some(subscription);
+    }
+
+    /// Keep the subscription that reports the window moving: dropped, it
+    /// would silently stop.
+    pub fn remember_bounds(&mut self, subscription: Subscription) {
+        self._bounds_sub = Some(subscription);
     }
 
     pub fn set_tokens(&mut self, tokens: Tokens, cx: &mut Context<Self>) {

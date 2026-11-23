@@ -12,6 +12,7 @@ mod app_detail;
 mod app_engine;
 mod app_forms;
 mod app_render;
+mod app_settings;
 #[cfg(test)]
 mod app_tests;
 mod assets;
@@ -27,6 +28,8 @@ mod focus_tests;
 mod host;
 mod jobs;
 mod settings;
+#[cfg(test)]
+mod settings_tests;
 mod state;
 mod terminal;
 #[cfg(test)]
@@ -36,11 +39,10 @@ mod ui;
 
 use berth_commands::app_actions::Quit;
 use berth_commands::{Platform, install_keymap, menus};
+use berth_ui::layout;
 use berth_ui::theme;
 use gpui::prelude::*;
-use gpui::{
-    App, Bounds, Focusable, QuitMode, TitlebarOptions, WindowBounds, WindowOptions, px, size,
-};
+use gpui::{App, Focusable, QuitMode, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 pub use app::{BerthApp, CreateKind, Filter, InspectorTab, Tab};
 pub use assets::Assets;
@@ -74,7 +76,8 @@ fn install(cx: &mut App) {
 }
 
 fn open_main_window(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(1280.0), px(760.0)), cx);
+    let saved = settings::load();
+    let bounds = settings::opening_bounds(&saved, cx);
     let handle = cx
         .open_window(
             WindowOptions {
@@ -84,13 +87,13 @@ fn open_main_window(cx: &mut App) {
                     ..Default::default()
                 }),
                 app_id: Some("dev.berth.app".to_owned()),
-                window_min_size: Some(size(px(960.0), px(600.0))),
+                window_min_size: Some(size(px(layout::WINDOW_MIN.0), px(layout::WINDOW_MIN.1))),
                 focus: true,
                 ..Default::default()
             },
             |window, cx| {
                 let tokens = theme::for_appearance(window.appearance());
-                cx.new(|cx| BerthApp::new(tokens, cx))
+                cx.new(|cx| BerthApp::new(tokens, saved, cx))
             },
         )
         .expect("open berth window");
@@ -103,6 +106,9 @@ fn open_main_window(cx: &mut App) {
                 weak.update(cx, |app, cx| app.set_tokens(tokens, cx)).ok();
             });
             app.set_appearance_subscription(subscription);
+            // Where the window is left is where it opens next time.
+            let bounds = app.watch_window(window, cx);
+            app.remember_bounds(bounds);
             app.window_handle = Some(handle.into());
             let focus = app.focus_handle(cx);
             window.focus(&focus, cx);

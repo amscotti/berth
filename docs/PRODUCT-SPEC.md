@@ -110,9 +110,15 @@ These are not implementation details; they are what the app promises.
 **Persistence and chrome**
 
 - `settings.json` in the platform data dir (`~/Library/Application Support/berth`
-  on macOS, `~/.local/share/berth` on Linux): `appearance` (`system|light|dark`)
-  and last `socket`.
-- Window default 1280×760, minimum 960×600; appearance switch keeps the size.
+  on macOS, `~/.local/share/berth` on Linux): `appearance` (`system|light|dark`),
+  the last `socket`, and where the window was (`x`, `y`, `width`, `height` in
+  points). The file is replaced in one step (written beside itself, then
+  renamed), so an interrupted save leaves the old one whole; a save that fails
+  is a toast. Where the window was is written once it has been still for a
+  moment.
+- Window default 1280×760, minimum 960×600; it opens where it was left when
+  that is still on a display and no smaller than the minimum, and in the
+  middle of the main display otherwise. Appearance switch keeps the size.
 - macOS: closing the window leaves the tray monitor running; Open restores the
   window at the last size. No tray: last window quits.
 - Keyboard: Cmd/Ctrl+1…9 switch the first nine views; Cmd/Ctrl+F focuses the
