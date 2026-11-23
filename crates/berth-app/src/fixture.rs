@@ -129,8 +129,21 @@ impl BerthApp {
                 rw: true,
             }],
             ips: vec![("shop_default".into(), "172.18.0.2".into())],
+            // What the engine crate makes of this container's inspect
+            // document; its own test holds the same line.
             run_cmd: Some(
-                "docker run -d --name berth-demo-web -p 8080:80 -v shop-data:/var/www/html nginx:alpine".into(),
+                concat!(
+                    "docker run -d --name berth-demo-web --restart unless-stopped",
+                    " --network shop_default -w /usr/share/nginx/html",
+                    " --entrypoint /docker-entrypoint.sh -p 8080:80",
+                    " -v shop-data:/var/www/html",
+                    " -e NGINX_HOST=localhost -e NGINX_PORT=80",
+                    " -e 'API_SECRET_TOKEN=<redacted>'",
+                    " --label com.docker.compose.project=shop",
+                    " --label com.docker.compose.service=web",
+                    " nginx:alpine nginx -g 'daemon off;'"
+                )
+                .into(),
             ),
             run_redacted: true,
         });
