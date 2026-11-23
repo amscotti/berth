@@ -2,9 +2,10 @@
 
 Living checklist for the Rust + GPUI rewrite. Product/behavior is in
 `docs/PRODUCT-SPEC.md`; the plan is `docs/GPUI-REBUILD.md`; the feature queue is
-`docs/PARITY-BACKLOG.md`.
+`docs/PARITY-BACKLOG.md`; the fix queue from the 2026-11-23 review is
+`docs/FIX-BACKLOG.md`.
 
-Last updated: 2026-11-07
+Last updated: 2026-11-23
 
 ## Completed
 
@@ -33,3 +34,8 @@ Last updated: 2026-11-07
 - [ ] Version: `0.0.0` until parity; tag `v0.1.0` after the remaining gaps.
 - [ ] Windows remains compile-only.
 - [ ] DMG / Developer ID / notarization are deliberate non-goals.
+
+## Review fixes
+
+The 2026-11-23 code and UX review is worked through in `docs/FIX-BACKLOG.md`,
+phase by phase. Track review work there, so each item has one home.

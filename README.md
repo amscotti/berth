@@ -103,6 +103,7 @@ and a Vulkan-capable driver.
 | `docs/TESTING.md` | test layers, driver, screenshots |
 | `docs/PARITY-BACKLOG.md` | feature matrix and next work |
 | `docs/PARITY-CHECKLIST.md` | verified parity and known gaps |
+| `docs/FIX-BACKLOG.md` | fix queue from the 2026-11-23 review, in phase order |
 | `docs/ACCESSIBILITY.md` | roles, labels and keyboard paths |
 | `docs/RELEASE.md` | unsigned build policy |
 | `AGENTS.md` | rules for working in this repo |
