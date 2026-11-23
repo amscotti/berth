@@ -1,7 +1,6 @@
 //! Volumes, with the size/in-use figures `/system/df` fills in.
 
 use berth_core::format;
-use berth_engine::dto::Volume;
 use berth_ui::layout::{self, Widths};
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Role, SharedString, div, px};
@@ -13,31 +12,39 @@ use crate::ui::table::{empty_state, page_header, sortable_header_cell, text_cell
 pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
     let query = app.query(SearchKind::Volumes).to_ascii_lowercase();
-    let mut shown: Vec<&Volume> = app
-        .snapshot
-        .volumes
-        .iter()
-        .filter(|volume| {
-            query.is_empty()
-                || volume.name.to_ascii_lowercase().contains(&query)
-                || volume.driver.to_ascii_lowercase().contains(&query)
-                || volume.mountpoint.to_ascii_lowercase().contains(&query)
-        })
-        .collect();
     let (sort_col, sort_asc) = app.sort_for(2);
-    shown.sort_by(|a, b| {
-        let ua = a.usage_data.as_ref();
-        let ub = b.usage_data.as_ref();
-        let ord = match sort_col {
-            1 => a.driver.cmp(&b.driver),
-            2 => ua.map_or(-1, |u| u.size).cmp(&ub.map_or(-1, |u| u.size)),
-            3 => ua
-                .map_or(-1, |u| u.ref_count)
-                .cmp(&ub.map_or(-1, |u| u.ref_count)),
-            4 => a.mountpoint.cmp(&b.mountpoint),
-            _ => a.name.cmp(&b.name),
-        };
-        if sort_asc { ord } else { ord.reverse() }
+    // Worked out once per snapshot, query and sort, and kept from one frame
+    // to the next while those hold.
+    let shown = app.rows_of(SearchKind::Volumes, || {
+        let mut shown: Vec<usize> = app
+            .snapshot
+            .volumes
+            .iter()
+            .enumerate()
+            .filter(|(_, volume)| {
+                query.is_empty()
+                    || volume.name.to_ascii_lowercase().contains(&query)
+                    || volume.driver.to_ascii_lowercase().contains(&query)
+                    || volume.mountpoint.to_ascii_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        shown.sort_by(|&a, &b| {
+            let (a, b) = (&app.snapshot.volumes[a], &app.snapshot.volumes[b]);
+            let ua = a.usage_data.as_ref();
+            let ub = b.usage_data.as_ref();
+            let ord = match sort_col {
+                1 => a.driver.cmp(&b.driver),
+                2 => ua.map_or(-1, |u| u.size).cmp(&ub.map_or(-1, |u| u.size)),
+                3 => ua
+                    .map_or(-1, |u| u.ref_count)
+                    .cmp(&ub.map_or(-1, |u| u.ref_count)),
+                4 => a.mountpoint.cmp(&b.mountpoint),
+                _ => a.name.cmp(&b.name),
+            };
+            if sort_asc { ord } else { ord.reverse() }
+        });
+        shown
     });
 
     let header = page_header(
@@ -123,7 +130,8 @@ pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> An
             .child(div().w_full().h(px(1.0)).bg(tokens.border)),
     );
 
-    let rows = shown.into_iter().enumerate().map(|(index, volume)| {
+    let rows = shown.into_iter().enumerate().map(|(index, at)| {
+        let volume = &app.snapshot.volumes[at];
         let selected = app.view.detail_kind == DetailKind::Volume
             && app.view.selected_id.as_deref() == Some(volume.name.as_str());
         let click_name = volume.name.clone();

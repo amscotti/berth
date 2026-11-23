@@ -1,6 +1,5 @@
 //! Networks and how many containers are attached to each.
 
-use berth_engine::dto::Network;
 use berth_ui::layout::{self, Widths};
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Role, SharedString, div, px};
@@ -12,30 +11,38 @@ use crate::ui::table::{empty_state, page_header, sortable_header_cell, text_cell
 pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
     let query = app.query(SearchKind::Networks).to_ascii_lowercase();
-    let mut shown: Vec<&Network> = app
-        .snapshot
-        .networks
-        .iter()
-        .filter(|network| {
-            query.is_empty()
-                || network.name.to_ascii_lowercase().contains(&query)
-                || network.driver.to_ascii_lowercase().contains(&query)
-                || network.scope.to_ascii_lowercase().contains(&query)
-        })
-        .collect();
     let (sort_col, sort_asc) = app.sort_for(3);
-    shown.sort_by(|a, b| {
-        let ord = match sort_col {
-            1 => a.driver.cmp(&b.driver),
-            2 => a.scope.cmp(&b.scope),
-            3 => app
-                .snapshot
-                .network_counts
-                .get(&a.name)
-                .cmp(&app.snapshot.network_counts.get(&b.name)),
-            _ => a.name.cmp(&b.name),
-        };
-        if sort_asc { ord } else { ord.reverse() }
+    // Worked out once per snapshot, query and sort, and kept from one frame
+    // to the next while those hold.
+    let shown = app.rows_of(SearchKind::Networks, || {
+        let mut shown: Vec<usize> = app
+            .snapshot
+            .networks
+            .iter()
+            .enumerate()
+            .filter(|(_, network)| {
+                query.is_empty()
+                    || network.name.to_ascii_lowercase().contains(&query)
+                    || network.driver.to_ascii_lowercase().contains(&query)
+                    || network.scope.to_ascii_lowercase().contains(&query)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        shown.sort_by(|&a, &b| {
+            let (a, b) = (&app.snapshot.networks[a], &app.snapshot.networks[b]);
+            let ord = match sort_col {
+                1 => a.driver.cmp(&b.driver),
+                2 => a.scope.cmp(&b.scope),
+                3 => app
+                    .snapshot
+                    .network_counts
+                    .get(&a.name)
+                    .cmp(&app.snapshot.network_counts.get(&b.name)),
+                _ => a.name.cmp(&b.name),
+            };
+            if sort_asc { ord } else { ord.reverse() }
+        });
+        shown
     });
 
     let header = page_header(
@@ -109,7 +116,8 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
             .child(div().w_full().h(px(1.0)).bg(tokens.border)),
     );
 
-    let rows = shown.into_iter().enumerate().map(|(index, network)| {
+    let rows = shown.into_iter().enumerate().map(|(index, at)| {
+        let network = &app.snapshot.networks[at];
         let attached_count = app.snapshot.network_counts.get(&network.name);
         let click_id = if network.id.is_empty() {
             network.name.clone()

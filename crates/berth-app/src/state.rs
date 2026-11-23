@@ -27,6 +27,9 @@ pub struct Snapshot {
     pub networks: Vec<Network>,
     pub projects: Vec<Summary>,
     pub network_counts: Counts,
+    /// For each image, in the list's order, how many containers run it.
+    /// Figured out with the lists, so there is one for every image.
+    pub image_use: Vec<usize>,
     pub events: Vec<Event>,
     pub events_error: bool,
     pub error: String,
@@ -43,6 +46,11 @@ impl Snapshot {
 
     pub fn stat(&self, index: usize) -> Sample {
         self.stats.get(index).copied().unwrap_or_default()
+    }
+
+    /// How many containers run the image at `index` of the list.
+    pub fn image_use(&self, index: usize) -> usize {
+        self.image_use.get(index).copied().unwrap_or(0)
     }
 
     pub fn running(&self) -> usize {

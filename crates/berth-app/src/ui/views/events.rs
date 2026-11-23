@@ -13,13 +13,20 @@ use crate::ui::table::{empty_state, header_cell, page_header, pill, text_cell};
 pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
     let query = app.query(SearchKind::Events).to_ascii_lowercase();
-    let mut shown: Vec<&Event> = app
-        .snapshot
-        .events
-        .iter()
-        .filter(|event| event.matches(&query))
-        .collect();
-    shown.sort_by_key(|event| std::cmp::Reverse(event.time_nano));
+    // Worked out once per snapshot and query, and kept from one frame to the
+    // next while those hold. The list is newest first, as the engine tells it.
+    let shown = app.rows_of(SearchKind::Events, || {
+        let mut shown: Vec<usize> = app
+            .snapshot
+            .events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| event.matches(&query))
+            .map(|(index, _)| index)
+            .collect();
+        shown.sort_by_key(|&index| std::cmp::Reverse(app.snapshot.events[index].time_nano));
+        shown
+    });
 
     let header = page_header(app, widths, Some(SearchKind::Events), None, cx);
     let mut content = div()
@@ -92,7 +99,8 @@ pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .child(div().w_full().h(px(1.0)).bg(tokens.border)),
     );
 
-    let rows = shown.into_iter().enumerate().map(|(index, event)| {
+    let rows = shown.into_iter().enumerate().map(|(index, at)| {
+        let event = &app.snapshot.events[at];
         let actor_id = event.actor.id.clone();
         let can_inspect =
             event.kind == "container" && app.snapshot.containers.iter().any(|c| c.id == actor_id);

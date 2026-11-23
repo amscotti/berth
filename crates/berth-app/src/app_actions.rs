@@ -305,54 +305,76 @@ impl BerthApp {
         self.redraw_page(cx);
     }
 
+    /// The rows of `table` that are on screen, in the order it shows them:
+    /// each an index into its list in the snapshot. `figure` works them out
+    /// once per snapshot, query, sort and filter, and they are kept from one
+    /// frame to the next while those hold.
+    pub(crate) fn rows_of(
+        &self,
+        table: SearchKind,
+        figure: impl FnOnce() -> Vec<usize>,
+    ) -> Vec<usize> {
+        let list = &self.view.lists[table as usize];
+        list.kept.rows(
+            &self.snapshot,
+            &list.query,
+            list.sort,
+            self.view.filter,
+            figure,
+        )
+    }
+
+    /// The containers on screen, in the order the table shows them.
     pub(crate) fn visible_rows(&self) -> Vec<usize> {
-        let query = self.view.lists[SearchKind::Containers as usize]
-            .query
-            .to_ascii_lowercase();
-        let mut rows: Vec<usize> = self
-            .snapshot
-            .containers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, container)| {
-                (self.view.filter.keeps(container) && container_matches(container, &query))
-                    .then_some(index)
-            })
-            .collect();
-        let (col, asc) = self.view.lists[0].sort;
-        rows.sort_by(|&a, &b| {
-            let ca = &self.snapshot.containers[a];
-            let cb = &self.snapshot.containers[b];
-            let sa = self.snapshot.stat(a);
-            let sb = self.snapshot.stat(b);
-            let ord = match col {
-                1 => ca
-                    .state
-                    .cmp(&cb.state)
-                    .then_with(|| ca.status.cmp(&cb.status)),
-                2 => {
-                    let ca_cpu = if sa.cpu_known { sa.cpu } else { -1.0 };
-                    let cb_cpu = if sb.cpu_known { sb.cpu } else { -1.0 };
-                    ca_cpu.total_cmp(&cb_cpu)
-                }
-                3 => sa.mem.cmp(&sb.mem),
-                4 => sa
-                    .net_rx
-                    .saturating_add(sa.net_tx)
-                    .cmp(&sb.net_rx.saturating_add(sb.net_tx)),
-                5 => sa
-                    .blk_read
-                    .saturating_add(sa.blk_write)
-                    .cmp(&sb.blk_read.saturating_add(sb.blk_write)),
-                6 => sa.pids.unwrap_or(0).cmp(&sb.pids.unwrap_or(0)),
-                7 => berth_engine::detail::up_seconds(&ca.status)
-                    .unwrap_or(-1)
-                    .cmp(&berth_engine::detail::up_seconds(&cb.status).unwrap_or(-1)),
-                8 => first_port(ca).cmp(&first_port(cb)),
-                _ => ca.name().cmp(cb.name()),
-            };
-            if asc { ord } else { ord.reverse() }
-        });
-        rows
+        self.rows_of(SearchKind::Containers, || {
+            let query = self.view.lists[SearchKind::Containers as usize]
+                .query
+                .to_ascii_lowercase();
+            let mut rows: Vec<usize> = self
+                .snapshot
+                .containers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, container)| {
+                    (self.view.filter.keeps(container) && container_matches(container, &query))
+                        .then_some(index)
+                })
+                .collect();
+            let (col, asc) = self.view.lists[0].sort;
+            rows.sort_by(|&a, &b| {
+                let ca = &self.snapshot.containers[a];
+                let cb = &self.snapshot.containers[b];
+                let sa = self.snapshot.stat(a);
+                let sb = self.snapshot.stat(b);
+                let ord = match col {
+                    1 => ca
+                        .state
+                        .cmp(&cb.state)
+                        .then_with(|| ca.status.cmp(&cb.status)),
+                    2 => {
+                        let ca_cpu = if sa.cpu_known { sa.cpu } else { -1.0 };
+                        let cb_cpu = if sb.cpu_known { sb.cpu } else { -1.0 };
+                        ca_cpu.total_cmp(&cb_cpu)
+                    }
+                    3 => sa.mem.cmp(&sb.mem),
+                    4 => sa
+                        .net_rx
+                        .saturating_add(sa.net_tx)
+                        .cmp(&sb.net_rx.saturating_add(sb.net_tx)),
+                    5 => sa
+                        .blk_read
+                        .saturating_add(sa.blk_write)
+                        .cmp(&sb.blk_read.saturating_add(sb.blk_write)),
+                    6 => sa.pids.unwrap_or(0).cmp(&sb.pids.unwrap_or(0)),
+                    7 => berth_engine::detail::up_seconds(&ca.status)
+                        .unwrap_or(-1)
+                        .cmp(&berth_engine::detail::up_seconds(&cb.status).unwrap_or(-1)),
+                    8 => first_port(ca).cmp(&first_port(cb)),
+                    _ => ca.name().cmp(cb.name()),
+                };
+                if asc { ord } else { ord.reverse() }
+            });
+            rows
+        })
     }
 }

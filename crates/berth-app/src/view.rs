@@ -5,7 +5,9 @@
 //! The engine's answer is the shell's (`BerthApp`); this is everything that
 //! isn't. Nothing here reads a socket or starts a job: it asks the shell to.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{Entity, FocusHandle, Subscription, Task};
@@ -14,6 +16,7 @@ use crate::actions::Pending;
 use crate::app::{BerthApp, CreateKind, DetailKind, Filter, SearchKind, Tab, Toast};
 use crate::focus::SheetFocus;
 use crate::jobs::mutation::PruneOptions;
+use crate::state::SharedSnapshot;
 use crate::ui::input::{InputEvent, InputState};
 
 /// One table's own state: its search field, what was typed into it, and how
@@ -24,6 +27,62 @@ pub(crate) struct ListState {
     /// The column it is sorted by, and whether ascending. Events are always
     /// newest first and never look at it.
     pub(crate) sort: (usize, bool),
+    /// The rows on screen, kept from one frame to the next while what they
+    /// were worked out from holds.
+    pub(crate) kept: Kept,
+}
+
+/// A table's rows, worked out from the snapshot and the table's own query,
+/// sort and filter, and kept from one frame to the next while those hold.
+///
+/// A commit makes a new snapshot, and a row depends on nothing else that
+/// changes behind the settings' back, so comparing those is comparing
+/// everything the rows depend on.
+#[derive(Default)]
+pub(crate) struct Kept(RefCell<Option<Worked>>);
+
+struct Worked {
+    /// The snapshot, by identity.
+    from: SharedSnapshot,
+    /// The query, lowercased.
+    query: String,
+    sort: (usize, bool),
+    filter: Filter,
+    rows: Vec<usize>,
+}
+
+impl Kept {
+    /// The rows, each an index into the table's list. `figure` works them
+    /// out when anything they depend on has changed, and only then.
+    pub(crate) fn rows(
+        &self,
+        from: &SharedSnapshot,
+        query: &str,
+        sort: (usize, bool),
+        filter: Filter,
+        figure: impl FnOnce() -> Vec<usize>,
+    ) -> Vec<usize> {
+        {
+            let worked = self.0.borrow();
+            if let Some(worked) = worked.as_ref()
+                && Arc::ptr_eq(&worked.from, from)
+                && query.eq_ignore_ascii_case(&worked.query)
+                && worked.sort == sort
+                && worked.filter == filter
+            {
+                return worked.rows.clone();
+            }
+        }
+        let rows = figure();
+        *self.0.borrow_mut() = Some(Worked {
+            from: from.clone(),
+            query: query.to_ascii_lowercase(),
+            sort,
+            filter,
+            rows: rows.clone(),
+        });
+        rows
+    }
 }
 
 impl ListState {
@@ -199,6 +258,7 @@ impl ViewState {
                 search: searches[index].clone(),
                 query: String::new(),
                 sort: (0, true),
+                kept: Kept::default(),
             }),
             selected_id: None,
             selected_name: String::new(),

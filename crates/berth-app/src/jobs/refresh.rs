@@ -109,6 +109,7 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
 
     let projects = summaries(&containers);
     let network_counts = Counts::from_containers(&containers);
+    let image_use = berth_engine::image_use::counts(&containers, &images);
     let snapshot = Snapshot {
         containers,
         stats,
@@ -117,6 +118,7 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
         networks,
         projects,
         network_counts,
+        image_use,
         events,
         events_error,
         error: String::new(),

@@ -11,6 +11,7 @@ pub mod discovery;
 pub mod dto;
 pub mod events;
 pub mod guards;
+pub mod image_use;
 pub mod logs;
 pub mod network_counts;
 pub mod projects;

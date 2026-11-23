@@ -17,22 +17,30 @@ use crate::ui::table::{empty_state, page_header, pill, sortable_header_cell, tex
 pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
     let query = app.query(SearchKind::Images).to_ascii_lowercase();
-    let mut shown: Vec<&Image> = app
-        .snapshot
-        .images
-        .iter()
-        .filter(|image| image_matches(image, &query))
-        .collect();
     let (sort_col, sort_asc) = app.sort_for(1);
-    shown.sort_by(|a, b| {
-        let ord = match sort_col {
-            1 => a.id.cmp(&b.id),
-            2 => a.size.cmp(&b.size),
-            3 => a.created.cmp(&b.created),
-            4 => a.dangling().cmp(&b.dangling()),
-            _ => a.label().cmp(b.label()),
-        };
-        if sort_asc { ord } else { ord.reverse() }
+    // Worked out once per snapshot, query and sort, and kept from one frame
+    // to the next while those hold.
+    let shown = app.rows_of(SearchKind::Images, || {
+        let mut shown: Vec<usize> = app
+            .snapshot
+            .images
+            .iter()
+            .enumerate()
+            .filter(|(_, image)| image_matches(image, &query))
+            .map(|(index, _)| index)
+            .collect();
+        shown.sort_by(|&a, &b| {
+            let (a, b) = (&app.snapshot.images[a], &app.snapshot.images[b]);
+            let ord = match sort_col {
+                1 => a.id.cmp(&b.id),
+                2 => a.size.cmp(&b.size),
+                3 => a.created.cmp(&b.created),
+                4 => a.dangling().cmp(&b.dangling()),
+                _ => a.label().cmp(b.label()),
+            };
+            if sort_asc { ord } else { ord.reverse() }
+        });
+        shown
     });
 
     let header = page_header(app, widths, Some(SearchKind::Images), None, cx);
@@ -119,18 +127,15 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .child(div().w_full().h(px(1.0)).bg(tokens.border)),
     );
 
-    let rows = shown.into_iter().enumerate().map(|(index, image)| {
+    let rows = shown.into_iter().enumerate().map(|(index, at)| {
+        let image = &app.snapshot.images[at];
         let label = if image.dangling() {
             "untagged"
         } else {
             image.tag()
         };
-        let used_count = app
-            .snapshot
-            .containers
-            .iter()
-            .filter(|c| c.uses_image(image))
-            .count();
+        // Figured out with the lists, once per snapshot.
+        let used_count = app.snapshot.image_use(at);
         let selected = app.view.detail_kind == crate::app::DetailKind::Image
             && app.view.selected_id.as_deref() == Some(image.id.as_str());
         let click_id = image.id.clone();

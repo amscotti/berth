@@ -446,6 +446,7 @@ pub fn fixture_snapshot() -> Snapshot {
     ];
     let projects = berth_engine::projects::summaries(&containers);
     let network_counts = Counts::from_containers(&containers);
+    let image_use = berth_engine::image_use::counts(&containers, &images);
     Snapshot {
         containers,
         stats,
@@ -454,6 +455,7 @@ pub fn fixture_snapshot() -> Snapshot {
         networks,
         projects,
         network_counts,
+        image_use,
         events,
         events_error: false,
         error: String::new(),
@@ -490,6 +492,7 @@ pub fn fixture_snapshot_with(count: usize) -> Snapshot {
         snapshot.stats.push(base.stats[index % base.stats.len()]);
     }
     snapshot.projects.clear();
+    snapshot.image_use = berth_engine::image_use::counts(&snapshot.containers, &snapshot.images);
     snapshot
 }
 

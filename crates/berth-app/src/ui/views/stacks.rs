@@ -29,9 +29,9 @@ pub fn stacks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .into_any_element();
     }
 
-    let projects = app.snapshot.projects.clone();
+    let projects = &app.snapshot.projects;
     let mut cards = Vec::with_capacity(projects.len());
-    for project in &projects {
+    for project in projects {
         cards.push(project_card(app, project, tokens, cx));
     }
     div()

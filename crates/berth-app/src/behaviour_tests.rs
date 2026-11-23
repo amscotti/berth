@@ -1,12 +1,15 @@
 //! Tests for how the app behaves as a whole, driven in process against the
 //! mock engine. Each one is a bug that was on screen first.
 
+use std::cell::Cell;
+use std::sync::Arc;
+
 use berth_engine::dto::Port;
 use berth_engine::test_support::MockEngine;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
 use crate::actions::{ContainerAction, Pending, Target};
-use crate::app::{BerthApp, CreateKind, Filter};
+use crate::app::{BerthApp, CreateKind, Filter, SearchKind};
 use crate::jobs::mutation::{PruneOptions, Request};
 use crate::slot::{MutationKind, MutationSlot};
 use crate::testkit;
@@ -401,4 +404,70 @@ fn a_second_request_is_refused_with_the_running_one_named(cx: &mut TestAppContex
     });
     cx.run_until_parked();
     assert_eq!(engine.count("/containers/demo-1/stop"), 1);
+}
+
+/// A table's rows are worked out once per snapshot, query, sort and filter,
+/// and kept from one frame to the next while those hold.
+#[gpui::test]
+fn a_tables_rows_are_worked_out_once_per_snapshot_and_settings(cx: &mut TestAppContext) {
+    let (app, cx) = testkit::fixture(cx);
+    app.update(cx, |app, _| {
+        // Behind a reference, so that every closure counts on the same one.
+        let figured = &Cell::new(0);
+        let containers = |app: &BerthApp| {
+            app.rows_of(SearchKind::Containers, || {
+                figured.set(figured.get() + 1);
+                (0..app.snapshot.containers.len()).collect()
+            })
+        };
+        let drawn = |app: &BerthApp| {
+            for _ in 0..3 {
+                containers(app);
+            }
+        };
+
+        // The window was drawn once to open, with nothing typed: start from
+        // a question it hasn't answered.
+        app.view.lists[0].query = "web".into();
+        drawn(app);
+        assert_eq!(figured.get(), 1, "three frames, one answer");
+
+        // The same query in another case is the same question.
+        app.view.lists[0].query = "WEB".into();
+        drawn(app);
+        assert_eq!(figured.get(), 1, "but not its case");
+
+        app.view.lists[0].sort = (2, false);
+        drawn(app);
+        assert_eq!(figured.get(), 2, "a sort is a new question");
+        app.view.filter = Filter::Stopped;
+        drawn(app);
+        assert_eq!(figured.get(), 3, "and so is a filter");
+
+        app.snapshot = Arc::new((*app.snapshot).clone());
+        drawn(app);
+        assert_eq!(
+            figured.get(),
+            4,
+            "and a commit, even one where nothing moved: a new snapshot is a new answer"
+        );
+
+        // Each table keeps its own.
+        for _ in 0..2 {
+            app.rows_of(SearchKind::Images, || {
+                figured.set(figured.get() + 1);
+                Vec::new()
+            });
+        }
+        assert_eq!(
+            figured.get(),
+            5,
+            "the images' answer is not the containers'"
+        );
+
+        // And the answer is the table's own.
+        app.view.filter = Filter::All;
+        app.view.lists[0].query = "web".into();
+        assert_eq!(app.visible_rows(), [0], "web, among the fixture's two");
+    });
 }
