@@ -5,7 +5,7 @@ use berth_engine::dto::Port;
 use berth_engine::test_support::MockEngine;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
-use crate::app::{BerthApp, Filter};
+use crate::app::{BerthApp, CreateKind, Filter};
 use crate::jobs::mutation::Request;
 use crate::testkit;
 
@@ -222,4 +222,34 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
         assert_eq!(app.prune_selected_bytes(), None);
         assert_eq!(app.prune_has_work(), None);
     });
+}
+
+/// A create is refused by the one rule for names, the same the sheet
+/// explains, and nothing is sent for a refused one.
+#[gpui::test]
+fn a_bad_name_is_refused_before_anything_is_sent(cx: &mut TestAppContext) {
+    let (app, engine, cx) = wired(cx);
+    // The last is the fixture's own volume.
+    for name in ["", "a", "-bad", "bad name", "shop-data"] {
+        app.update(cx, |app, cx| {
+            app.open_create(CreateKind::Volume, cx);
+            app.create_name
+                .update(cx, |input, cx| input.set_value(name, cx));
+            app.submit_create(cx);
+            assert!(app.create_attempted, "{name:?} was refused");
+            assert!(app.create_kind.is_some(), "and the sheet stays to say why");
+        });
+        cx.run_until_parked();
+    }
+    assert_eq!(engine.count("/volumes/create"), 0, "nothing was sent");
+
+    // A name that passes the rule is sent, once.
+    app.update(cx, |app, cx| {
+        app.create_name
+            .update(cx, |input, cx| input.set_value("brand-new", cx));
+        app.submit_create(cx);
+        assert!(!app.create_attempted);
+    });
+    cx.run_until_parked();
+    assert_eq!(engine.count("/volumes/create"), 1);
 }

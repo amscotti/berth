@@ -92,23 +92,8 @@ impl BerthApp {
             return;
         };
         let name = self.create_name.read(cx).text().trim().to_owned();
-        let duplicate = kind == CreateKind::Volume
-            && self
-                .snapshot
-                .volumes
-                .iter()
-                .any(|volume| volume.name == name);
-        if name.len() < 2
-            || name.len() > 128
-            || !name
-                .chars()
-                .next()
-                .is_some_and(|ch| ch.is_ascii_alphanumeric())
-            || !name
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
-            || duplicate
-        {
+        // One rule for a name, shared with the sheet that explains it.
+        if create_name_error(kind, &name, &self.snapshot.volumes).is_some() {
             self.create_attempted = true;
             cx.notify();
             return;

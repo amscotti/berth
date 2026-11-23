@@ -192,8 +192,11 @@ fn run_container(
     env: &str,
 ) -> Outcome {
     let client = Client::new(socket).with_api(api);
-    let Ok(body) = container_body(image, ports, volumes, env) else {
-        return bad("could not build the container request".to_owned());
+    let body = match container_body(image, name, ports, volumes, env) {
+        Ok(body) => body,
+        // A last line. A run is checked by the form, by the same rule, before
+        // it is queued, so this only fires for a run that came another way.
+        Err(what) => return bad(what),
     };
     match client.create_container(&body, name) {
         Ok(id) => match client.start_container(&id) {
@@ -208,54 +211,59 @@ fn run_container(
     }
 }
 
-fn container_body(image: &str, ports: &str, volumes: &str, env: &str) -> Result<Vec<u8>, ()> {
-    let mut exposed = serde_json::Map::new();
-    let mut bindings = serde_json::Map::new();
-    if !ports.trim().is_empty() {
-        for entry in ports.split(',') {
-            let entry = entry.trim();
-            let Some((rest, container_spec)) = entry.rsplit_once(':') else {
-                return Err(());
-            };
-            let (raw_ip, host) = match rest.rsplit_once(':') {
-                None => ("", rest),
-                Some((ip, host)) if !ip.is_empty() => (ip, host),
-                Some(_) => return Err(()),
-            };
-            let host_ip = raw_ip
-                .strip_prefix('[')
-                .and_then(|ip| ip.strip_suffix(']'))
-                .unwrap_or(raw_ip);
-            let key = if container_spec.contains('/') {
-                container_spec.to_owned()
-            } else {
-                format!("{container_spec}/tcp")
-            };
-            exposed.insert(key.clone(), serde_json::json!({}));
-            bindings.insert(
-                key,
-                serde_json::json!([{ "HostIp": host_ip, "HostPort": host }]),
-            );
-        }
+/// The body of a create-container request. It is built only from a run the
+/// form's own rule accepts, so the worker can't be lenient where the form is
+/// strict: an address with no port to publish on would otherwise ask the
+/// engine for any free port.
+fn container_body(
+    image: &str,
+    name: &str,
+    ports: &str,
+    volumes: &str,
+    env: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(failure) = berth_core::validation::run(image, name, ports, volumes, env) {
+        return Err(berth_core::validation::describe(&failure));
     }
 
-    let binds: Vec<String> = if volumes.trim().is_empty() {
-        Vec::new()
-    } else {
-        volumes
-            .split(',')
-            .map(|entry| entry.trim().to_owned())
+    let mut exposed = serde_json::Map::new();
+    let mut bindings = serde_json::Map::new();
+    for entry in ports
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let (rest, container_spec) = entry.rsplit_once(':').ok_or_else(|| unreadable(entry))?;
+        let (raw_ip, host) = match rest.rsplit_once(':') {
+            None => ("", rest),
+            Some((ip, host)) if !ip.is_empty() => (ip, host),
+            Some(_) => return Err(unreadable(entry)),
+        };
+        let host_ip = raw_ip
+            .strip_prefix('[')
+            .and_then(|ip| ip.strip_suffix(']'))
+            .unwrap_or(raw_ip);
+        let key = if container_spec.contains('/') {
+            container_spec.to_owned()
+        } else {
+            format!("{container_spec}/tcp")
+        };
+        exposed.insert(key.clone(), serde_json::json!({}));
+        bindings.insert(
+            key,
+            serde_json::json!([{ "HostIp": host_ip, "HostPort": host }]),
+        );
+    }
+
+    let list = |text: &str| {
+        text.split(',')
+            .map(str::trim)
             .filter(|entry| !entry.is_empty())
-            .collect()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
     };
-    let env: Vec<String> = if env.trim().is_empty() {
-        Vec::new()
-    } else {
-        env.split(',')
-            .map(|entry| entry.trim().to_owned())
-            .filter(|entry| !entry.is_empty())
-            .collect()
-    };
+    let binds = list(volumes);
+    let env = list(env);
 
     let mut host_config = serde_json::Map::new();
     if !binds.is_empty() {
@@ -270,7 +278,15 @@ fn container_body(image: &str, ports: &str, volumes: &str, env: &str) -> Result<
         "ExposedPorts": exposed,
         "HostConfig": host_config,
     });
-    serde_json::to_vec(&body).map_err(|_| ())
+    serde_json::to_vec(&body).map_err(|error| format!("The request could not be written: {error}"))
+}
+
+/// What to say about an entry the rule above accepted and this couldn't read:
+/// the two disagree, which is a fault in berth, never in the run.
+fn unreadable(entry: &str) -> String {
+    format!(
+        "berth couldn't read {entry:?} as a port, though its own rule accepted it. Nothing was run."
+    )
 }
 
 fn prune_engine(socket: &str, api: &str, engine: Engine, options: &PruneOptions) -> Outcome {
@@ -331,7 +347,8 @@ mod tests {
 
     #[test]
     fn a_run_body_has_ports_env_and_binds() {
-        let body = container_body("nginx", "127.0.0.1:8080:80", "data:/data", "A=1").expect("body");
+        let body =
+            container_body("nginx", "web", "127.0.0.1:8080:80", "data:/data", "A=1").expect("body");
         let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(value["Image"], "nginx");
         assert_eq!(
@@ -347,8 +364,23 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_port_is_refused_before_a_request() {
-        assert!(container_body("nginx", "8080", "", "").is_err());
+    fn a_run_the_form_refuses_is_refused_here_too_in_the_same_words() {
+        // The worker is a last line, not a second opinion: it applies the
+        // form's rule, and says what the form says.
+        let error = container_body("nginx", "", "8080", "", "").expect_err("no colon");
+        assert_eq!(
+            error,
+            "Port 8080 needs host:container or ip:host:container."
+        );
+        // An address with no port to publish on. Read leniently, this would
+        // ask the engine for any free port.
+        let error = container_body("nginx", "", "127.0.0.1::80", "", "").expect_err("no host port");
+        assert!(error.contains("needs host:container"), "{error}");
+        let error = container_body("nginx", "bad name", "8080:80", "", "").expect_err("bad name");
+        assert_eq!(
+            error,
+            "Container names are letters, digits, dot, dash and underscore."
+        );
     }
 
     #[test]
