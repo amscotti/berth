@@ -103,10 +103,21 @@ pub struct Container {
     pub mounts: Vec<Mount>,
 }
 
+/// `HostConfig`, as the list and the inspect document both carry it. The list
+/// leaves most of it out, so every field defaults.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct HostConfig {
     pub network_mode: String,
+    pub port_bindings: Option<serde_json::Value>,
+    pub restart_policy: Option<RestartPolicy>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+pub struct RestartPolicy {
+    pub name: String,
+    pub maximum_retry_count: i32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

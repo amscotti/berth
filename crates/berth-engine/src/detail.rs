@@ -6,6 +6,8 @@ use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::dto::{HostConfig, Mount};
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct ContainerDetail {
@@ -63,33 +65,6 @@ pub struct DetailConfig {
     pub labels: Option<Value>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct HostConfig {
-    pub network_mode: String,
-    pub port_bindings: Option<Value>,
-    pub restart_policy: Option<RestartPolicy>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct RestartPolicy {
-    pub name: String,
-    pub maximum_retry_count: i32,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "PascalCase")]
-pub struct Mount {
-    #[serde(rename = "Type")]
-    pub mount_type: String,
-    pub name: Option<String>,
-    pub source: String,
-    pub destination: String,
-    #[serde(rename = "RW")]
-    pub rw: bool,
-}
-
 /// One container mount entry summarized for the inspector.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MountSummary {
@@ -99,9 +74,10 @@ pub struct MountSummary {
     pub rw: bool,
 }
 
-/// Started-at, exit/health diagnostics, restart count, environment, mounts, IPs, and run command.
+/// What the inspect document says that the list doesn't: started-at, exit and
+/// health, restarts, environment, mounts, addresses, and the run command.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Lifetime {
+pub struct InspectFacts {
     pub started_at: Option<i64>,
     pub restarts: u32,
     pub exit_code: Option<i32>,
@@ -117,7 +93,7 @@ pub struct Lifetime {
     pub run_redacted: bool,
 }
 
-impl Lifetime {
+impl InspectFacts {
     /// Build from a raw inspect document. A malformed document is not fatal:
     /// the pane simply has no extra facts.
     pub fn from_inspect(raw: &[u8]) -> Option<Self> {
@@ -489,7 +465,7 @@ mod tests {
             "HostConfig":{"PortBindings":{"80/tcp":[{"HostIp":"0.0.0.0","HostPort":"8080"}]}},
             "Mounts":[{"Type":"volume","Source":"data","Destination":"/data","RW":true}]
         }"#;
-        let life = Lifetime::from_inspect(raw).expect("parse");
+        let life = InspectFacts::from_inspect(raw).expect("parse");
         assert!(life.started_at.is_some());
         assert_eq!(life.restarts, 3);
         let cmd = life.run_cmd.expect("run command");
@@ -504,7 +480,7 @@ mod tests {
     #[test]
     fn never_started_has_no_started_at() {
         let raw = br#"{"State":{"StartedAt":"0001-01-01T00:00:00Z"}}"#;
-        let life = Lifetime::from_inspect(raw).expect("parse");
+        let life = InspectFacts::from_inspect(raw).expect("parse");
         assert_eq!(life.started_at, None);
     }
 
@@ -530,7 +506,7 @@ mod tests {
             "Config":{"Image":"worker:1","Env":["PORT=8080","API_KEY=secret123"]},
             "HostConfig":{"RestartPolicy":{"Name":"on-failure","MaximumRetryCount":5}}
         }"#;
-        let life = Lifetime::from_inspect(raw).expect("parse");
+        let life = InspectFacts::from_inspect(raw).expect("parse");
         assert_eq!(life.exit_code, Some(137));
         assert!(life.oom_killed);
         assert_eq!(life.restart_policy.as_deref(), Some("on-failure:5"));
@@ -557,7 +533,7 @@ mod tests {
                 "LOGIN=admin@db"
             ]}
         }"#;
-        let life = Lifetime::from_inspect(raw).expect("parse");
+        let life = InspectFacts::from_inspect(raw).expect("parse");
         assert_eq!(
             life.env,
             vec![

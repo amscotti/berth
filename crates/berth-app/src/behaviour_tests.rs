@@ -106,7 +106,7 @@ fn changing_the_filter_clears_a_selection_that_no_longer_fits(cx: &mut TestAppCo
         assert!(app.selected_id.is_none());
         // Cleared the whole way: no detail job is left running against nothing.
         assert!(app.detail_task.is_none());
-        assert!(app.detail_lifetime.is_none());
+        assert!(app.inspect_facts.is_none());
         assert!(app.logs_text.is_empty());
     });
 }

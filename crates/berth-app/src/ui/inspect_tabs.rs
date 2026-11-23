@@ -28,14 +28,14 @@ pub(crate) fn config_tab(
         .overflow_y_scroll()
         .gap(px(10.0));
 
-    let life = app.detail_lifetime.as_ref();
-    let cmd = life
+    let facts = app.inspect_facts.as_ref();
+    let cmd = facts
         .and_then(|l| l.command.as_deref())
         .or_else(|| (!container.command.is_empty()).then_some(container.command.as_str()));
     if let Some(cmd) = cmd {
         scroll = scroll.child(fact("Command", cmd, tokens));
     }
-    if let Some(workdir) = life.and_then(|l| l.workdir.as_deref()) {
+    if let Some(workdir) = facts.and_then(|l| l.workdir.as_deref()) {
         scroll = scroll.child(fact("Workdir", workdir, tokens));
     }
     let net_mode = if container.host_config.network_mode.is_empty() {
@@ -46,7 +46,7 @@ pub(crate) fn config_tab(
     scroll = scroll.child(fact("Net mode", net_mode, tokens));
 
     // Network IPs
-    let mut ips: Vec<(String, String)> = life.map(|l| l.ips.clone()).unwrap_or_default();
+    let mut ips: Vec<(String, String)> = facts.map(|l| l.ips.clone()).unwrap_or_default();
     if ips.is_empty() {
         for (net_name, ep) in &container.network_settings.networks {
             if !ep.ip_address.is_empty() {
@@ -107,7 +107,7 @@ pub(crate) fn config_tab(
     }
 
     // Mounts
-    let mounts: Vec<(String, String, String, bool)> = if let Some(l) = life
+    let mounts: Vec<(String, String, String, bool)> = if let Some(l) = facts
         && !l.mounts.is_empty()
     {
         l.mounts
@@ -209,7 +209,7 @@ pub(crate) fn config_tab(
     }
 
     // Environment
-    let env = life.map(|l| l.env.as_slice()).unwrap_or(&[]);
+    let env = facts.map(|l| l.env.as_slice()).unwrap_or(&[]);
     let mut env_header = div()
         .flex()
         .flex_row()

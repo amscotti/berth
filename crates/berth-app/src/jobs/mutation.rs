@@ -3,8 +3,9 @@
 //! sentence for the rail toast.
 
 use berth_engine::client::Client;
+use berth_engine::discovery::Dialect;
 use berth_engine::discovery::Kind;
-use berth_engine::prune::{self, Engine};
+use berth_engine::prune;
 
 use super::engine_ops;
 
@@ -65,7 +66,7 @@ pub enum Request {
     Prune {
         socket: String,
         api: String,
-        engine: Engine,
+        dialect: Dialect,
         options: PruneOptions,
     },
     EngineOp {
@@ -140,9 +141,9 @@ pub fn run(request: Request) -> Outcome {
         Request::Prune {
             socket,
             api,
-            engine,
+            dialect,
             options,
-        } => prune_engine(&socket, &api, engine, &options),
+        } => prune_stores(&socket, &api, dialect, &options),
         Request::EngineOp { verb, kind, socket } => engine_ops::run(&verb, kind, &socket),
         Request::Bulk {
             socket,
@@ -289,7 +290,7 @@ fn unreadable(entry: &str) -> String {
     )
 }
 
-fn prune_engine(socket: &str, api: &str, engine: Engine, options: &PruneOptions) -> Outcome {
+fn prune_stores(socket: &str, api: &str, dialect: Dialect, options: &PruneOptions) -> Outcome {
     let client = Client::new(socket).with_api(api);
     let plan = prune::plan(
         options.containers,
@@ -297,7 +298,7 @@ fn prune_engine(socket: &str, api: &str, engine: Engine, options: &PruneOptions)
         options.volumes,
         options.networks,
         options.build_cache,
-        engine,
+        dialect,
     );
     let mut freed = 0u64;
     let mut failures = Vec::new();
@@ -395,10 +396,10 @@ mod tests {
             .ok(r#"{"SpaceReclaimed":50}"#)
             .on("POST /build/prune")
             .ok(r#"{"SpaceReclaimed":25}"#);
-        let outcome = prune_engine(
+        let outcome = prune_stores(
             &engine.socket(),
             "v1.43",
-            Engine::Docker,
+            Dialect::Docker,
             &PruneOptions {
                 containers: true,
                 images: true,
@@ -437,7 +438,7 @@ mod tests {
             networks: false,
             build_cache: false,
         };
-        let outcome = prune_engine("missing.sock", "v1.43", Engine::Docker, &options);
+        let outcome = prune_stores("missing.sock", "v1.43", Dialect::Docker, &options);
         // No plan means no request and a zero-byte sentence.
         assert!(!outcome.bad);
         assert!(outcome.message.contains("0 B"));

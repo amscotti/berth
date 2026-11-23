@@ -65,8 +65,9 @@ impl BerthApp {
         }
         self.inspect_text = match outcome.inspect {
             Ok(inspect) => {
-                self.detail_lifetime =
-                    Some(berth_engine::detail::Lifetime::from_detail(&inspect.detail));
+                self.inspect_facts = Some(berth_engine::detail::InspectFacts::from_detail(
+                    &inspect.detail,
+                ));
                 Some(inspect.json)
             }
             Err(error) => Some(format!("could not read inspect: {error}")),
@@ -150,7 +151,7 @@ impl BerthApp {
         self.inspector_tab = tab;
         let unread = match tab {
             InspectorTab::Facts => false,
-            InspectorTab::Config => self.detail_lifetime.is_none(),
+            InspectorTab::Config => self.inspect_facts.is_none(),
             InspectorTab::Runtime => self.detail_top.is_none() && self.detail_changes.is_empty(),
             InspectorTab::Inspect => self.inspect_text.is_none(),
         };
@@ -174,14 +175,14 @@ impl BerthApp {
     }
 
     pub(crate) fn copy_run_command(&mut self, cx: &mut Context<Self>) {
-        let Some(lifetime) = &self.detail_lifetime else {
+        let Some(facts) = &self.inspect_facts else {
             return;
         };
-        let Some(command) = &lifetime.run_cmd else {
+        let Some(command) = &facts.run_cmd else {
             return;
         };
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(command.clone()));
-        if lifetime.run_redacted {
+        if facts.run_redacted {
             self.notify("Run command copied · some env values redacted", false, cx);
         } else {
             self.notify("Run command copied", false, cx);
@@ -224,8 +225,8 @@ impl BerthApp {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let (volumes, env, missing) = if let Some(life) = &self.detail_lifetime {
-            let vols = life
+        let (volumes, env, missing) = if let Some(facts) = &self.inspect_facts {
+            let vols = facts
                 .mounts
                 .iter()
                 .filter(|m| !m.source.is_empty() && !m.destination.is_empty())
@@ -241,7 +242,7 @@ impl BerthApp {
             // A redacted value is carried as an empty one: the copy has every
             // variable its source had, and the form says which need filling in.
             let mut missing = 0;
-            let envs = life
+            let envs = facts
                 .env
                 .iter()
                 .map(|(key, value, secret)| {
@@ -339,7 +340,7 @@ impl BerthApp {
         self.logs_loading = false;
         self.inspect_text = None;
         self.inspect_loading = false;
-        self.detail_lifetime = None;
+        self.inspect_facts = None;
         self.detail_top = None;
         self.detail_changes.clear();
         self.image_layers.clear();
@@ -429,7 +430,7 @@ mod tests {
         let (app, cx) = crate::testkit::fixture(cx);
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            app.detail_lifetime = Some(berth_engine::detail::Lifetime {
+            app.inspect_facts = Some(berth_engine::detail::InspectFacts {
                 env: vec![
                     ("PORT".into(), "8080".into(), false),
                     ("API_KEY".into(), "<redacted>".into(), true),

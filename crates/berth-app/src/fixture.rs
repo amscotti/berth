@@ -108,7 +108,7 @@ impl BerthApp {
         self.inspect_loading = false;
         self.logs_text =
             "2026-11-07 15:20:01 [notice] 1#1: nginx/1.27.2\n2026-11-07 15:20:01 [notice] 1#1: start worker processes\n172.18.0.1 - - [07/Nov/2026:15:21:10 +0000] \"GET / HTTP/1.1\" 200 615".into();
-        self.detail_lifetime = Some(berth_engine::detail::Lifetime {
+        self.inspect_facts = Some(berth_engine::detail::InspectFacts {
             started_at: Some(berth_core::format::now() - 18 * 3600),
             restarts: 0,
             exit_code: None,

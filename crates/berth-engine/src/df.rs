@@ -221,11 +221,7 @@ impl Df {
     /// build-cache store to measure: showing `0 B` there would be a zero
     /// nobody measured.
     pub fn store(&self, dialect: crate::discovery::Dialect, store: Store) -> Option<i64> {
-        let engine = match dialect {
-            crate::discovery::Dialect::Docker => prune::Engine::Docker,
-            crate::discovery::Dialect::Podman => prune::Engine::Podman,
-        };
-        if store == Store::BuildCache && !prune::supported(prune::Kind::BuildCache, engine) {
+        if store == Store::BuildCache && !prune::supported(prune::Kind::BuildCache, dialect) {
             return None;
         }
         self.stores().get(store)

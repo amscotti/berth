@@ -131,17 +131,9 @@ impl BerthApp {
         cx.notify();
     }
 
-    /// The dialect a cleanup talks to.
-    pub(crate) fn prune_engine(&self) -> berth_engine::prune::Engine {
-        match self.engine.dialect {
-            berth_engine::discovery::Dialect::Podman => berth_engine::prune::Engine::Podman,
-            _ => berth_engine::prune::Engine::Docker,
-        }
-    }
-
     /// Whether this engine can clean up build cache.
     pub(crate) fn prune_build_supported(&self) -> bool {
-        berth_engine::prune::supported(berth_engine::prune::Kind::BuildCache, self.prune_engine())
+        berth_engine::prune::supported(berth_engine::prune::Kind::BuildCache, self.engine.dialect)
     }
 
     /// What a cleanup option is ticked for, in the order the sheet lists them.
@@ -152,7 +144,7 @@ impl BerthApp {
             1 => options.images,
             2 => options.volumes,
             3 => options.networks,
-            _ => berth_engine::prune::build_cache_enabled(options.build_cache, self.prune_engine()),
+            _ => berth_engine::prune::build_cache_enabled(options.build_cache, self.engine.dialect),
         }
     }
 
@@ -270,12 +262,12 @@ impl BerthApp {
             self.notify("no engine is selected", true, cx);
             return;
         };
-        let engine = self.prune_engine();
+        let dialect = self.engine.dialect;
         self.prune_in_flight = self.start_mutation(
             Request::Prune {
                 socket: client.socket().to_owned(),
                 api: client.api().to_owned(),
-                engine,
+                dialect,
                 options: self.prune_options,
             },
             cx,

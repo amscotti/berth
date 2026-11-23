@@ -125,29 +125,29 @@ pub(crate) fn container_pane(
     if let Some(service) = container.service() {
         pane = pane.child(fact("Service", service, tokens));
     }
-    if let Some(lifetime) = &app.detail_lifetime {
-        if let Some(started) = lifetime.started_at {
+    if let Some(facts) = &app.inspect_facts {
+        if let Some(started) = facts.started_at {
             pane = pane.child(fact(
                 "Started",
                 &format::started(started, format::now()),
                 tokens,
             ));
         }
-        pane = pane.child(fact("Restarts", &lifetime.restarts.to_string(), tokens));
-        if let Some(policy) = &lifetime.restart_policy {
+        pane = pane.child(fact("Restarts", &facts.restarts.to_string(), tokens));
+        if let Some(policy) = &facts.restart_policy {
             pane = pane.child(fact("Policy", policy, tokens));
         }
-        if let Some(code) = lifetime.exit_code {
-            let label = if lifetime.oom_killed {
+        if let Some(code) = facts.exit_code {
+            let label = if facts.oom_killed {
                 format!("{code} (OOM killed)")
             } else {
                 code.to_string()
             };
             pane = pane.child(fact("Exit", &label, tokens));
-        } else if lifetime.oom_killed {
+        } else if facts.oom_killed {
             pane = pane.child(fact("Exit", "OOM killed", tokens));
         }
-        if let Some(probe) = &lifetime.health_log {
+        if let Some(probe) = &facts.health_log {
             pane = pane.child(fact("Probe", probe, tokens));
         }
     } else if app.logs_loading {
@@ -320,9 +320,9 @@ pub(crate) fn container_pane(
                 cx.listener(|this, _, _, cx| this.clone_container_to_run(cx)),
             ))
             .when(
-                app.detail_lifetime
+                app.inspect_facts
                     .as_ref()
-                    .is_some_and(|lifetime| lifetime.run_cmd.is_some()),
+                    .is_some_and(|facts| facts.run_cmd.is_some()),
                 |this| {
                     this.child(inspector_button(
                         "Copy run",
