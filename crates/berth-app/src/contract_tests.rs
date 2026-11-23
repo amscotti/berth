@@ -130,3 +130,43 @@ fn monospace_is_named_once() {
         }
     }
 }
+
+/// Dead code is deleted, not forgiven. The one exception is the tray's stub
+/// for the platforms that have no tray.
+#[test]
+fn dead_code_is_deleted_not_forgiven() {
+    for (path, source) in sources() {
+        for (line, text) in source.lines().enumerate() {
+            if text.contains("allow(dead_code)") {
+                assert!(
+                    path.ends_with("tray.rs"),
+                    "{} forgives dead code",
+                    place(&path, line)
+                );
+            }
+        }
+    }
+}
+
+/// An icon that nothing draws is a file in the bundle for nothing.
+#[test]
+fn every_icon_is_drawn() {
+    // The repository's `assets/icons`, two levels above the crate.
+    let icons = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("assets")
+        .join("icons");
+    let drawn: String = sources().into_iter().map(|(_, source)| source).collect();
+    for entry in std::fs::read_dir(&icons).expect("the icons are in the repository") {
+        let path = entry.expect("a readable entry").path();
+        let name = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or("");
+        assert!(
+            drawn.contains(&format!("\"{name}\"")),
+            "{} is bundled, and nothing names it",
+            path.display()
+        );
+    }
+}

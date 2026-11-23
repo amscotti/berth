@@ -29,13 +29,9 @@ icons!(
     "disk",
     "runtimes",
     "settings",
-    "cpu",
-    "memory",
     "running",
     "host",
     "check",
-    "sparkles",
-    "plus",
     "xmark",
 );
 

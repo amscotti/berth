@@ -22,7 +22,6 @@ use berth_engine::stats::{
 pub struct Snapshot {
     pub containers: Vec<Container>,
     pub stats: Vec<Sample>,
-    pub stats_complete: bool,
     pub images: Vec<Image>,
     pub volumes: Vec<Volume>,
     pub networks: Vec<Network>,

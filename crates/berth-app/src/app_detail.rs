@@ -279,7 +279,6 @@ impl BerthApp {
 
     pub(crate) fn select(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.clear_selection(cx);
-        self.selected = Some(ix);
         self.selected_id = self.snapshot.containers.get(ix).map(|row| row.id.clone());
         self.selected_name = self
             .snapshot
@@ -333,7 +332,6 @@ impl BerthApp {
     }
 
     pub(crate) fn clear_selection(&mut self, cx: &mut Context<Self>) {
-        self.selected = None;
         self.selected_id = None;
         self.selected_name.clear();
         self.inspector_tab = InspectorTab::Facts;

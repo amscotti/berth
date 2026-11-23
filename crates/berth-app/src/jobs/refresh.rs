@@ -2,8 +2,6 @@
 //! it; the UI thread swaps it in one step. A core failure aborts the pass and
 //! leaves the previous snapshot on screen.
 
-use std::time::Duration;
-
 use berth_core::format;
 use berth_engine::client::{Client, ClientError};
 use berth_engine::df::Df;
@@ -11,7 +9,7 @@ use berth_engine::discovery::Dialect;
 use berth_engine::events::{Event, merge};
 use berth_engine::network_counts::Counts;
 use berth_engine::projects::summaries;
-use berth_engine::stats::{Sample, all_sampled};
+use berth_engine::stats::Sample;
 
 use crate::state::Snapshot;
 
@@ -72,7 +70,7 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
     let containers = client
         .containers()
         .map_err(|error| RefreshError::core(error, generation))?;
-    let (stats, stats_complete) = sample_stats(&client, &containers, request.cores);
+    let stats = sample_stats(&client, &containers, request.cores);
 
     let images = client
         .images()
@@ -111,7 +109,6 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
     let snapshot = Snapshot {
         containers,
         stats,
-        stats_complete,
         images,
         volumes,
         networks,
@@ -150,7 +147,7 @@ fn sample_stats(
     client: &Client,
     containers: &[berth_engine::dto::Container],
     cores: u32,
-) -> (Vec<Sample>, bool) {
+) -> Vec<Sample> {
     let running: Vec<(usize, String)> = containers
         .iter()
         .enumerate()
@@ -159,7 +156,7 @@ fn sample_stats(
         .collect();
     let mut stats = vec![Sample::default(); containers.len()];
     if running.is_empty() {
-        return (stats, true);
+        return stats;
     }
 
     let workers = worker_count(running.len());
@@ -191,17 +188,13 @@ fn sample_stats(
     for (index, sample) in results {
         stats[index] = sample;
     }
-    let complete = all_sampled(containers, &stats);
-    (stats, complete)
+    stats
 }
 
 /// Merge a fresh event interval into the previous ring, newest first.
 pub fn merge_events(previous: &[Event], fresh: &[Event]) -> Vec<Event> {
     merge(previous, fresh, 200)
 }
-
-#[allow(dead_code)]
-const _REFRESH_PERIOD: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests {
@@ -227,7 +220,7 @@ mod tests {
         let engine = crate::testkit::scripted_engine();
         let outcome = load(request(engine.socket())).expect("pass");
         assert_eq!(outcome.snapshot.containers.len(), 1);
-        assert!(outcome.snapshot.stats_complete);
+        assert!(outcome.snapshot.stats_complete());
         assert_eq!(outcome.snapshot.stat(0).pids, Some(5));
         assert_eq!(outcome.generation, 3);
         let df = outcome.df.expect("df requested").expect("df ok");

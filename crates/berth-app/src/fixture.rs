@@ -426,7 +426,6 @@ pub fn fixture_snapshot() -> Snapshot {
     Snapshot {
         containers,
         stats,
-        stats_complete: true,
         images,
         volumes,
         networks,
@@ -463,7 +462,6 @@ pub fn fixture_snapshot_with(count: usize) -> Snapshot {
         snapshot.containers.push(container);
         snapshot.stats.push(base.stats[index % base.stats.len()]);
     }
-    snapshot.stats_complete = true;
     snapshot.projects.clear();
     snapshot
 }

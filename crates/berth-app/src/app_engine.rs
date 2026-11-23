@@ -352,36 +352,18 @@ impl BerthApp {
                 .iter()
                 .any(|container| &container.id == id)
         });
+        // Selection is by id, found again in whatever snapshot is on screen.
         let Some(id) = self.selected_id.clone() else {
-            self.selected = None;
             return;
         };
-        match self.detail_kind {
-            DetailKind::Container => {
-                self.selected = self
-                    .snapshot
-                    .containers
-                    .iter()
-                    .position(|container| container.id == id);
-                if self.selected.is_none() {
-                    self.selected_id = None;
-                }
-            }
-            DetailKind::Image => {
-                if self.snapshot.selected_image(&id).is_none() {
-                    self.selected_id = None;
-                }
-            }
-            DetailKind::Volume => {
-                if self.snapshot.selected_volume(&id).is_none() {
-                    self.selected_id = None;
-                }
-            }
-            DetailKind::Network => {
-                if self.snapshot.selected_network(&id).is_none() {
-                    self.selected_id = None;
-                }
-            }
+        let still_there = match self.detail_kind {
+            DetailKind::Container => self.snapshot.selected_container(&id).is_some(),
+            DetailKind::Image => self.snapshot.selected_image(&id).is_some(),
+            DetailKind::Volume => self.snapshot.selected_volume(&id).is_some(),
+            DetailKind::Network => self.snapshot.selected_network(&id).is_some(),
+        };
+        if !still_there {
+            self.selected_id = None;
         }
     }
 
