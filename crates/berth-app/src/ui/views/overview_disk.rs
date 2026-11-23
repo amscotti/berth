@@ -1,6 +1,7 @@
 //! Overview disk card and its legend helpers.
 
 use berth_core::format;
+use berth_engine::df::Store;
 use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use gpui::prelude::*;
@@ -14,6 +15,7 @@ pub(crate) fn disk_card(
     tokens: Tokens,
     width: f32,
     snapshot: &crate::state::Snapshot,
+    dialect: berth_engine::discovery::Dialect,
     total: &str,
     reclaimable: &str,
     cx: &mut Context<BerthApp>,
@@ -52,7 +54,6 @@ pub(crate) fn disk_card(
                 .child(total.to_owned()),
         );
     if let Some(df) = &snapshot.df {
-        let stores = df.stores();
         let shares = df.shares();
         card = card
             .child(graph::stacked_bar(
@@ -78,13 +79,13 @@ pub(crate) fn disk_card(
                             .gap(px(12.0))
                             .child(legend(
                                 "images",
-                                format::measured(stores.images),
+                                format::measured(df.store(dialect, Store::Images)),
                                 tokens.accent_fill(),
                                 tokens,
                             ))
                             .child(legend(
                                 "containers",
-                                format::measured(stores.containers),
+                                format::measured(df.store(dialect, Store::Containers)),
                                 tokens.success,
                                 tokens,
                             )),
@@ -97,13 +98,13 @@ pub(crate) fn disk_card(
                             .gap(px(12.0))
                             .child(legend(
                                 "volumes",
-                                format::measured(stores.volumes),
+                                format::measured(df.store(dialect, Store::Volumes)),
                                 tokens.store_volume(),
                                 tokens,
                             ))
                             .child(legend(
                                 "build cache",
-                                format::measured(stores.build_cache),
+                                format::measured(df.store(dialect, Store::BuildCache)),
                                 tokens.muted,
                                 tokens,
                             )),

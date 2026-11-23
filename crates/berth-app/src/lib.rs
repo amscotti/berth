@@ -12,12 +12,18 @@ mod app_detail;
 mod app_engine;
 mod app_forms;
 mod app_render;
+#[cfg(test)]
+mod app_tests;
 mod assets;
+#[cfg(test)]
+mod behaviour_tests;
 mod host;
 mod jobs;
 mod settings;
 mod state;
 mod terminal;
+#[cfg(test)]
+mod testkit;
 mod tray;
 mod ui;
 

@@ -314,6 +314,22 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .child(field("Volumes", app.run_volumes.clone(), tokens));
     card = card.child(second);
     card = card.child(field("Env", app.run_env.clone(), tokens));
+    if app.run_env_missing > 0 {
+        let noun = if app.run_env_missing == 1 {
+            "value was"
+        } else {
+            "values were"
+        };
+        card = card.child(
+            div()
+                .text_size(px(11.0))
+                .text_color(tokens.warning_text())
+                .child(format!(
+                    "{} {noun} left empty because the source redacted them. Fill them in before running.",
+                    app.run_env_missing
+                )),
+        );
+    }
     card = card.child(
         div()
             .flex()

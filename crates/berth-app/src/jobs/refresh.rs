@@ -210,37 +210,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    const CONTAINERS: &str =
-        r#"[{"Id":"a","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 1 hour"}]"#;
-    const STATS: &str = r#"{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000},"memory_stats":{"usage":1000,"limit":2000,"stats":{"inactive_file":200}},"pids_stats":{"current":5}}"#;
-    const DF: &str = r#"{"LayersSize":0,"ImageUsage":{"TotalSize":100,"Reclaimable":40}}"#;
-
-    /// A mock with one running container and every route a pass visits.
-    fn scripted() -> MockEngine {
-        scripted_events(Reply::ok(""))
-    }
-
-    /// `scripted`, with `/events` answering `events`.
-    fn scripted_events(events: Reply) -> MockEngine {
-        let engine = MockEngine::start();
-        engine
-            .on("GET /containers/json")
-            .ok(CONTAINERS)
-            .on("/stats")
-            .ok(STATS)
-            .on("GET /images/json")
-            .ok("[]")
-            .on("GET /volumes")
-            .ok(r#"{"Volumes":[]}"#)
-            .on("GET /networks")
-            .ok("[]")
-            .on("GET /events")
-            .reply(events)
-            .on("GET /system/df")
-            .ok(DF);
-        engine
-    }
-
     fn request(socket: String) -> Request {
         Request {
             socket,
@@ -255,7 +224,7 @@ mod tests {
 
     #[test]
     fn one_pass_builds_a_complete_snapshot() {
-        let engine = scripted();
+        let engine = crate::testkit::scripted_engine();
         let outcome = load(request(engine.socket())).expect("pass");
         assert_eq!(outcome.snapshot.containers.len(), 1);
         assert!(outcome.snapshot.stats_complete);
@@ -284,7 +253,7 @@ mod tests {
             )
         };
         let requests = Arc::new(AtomicUsize::new(0));
-        let engine = scripted_events(Reply::With(Arc::new(move |request| {
+        let engine = crate::testkit::scripted_engine_with(Reply::With(Arc::new(move |request| {
             let since = request
                 .path
                 .split("since=")
@@ -330,7 +299,7 @@ mod tests {
     #[test]
     fn an_events_stream_the_engine_holds_open_is_sampled_not_failed() {
         // An engine whose clock is behind the host's never reaches `until`.
-        let engine = scripted_events(Reply::Hang);
+        let engine = crate::testkit::scripted_engine_with(Reply::Hang);
         let started = std::time::Instant::now();
         let outcome = load(request(engine.socket())).expect("a held stream is not a failed pass");
         assert!(!outcome.snapshot.events_error);

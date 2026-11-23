@@ -14,7 +14,9 @@ use berth_engine::dto::{Container, Image, Info, Network, Port, UsageData, Versio
 use berth_engine::events::{Actor, Event};
 use berth_engine::network_counts::Counts;
 use berth_engine::projects::Summary;
-use berth_engine::stats::{Sample, aggregate_cpu_percent, all_sampled, memory_used};
+use berth_engine::stats::{
+    Sample, aggregate_cpu_percent, all_memory_known, all_sampled, memory_used,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -60,8 +62,10 @@ impl Snapshot {
         aggregate_cpu_percent(&self.containers, &self.stats, cores)
     }
 
+    /// True only when every up container answered, and with a working set.
     pub fn stats_complete(&self) -> bool {
         all_sampled(&self.containers, &self.stats)
+            && all_memory_known(&self.containers, &self.stats)
     }
 
     /// What the engine's stores hold, or `None` when no store has been

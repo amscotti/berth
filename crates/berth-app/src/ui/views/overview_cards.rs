@@ -99,7 +99,7 @@ pub(crate) fn fleet_card(
                 tokens.accent_fill(),
                 tokens,
                 chart_w,
-                100.0,
+                Some(100.0),
             ))
             .child(spark(
                 "Memory",
@@ -108,10 +108,7 @@ pub(crate) fn fleet_card(
                 tokens.success,
                 tokens,
                 chart_w,
-                app.engine
-                    .active_runtime()
-                    .map(|runtime| runtime.info.mem_total.max(1) as f32)
-                    .unwrap_or(1.0),
+                memory_ceiling(app.engine.active_runtime()),
             )),
     );
     card.child(div().w_full().h(px(1.0)).bg(tokens.border))
@@ -178,6 +175,17 @@ fn io_stat(label: &'static str, value: &str, tokens: Tokens) -> Div {
         )
 }
 
+/// The ceiling of the memory graph: the engine's `MemTotal`. `None` when the
+/// engine reported none, so the graph stays empty rather than filling against
+/// a ceiling of one byte.
+pub(crate) fn memory_ceiling(runtime: Option<&berth_engine::discovery::Runtime>) -> Option<f32> {
+    runtime
+        .filter(|runtime| runtime.info_read)
+        .map(|runtime| runtime.info.mem_total)
+        .filter(|total| *total > 0)
+        .map(|total| total as f32)
+}
+
 fn spark(
     label: &'static str,
     value: &str,
@@ -185,7 +193,7 @@ fn spark(
     color: gpui::Hsla,
     tokens: Tokens,
     width: f32,
-    scale: f32,
+    ceiling: Option<f32>,
 ) -> Div {
     div()
         .flex()
@@ -215,12 +223,11 @@ fn spark(
                         .child(value.to_owned()),
                 ),
         )
-        .child(graph::cell_graph_with_height(
+        .child(graph::cell_graph(
             values,
             color,
             tokens.track,
-            scale,
-            false,
+            ceiling,
             56.0,
         ))
 }
@@ -512,4 +519,33 @@ pub(crate) fn muted(text: &str, tokens: Tokens) -> Div {
         .text_size(px(12.0))
         .text_color(tokens.muted)
         .child(text.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn runtime(info_read: bool, mem_total: u64) -> berth_engine::discovery::Runtime {
+        berth_engine::discovery::Runtime {
+            info_read,
+            info: berth_engine::dto::Info {
+                mem_total,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_memory_ceiling_is_the_engine_total_and_nothing_else() {
+        assert_eq!(
+            memory_ceiling(Some(&runtime(true, 4_000_000_000))),
+            Some(4.0e9)
+        );
+        // No engine, an engine that didn't answer /info, or one that reported
+        // no total: the ceiling is unknown, not one.
+        assert_eq!(memory_ceiling(None), None);
+        assert_eq!(memory_ceiling(Some(&runtime(false, 4_000_000_000))), None);
+        assert_eq!(memory_ceiling(Some(&runtime(true, 0))), None);
+    }
 }

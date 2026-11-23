@@ -89,10 +89,6 @@ impl BerthApp {
     }
 
     fn execute_batch(&mut self, ids: Vec<String>, verb: &str, cx: &mut Context<Self>) -> bool {
-        if self.mutation_task.is_some() {
-            self.notify("wait for the current engine operation to finish", true, cx);
-            return false;
-        }
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return false;
@@ -120,7 +116,6 @@ impl BerthApp {
                 verb: verb.to_owned(),
             },
             cx,
-        );
-        true
+        )
     }
 }

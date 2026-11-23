@@ -11,11 +11,47 @@ use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, FontWeight, Hsla, IntoElement, Role, div, px};
 
+use super::row_actions::action_cell;
 use super::tabular;
 use crate::app::BerthApp;
 
+/// How a row is shaded. Striping follows the row's position on screen, not
+/// its place in the snapshot: a sorted or filtered table still alternates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Shade {
+    Selected,
+    Alt,
+    Plain,
+}
+
+pub(crate) fn shade(position: usize, selected: bool) -> Shade {
+    if selected {
+        Shade::Selected
+    } else if position % 2 == 1 {
+        Shade::Alt
+    } else {
+        Shade::Plain
+    }
+}
+
+impl Shade {
+    fn background(self, tokens: Tokens) -> gpui::Hsla {
+        match self {
+            Shade::Selected => tokens.accent.alpha(0.10),
+            Shade::Alt => tokens.surface_hover.alpha(0.35),
+            Shade::Plain => tokens.surface,
+        }
+    }
+}
+
+/// One container row. `index` is its place in the snapshot and `position` its
+/// place among the rows on screen: striping follows the position, so a sorted
+/// or filtered table still alternates evenly.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn container_row(
     app: &BerthApp,
+    index: usize,
+    position: usize,
     container: &Container,
     stat: Sample,
     selected: bool,
@@ -23,12 +59,6 @@ pub(crate) fn container_row(
     columns: ContainerColumns,
     cx: &mut Context<BerthApp>,
 ) -> AnyElement {
-    let actual_index = app
-        .snapshot
-        .containers
-        .iter()
-        .position(|candidate| candidate.id == container.id)
-        .unwrap_or(0);
     let row_id = gpui::SharedString::from(format!("container-{}", container.id));
     let mut element = div()
         .id(row_id)
@@ -40,13 +70,7 @@ pub(crate) fn container_row(
         .px(px(12.0))
         .gap(px(10.0))
         .rounded(px(4.0))
-        .bg(if selected {
-            tokens.accent.alpha(0.10)
-        } else if actual_index % 2 == 1 {
-            tokens.surface_hover.alpha(0.35)
-        } else {
-            tokens.surface
-        })
+        .bg(shade(position, selected).background(tokens))
         .when(!selected, |this| {
             this.hover(move |style| style.bg(tokens.surface_hover))
         })
@@ -54,7 +78,7 @@ pub(crate) fn container_row(
         .aria_label(container.name())
         .aria_selected(selected)
         .on_click(cx.listener(move |this, _, _, cx| {
-            this.select(actual_index, cx);
+            this.select(index, cx);
         }));
 
     if app.bulk_enabled {
@@ -439,154 +463,6 @@ fn ports_cell(
     cell
 }
 
-fn action_cell(
-    container: &Container,
-    width: f32,
-    tokens: Tokens,
-    cx: &mut Context<BerthApp>,
-) -> Div {
-    let name = container.name().to_owned();
-    let id = container.id.clone();
-    let mut cell = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_end()
-        .w(px(width))
-        .gap(px(4.0));
-    if container.is_up() {
-        cell = cell
-            .child(action_pill(
-                "Stop",
-                &id,
-                0,
-                false,
-                tokens,
-                "POST",
-                format!("/containers/{id}/stop"),
-                "Stopped",
-                false,
-                &name,
-                cx,
-            ))
-            .child(action_pill(
-                "Restart",
-                &id,
-                1,
-                false,
-                tokens,
-                "POST",
-                format!("/containers/{id}/restart"),
-                "Restarted",
-                false,
-                &name,
-                cx,
-            ))
-            .child(action_pill(
-                "Delete",
-                &id,
-                2,
-                true,
-                tokens,
-                "DELETE",
-                format!("/containers/{id}?force=1"),
-                "Delete",
-                true,
-                &name,
-                cx,
-            ));
-    } else {
-        cell = cell
-            .child(action_pill(
-                "Start",
-                &id,
-                3,
-                false,
-                tokens,
-                "POST",
-                format!("/containers/{id}/start"),
-                "Started",
-                false,
-                &name,
-                cx,
-            ))
-            .child(action_pill(
-                "Delete",
-                &id,
-                4,
-                true,
-                tokens,
-                "DELETE",
-                format!("/containers/{id}?force=1"),
-                "Delete",
-                true,
-                &name,
-                cx,
-            ));
-    }
-    cell
-}
-
-#[allow(clippy::too_many_arguments)]
-fn action_pill(
-    label: &'static str,
-    container_id: &str,
-    slot: usize,
-    danger: bool,
-    tokens: Tokens,
-    method: &'static str,
-    path: String,
-    verb: &'static str,
-    confirm: bool,
-    name: &str,
-    cx: &mut Context<BerthApp>,
-) -> impl IntoElement {
-    let color = if danger {
-        tokens.danger_text()
-    } else {
-        tokens.text
-    };
-    let click_name = name.to_owned();
-    let method = method.to_owned();
-    div()
-        .id(gpui::SharedString::from(format!(
-            "action-{container_id}-{slot}"
-        )))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(24.0))
-        .px(px(8.0))
-        .rounded(px(12.0))
-        .bg(if danger {
-            tokens.danger_text().alpha(0.10)
-        } else {
-            tokens.surface_hover
-        })
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(cx.listener(move |this, _, _, cx| {
-            cx.stop_propagation();
-            if confirm {
-                this.confirm_action(
-                    method.clone(),
-                    path.clone(),
-                    verb.to_owned(),
-                    click_name.clone(),
-                    cx,
-                );
-            } else {
-                this.run_action(method.clone(), path.clone(), verb.to_owned(), cx);
-            }
-        }))
-        .child(
-            div()
-                .text_size(px(type_scale::SMALL_BUTTON))
-                .text_color(color)
-                .child(label),
-        )
-}
-
 pub(crate) fn status_color(tokens: Tokens, state: &str) -> Hsla {
     match state {
         "running" | "healthy" => tokens.success_text(),
@@ -595,5 +471,22 @@ pub(crate) fn status_color(tokens: Tokens, state: &str) -> Hsla {
         "dead" | "unhealthy" => tokens.danger_text(),
         "created" => tokens.accent_text_pill(),
         _ => tokens.muted_text_pill(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn striping_follows_the_position_on_screen_not_the_snapshot() {
+        // Rows two and four of the snapshot, shown as the first and second
+        // rows of a filtered table: they still alternate.
+        for (position, shade_expected) in [(0, Shade::Plain), (1, Shade::Alt), (2, Shade::Plain)] {
+            assert_eq!(shade(position, false), shade_expected);
+        }
+        // Whatever its position, the open row is the selected one.
+        assert_eq!(shade(0, true), Shade::Selected);
+        assert_eq!(shade(3, true), Shade::Selected);
     }
 }

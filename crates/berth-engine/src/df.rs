@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::dto::{Image, UsageData, Volume};
+use crate::prune;
 
 /// Bytes each engine store holds. A store is `None` when the engine didn't
 /// measure it or doesn't have it: that is unknown, not zero.
@@ -214,6 +215,20 @@ impl Df {
             volumes,
             build_cache,
         }
+    }
+
+    /// One store's figure. Build cache is unknown on Podman, which has no
+    /// build-cache store to measure: showing `0 B` there would be a zero
+    /// nobody measured.
+    pub fn store(&self, dialect: crate::discovery::Dialect, store: Store) -> Option<i64> {
+        let engine = match dialect {
+            crate::discovery::Dialect::Docker => prune::Engine::Docker,
+            crate::discovery::Dialect::Podman => prune::Engine::Podman,
+        };
+        if store == Store::BuildCache && !prune::supported(prune::Kind::BuildCache, engine) {
+            return None;
+        }
+        self.stores().get(store)
     }
 
     /// What each store's prune could free. The tests mirror the engine's own:
@@ -491,6 +506,20 @@ mod tests {
         assert_eq!(stores.get(Store::Volumes), Some(0));
         assert_eq!(stores.get(Store::Images), None);
         assert_eq!(stores.total(), 0);
+    }
+
+    #[test]
+    fn build_cache_is_unknown_on_podman_even_when_a_figure_arrives() {
+        let df = Df {
+            build_cache_usage: Some(Usage {
+                total_size: 40,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        use crate::discovery::Dialect;
+        assert_eq!(df.store(Dialect::Docker, Store::BuildCache), Some(40));
+        assert_eq!(df.store(Dialect::Podman, Store::BuildCache), None);
     }
 
     #[test]

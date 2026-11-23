@@ -10,7 +10,7 @@ use std::sync::Arc;
 use berth_engine::dto::Container;
 use berth_ui::theme::{TintKind, Tokens};
 use gpui::prelude::*;
-use gpui::{Context, Entity, FocusHandle, Subscription, Task};
+use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription, Task};
 
 use crate::jobs::mutation::PruneOptions;
 use crate::settings::{self, Appearance};
@@ -214,6 +214,8 @@ pub struct BerthApp {
     pub(crate) discovery_task: Option<Task<()>>,
     pub(crate) terminal_task: Option<Task<()>>,
     pub(crate) refresh_wanted: bool,
+    /// A rescan asked for while one was already running. It goes next.
+    pub(crate) rescan_wanted: bool,
     pub(crate) fixture: bool,
     pub(crate) appearance: Appearance,
     pub(crate) socket_input: Entity<InputState>,
@@ -230,6 +232,8 @@ pub struct BerthApp {
     pub(crate) run_env: Entity<InputState>,
     pub(crate) pull_attempted: bool,
     pub(crate) run_attempted: bool,
+    /// How many env values a clone left empty because they were redacted.
+    pub(crate) run_env_missing: usize,
     pub(crate) create_kind: Option<CreateKind>,
     pub(crate) create_name: Entity<InputState>,
     pub(crate) create_attempted: bool,
@@ -252,6 +256,9 @@ pub struct BerthApp {
     pub(crate) inspect_loading: bool,
     pub(crate) detail_generation: u64,
     pub(crate) detail_task: Option<Task<()>>,
+    /// The inspector's scroll handles, so Follow can keep the logs at their end.
+    pub(crate) log_scroll: ScrollHandle,
+    pub(crate) inspect_scroll: ScrollHandle,
     pub(crate) bulk_enabled: bool,
     pub(crate) bulk_selected: std::collections::BTreeSet<String>,
     pub(crate) window_handle: Option<gpui::AnyWindowHandle>,
@@ -337,7 +344,7 @@ impl BerthApp {
             cx.subscribe(
                 search,
                 move |this, input, event: &InputEvent, cx| match event {
-                    InputEvent::Changed => {
+                    InputEvent::Changed | InputEvent::Edited => {
                         this.queries[index] = input.read(cx).text().to_owned();
                         cx.notify();
                     }
@@ -358,7 +365,7 @@ impl BerthApp {
         let create_name = cx.new(|cx| InputState::new("name", 360.0, cx));
         let log_search = cx.new(|cx| InputState::new("Search logs", 130.0, cx));
         let _log_search_sub = cx.subscribe(&log_search, |_, input, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Changed) {
+            if matches!(event, InputEvent::Changed | InputEvent::Edited) {
                 let _ = input.read(cx).text();
                 cx.notify();
             } else if matches!(event, InputEvent::Cancelled) {
@@ -371,7 +378,7 @@ impl BerthApp {
             |this, _, event: &InputEvent, cx| match event {
                 InputEvent::Submitted => this.submit_create(cx),
                 InputEvent::Cancelled => this.close_create(cx),
-                InputEvent::Changed => {}
+                InputEvent::Changed | InputEvent::Edited => {}
             },
         ));
         _form_subs.push(
@@ -388,6 +395,14 @@ impl BerthApp {
                 }
             }));
         }
+        _form_subs.push(cx.subscribe(&run_env, |this, _, event: &InputEvent, cx| {
+            // Only the user's own edit retires the note: the clone that
+            // filled the field in must not clear it a moment later.
+            if matches!(event, InputEvent::Edited) && this.run_env_missing != 0 {
+                this.run_env_missing = 0;
+                cx.notify();
+            }
+        }));
         _form_subs.push(
             cx.subscribe(&socket_input, |this, input, event: &InputEvent, cx| {
                 if matches!(event, InputEvent::Submitted) {
@@ -410,6 +425,7 @@ impl BerthApp {
             Appearance::Dark => berth_ui::theme::dark(),
             Appearance::System => tokens,
         };
+        berth_ui::theme::ActiveTokens::set(tokens, cx);
         Self {
             // The real app opens on Overview once the graphs exist. Until then
             // the table is the fully drawn surface.
@@ -436,6 +452,7 @@ impl BerthApp {
             discovery_task: None,
             terminal_task: None,
             refresh_wanted: false,
+            rescan_wanted: false,
             fixture,
             appearance,
             socket_input,
@@ -452,6 +469,7 @@ impl BerthApp {
             run_env,
             pull_attempted: false,
             run_attempted: false,
+            run_env_missing: 0,
             create_kind: None,
             create_name,
             create_attempted: false,
@@ -474,6 +492,8 @@ impl BerthApp {
             inspect_loading: false,
             detail_generation: 0,
             detail_task: None,
+            log_scroll: ScrollHandle::new(),
+            inspect_scroll: ScrollHandle::new(),
             bulk_enabled: false,
             bulk_selected: std::collections::BTreeSet::new(),
             window_handle: None,
@@ -490,8 +510,15 @@ impl BerthApp {
     pub fn set_tokens(&mut self, tokens: Tokens, cx: &mut Context<Self>) {
         if self.tokens != tokens {
             self.tokens = tokens;
+            // Entities that render on their own read the global, not `self`.
+            berth_ui::theme::ActiveTokens::set(tokens, cx);
             cx.notify();
         }
+    }
+
+    /// Empty a table's search field.
+    pub(crate) fn clear_search(&mut self, kind: SearchKind, cx: &mut Context<Self>) {
+        self.searches[kind as usize].update(cx, |input, cx| input.clear(cx));
     }
 
     pub(crate) fn search(&self, kind: SearchKind) -> &Entity<InputState> {
@@ -527,53 +554,4 @@ pub(crate) fn container_matches(container: &Container, query: &str) -> bool {
     ]
     .iter()
     .any(|field| field.to_ascii_lowercase().contains(query))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn container_search_matches_the_fields_the_row_shows() {
-        let snapshot = crate::state::fixture_snapshot();
-        let container = &snapshot.containers[0];
-        assert!(container_matches(container, ""));
-        assert!(container_matches(container, "demo"));
-        assert!(container_matches(container, "nginx"));
-        assert!(container_matches(container, "8080"));
-        assert!(container_matches(container, "shop"));
-        assert!(!container_matches(container, "redis"));
-    }
-
-    #[test]
-    fn the_running_filter_counts_paused_as_up() {
-        let running = Container {
-            state: "running".into(),
-            ..Default::default()
-        };
-        let paused = Container {
-            state: "paused".into(),
-            ..Default::default()
-        };
-        let exited = Container {
-            state: "exited".into(),
-            ..Default::default()
-        };
-        assert!(Filter::Running.keeps(&running));
-        assert!(Filter::Running.keeps(&paused));
-        assert!(!Filter::Running.keeps(&exited));
-        assert!(Filter::Stopped.keeps(&exited));
-        assert!(Filter::All.keeps(&exited));
-    }
-
-    #[test]
-    fn rail_figures_come_from_the_snapshot() {
-        let snapshot = crate::state::fixture_snapshot();
-        assert_eq!(Tab::Containers.figure(&snapshot, 1), "2/2");
-        assert_eq!(Tab::Images.figure(&snapshot, 1), "2");
-        assert_eq!(Tab::Volumes.figure(&snapshot, 1), "1");
-        assert_eq!(Tab::Networks.figure(&snapshot, 1), "4");
-        assert_eq!(Tab::Settings.figure(&snapshot, 1), "");
-        assert!(Tab::Disk.figure(&snapshot, 1).contains("MiB"));
-    }
 }

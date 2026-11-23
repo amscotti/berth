@@ -24,6 +24,12 @@ pub const MAIN_PADDING: f32 = 40.0;
 /// The smallest content width a table is expected to draw in.
 pub const MIN_CONTENT: f32 = 280.0;
 
+/// The CPU column, at every density. It has to hold a figure such as `99.9%`
+/// or `1235%`: at its old 46 points the 960-wide window showed `99…`.
+pub const CPU_COLUMN: f32 = 58.0;
+/// The short name the column tables use for [`CPU_COLUMN`].
+const CPU: f32 = CPU_COLUMN;
+
 /// The window's default and minimum content sizes.
 pub const WINDOW_DEFAULT: (f32, f32) = (1280.0, 760.0);
 pub const WINDOW_MIN: (f32, f32) = (960.0, 600.0);
@@ -169,9 +175,9 @@ pub fn container_columns(content: f32, _any_project: bool) -> ContainerColumns {
     let mut columns = match density {
         Density::Full => ContainerColumns {
             density,
-            name: 170.0,
+            name: 162.0,
             status: 66.0,
-            cpu: 50.0,
+            cpu: CPU,
             mem: 62.0,
             net: 82.0,
             disk: 82.0,
@@ -188,9 +194,9 @@ pub fn container_columns(content: f32, _any_project: bool) -> ContainerColumns {
         },
         Density::Medium => ContainerColumns {
             density,
-            name: 156.0,
+            name: 148.0,
             status: 62.0,
-            cpu: 46.0,
+            cpu: CPU,
             mem: 56.0,
             net: 72.0,
             disk: 72.0,
@@ -207,9 +213,9 @@ pub fn container_columns(content: f32, _any_project: bool) -> ContainerColumns {
         },
         Density::Dense => ContainerColumns {
             density,
-            name: 146.0,
+            name: 136.0,
             status: 64.0,
-            cpu: 48.0,
+            cpu: CPU,
             mem: 60.0,
             net: 0.0,
             disk: 0.0,
@@ -226,9 +232,9 @@ pub fn container_columns(content: f32, _any_project: bool) -> ContainerColumns {
         },
         Density::Compact => ContainerColumns {
             density,
-            name: 120.0,
+            name: 110.0,
             status: 64.0,
-            cpu: 48.0,
+            cpu: CPU,
             mem: 60.0,
             net: 0.0,
             disk: 0.0,
@@ -245,9 +251,9 @@ pub fn container_columns(content: f32, _any_project: bool) -> ContainerColumns {
         },
         Density::Tiny => ContainerColumns {
             density,
-            name: 132.0,
+            name: 124.0,
             status: 64.0,
-            cpu: 48.0,
+            cpu: CPU,
             mem: 0.0,
             net: 0.0,
             disk: 0.0,
@@ -294,7 +300,7 @@ mod tests {
         assert_eq!(columns.density, Density::Full);
         assert!(columns.show_net && columns.show_ports);
         assert!(columns.row_width() <= 1040.0);
-        assert_eq!(columns.name, 198.0); // 170 + the 28 points of spare
+        assert_eq!(columns.name, 190.0); // 162 + the 28 points of spare
     }
 
     #[test]
@@ -318,6 +324,26 @@ mod tests {
                 "{} columns asked for {} in {content}",
                 columns.density.label(),
                 columns.row_width()
+            );
+        }
+    }
+
+    #[test]
+    fn the_cpu_column_fits_a_five_character_figure_at_every_density() {
+        // `99.9%` at the 13-point body size measures about 41 points; with
+        // the 8 points of right padding it needs 49. Leave a margin.
+        for content in [1040.0, 832.0, 770.0, 656.0, 510.0, 472.0] {
+            let columns = container_columns(content, false);
+            assert!(
+                columns.cpu >= 58.0,
+                "{} cpu was {}",
+                columns.density.label(),
+                columns.cpu
+            );
+            assert!(
+                columns.row_width() <= content,
+                "{} does not fit",
+                columns.density.label()
             );
         }
     }

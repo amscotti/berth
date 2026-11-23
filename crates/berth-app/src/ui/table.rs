@@ -125,12 +125,7 @@ pub(crate) fn page_header(
                 .aria_label(filter.label())
                 .aria_selected(selected)
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    if this.filter != filter {
-                        this.filter = filter;
-                        this.selected = None;
-                        this.selected_id = None;
-                        cx.notify();
-                    }
+                    this.set_filter(filter, cx);
                 }))
                 .child(
                     div()
@@ -357,11 +352,14 @@ pub(crate) fn table(
     let bar = bulk_bar(app, tokens, cx);
     let children = rows
         .iter()
-        .map(|index| {
+        .enumerate()
+        .map(|(position, index)| {
             let container = &app.snapshot.containers[*index];
             let stat = app.snapshot.stat(*index);
             let selected = app.selected_id.as_deref() == Some(container.id.as_str());
-            cells::container_row(app, container, stat, selected, tokens, columns, cx)
+            cells::container_row(
+                app, *index, position, container, stat, selected, tokens, columns, cx,
+            )
         })
         .collect::<Vec<_>>();
 

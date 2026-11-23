@@ -91,6 +91,36 @@ pub fn for_appearance(appearance: WindowAppearance) -> Tokens {
     }
 }
 
+/// The tokens the window is being painted with, kept as a GPUI global for the
+/// entities that render on their own and so can't be handed the root's tokens
+/// on each frame: a text field, for instance.
+///
+/// The root sets it whenever the theme changes, including for an Appearance
+/// choice that differs from the system's. Until it has, reading falls back to
+/// the window's own appearance.
+pub struct ActiveTokens(pub Tokens);
+
+impl gpui::Global for ActiveTokens {}
+
+impl ActiveTokens {
+    /// Make `tokens` the active ones.
+    pub fn set(tokens: Tokens, cx: &mut gpui::App) {
+        if cx
+            .try_global::<Self>()
+            .is_some_and(|active| active.0 == tokens)
+        {
+            return;
+        }
+        cx.set_global(Self(tokens));
+    }
+
+    /// The active tokens.
+    pub fn get(window: &gpui::Window, cx: &gpui::App) -> Tokens {
+        cx.try_global::<Self>()
+            .map_or_else(|| for_appearance(window.appearance()), |active| active.0)
+    }
+}
+
 impl Tokens {
     /// The amber a graph or a store segment is filled with. `accent` itself is
     /// the text-bearing control fill: cream text needs the darker light value,

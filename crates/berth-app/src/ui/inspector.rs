@@ -8,7 +8,7 @@ use berth_engine::stats::Sample;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{FontWeight, IntoElement, Role, div, px};
+use gpui::{FontWeight, IntoElement, Role, ScrollEvent, div, px};
 
 pub(crate) use super::inspect_objects::{image_pane, network_pane, volume_pane};
 use super::inspect_shared::*;
@@ -108,6 +108,8 @@ pub(crate) fn container_pane(
             .child(
                 div()
                     .id("inspect-well")
+                    .track_scroll(&app.inspect_scroll)
+                    .debug_selector(|| "inspect-well".to_string())
                     .flex()
                     .flex_col()
                     .w_full()
@@ -308,6 +310,9 @@ pub(crate) fn container_pane(
 
     let name = container.name().to_owned();
     let id = container.id.clone();
+    let actions = container.actions();
+    // What the state allows, in the order a person reaches for it, then the
+    // actions that need no particular state.
     pane = pane.child(
         div()
             .flex()
@@ -315,77 +320,29 @@ pub(crate) fn container_pane(
             .flex_wrap()
             .w_full()
             .gap(px(6.0))
-            .when(container.is_up(), |this| {
-                this.child(verb_button(
-                    if container.is_paused() {
-                        "Resume"
-                    } else {
-                        "Pause"
-                    },
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            let (path, verb) = if container_state_paused(this, &id) {
-                                (format!("/containers/{id}/unpause"), "Resumed")
-                            } else {
-                                (format!("/containers/{id}/pause"), "Paused")
-                            };
-                            this.run_action("POST".into(), path, verb.into(), cx);
-                        }
-                    }),
-                ))
+            .when(actions.resume, |this| {
+                this.child(lifecycle("Resume", "/unpause", "Resumed", &id, tokens, cx))
             })
-            .when(!container.is_up(), |this| {
-                this.child(verb_button(
-                    "Start",
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            this.run_action(
-                                "POST".into(),
-                                format!("/containers/{id}/start"),
-                                "Started".into(),
-                                cx,
-                            );
-                        }
-                    }),
-                ))
+            .when(actions.pause, |this| {
+                this.child(lifecycle("Pause", "/pause", "Paused", &id, tokens, cx))
             })
-            .when(container.is_up(), |this| {
-                this.child(verb_button(
+            .when(actions.start, |this| {
+                this.child(lifecycle("Start", "/start", "Started", &id, tokens, cx))
+            })
+            .when(actions.restart, |this| {
+                this.child(lifecycle(
                     "Restart",
+                    "/restart",
+                    "Restarted",
+                    &id,
                     tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            this.run_action(
-                                "POST".into(),
-                                format!("/containers/{id}/restart"),
-                                "Restarted".into(),
-                                cx,
-                            );
-                        }
-                    }),
-                ))
-                .child(verb_button(
-                    "Stop",
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            this.run_action(
-                                "POST".into(),
-                                format!("/containers/{id}/stop"),
-                                "Stopped".into(),
-                                cx,
-                            );
-                        }
-                    }),
+                    cx,
                 ))
             })
-            .when(container.is_up(), |this| {
+            .when(actions.stop, |this| {
+                this.child(lifecycle("Stop", "/stop", "Stopped", &id, tokens, cx))
+            })
+            .when(actions.terminal, |this| {
                 this.child(verb_button(
                     "Terminal",
                     tokens,
@@ -409,23 +366,25 @@ pub(crate) fn container_pane(
                     ))
                 },
             )
-            .child(delete_button(
-                "Delete",
-                tokens,
-                cx.listener({
-                    let id = id.clone();
-                    let name = name.clone();
-                    move |this, _, _, cx| {
-                        this.confirm_action(
-                            "DELETE".into(),
-                            format!("/containers/{id}?force=1"),
-                            "Delete".into(),
-                            name.clone(),
-                            cx,
-                        );
-                    }
-                }),
-            )),
+            .when(container.state != "removing", |this| {
+                this.child(delete_button(
+                    "Delete",
+                    tokens,
+                    cx.listener({
+                        let id = id.clone();
+                        let name = name.clone();
+                        move |this, _, _, cx| {
+                            this.confirm_action(
+                                "DELETE".into(),
+                                format!("/containers/{id}?force=1"),
+                                "Delete".into(),
+                                name.clone(),
+                                cx,
+                            );
+                        }
+                    }),
+                ))
+            }),
     );
 
     let mut logs_head = div()
@@ -484,22 +443,12 @@ pub(crate) fn container_pane(
             .child(app.log_search.clone()),
     );
 
-    let query = app.log_search.read(cx).text().to_owned();
-    let visible = if query.is_empty() {
-        app.logs_text.clone()
-    } else {
-        berth_engine::logs::filter_lines(&app.logs_text, &query).join("\n")
-    };
-    let body = if app.logs_loading {
-        "Reading…".to_owned()
-    } else if visible.is_empty() {
-        "No output yet. A container that has said nothing says nothing.".to_owned()
-    } else {
-        visible
-    };
+    let body = log_body(app, cx);
     pane.child(
         div()
             .id("log-well")
+            .track_scroll(&app.log_scroll)
+            .debug_selector(|| "log-well".to_string())
             .flex()
             .flex_col()
             .w_full()
@@ -511,6 +460,14 @@ pub(crate) fn container_pane(
             .bg(tokens.background)
             .border_1()
             .border_color(tokens.border)
+            // Scrolling back up pauses Follow, as it does in every log viewer.
+            // The toggle shows that it has paused.
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
+                if event.delta.pixel_delta(px(1.0)).y > px(0.0) && this.logs_follow {
+                    this.logs_follow = false;
+                    cx.notify();
+                }
+            }))
             .child(
                 div()
                     .text_size(px(11.5))
@@ -521,10 +478,121 @@ pub(crate) fn container_pane(
     )
 }
 
-fn container_state_paused(app: &crate::app::BerthApp, id: &str) -> bool {
-    app.snapshot
-        .containers
-        .iter()
-        .find(|container| container.id == id)
-        .is_some_and(|container| container.is_paused())
+/// What the log well shows. A poll in flight never blanks the lines already
+/// on screen: only the very first read, with nothing to show yet, says it is
+/// reading.
+pub(crate) fn log_body(app: &crate::app::BerthApp, cx: &gpui::App) -> String {
+    let query = app.log_search.read(cx).text().to_owned();
+    if app.logs_loading && app.logs_text.is_empty() {
+        return "Reading…".to_owned();
+    }
+    if query.is_empty() {
+        if app.logs_text.is_empty() {
+            "No output yet. A container that has said nothing says nothing.".to_owned()
+        } else {
+            app.logs_text.clone()
+        }
+    } else {
+        let matched = berth_engine::logs::filter_lines(&app.logs_text, &query);
+        if matched.is_empty() {
+            format!("No line contains {query:?}.")
+        } else {
+            matched.join("\n")
+        }
+    }
+}
+
+/// A button for one container lifecycle verb. The request path is built when
+/// it is pressed.
+fn lifecycle(
+    label: &'static str,
+    route: &'static str,
+    past: &'static str,
+    id: &str,
+    tokens: Tokens,
+    cx: &mut gpui::Context<crate::app::BerthApp>,
+) -> impl IntoElement {
+    let id = id.to_owned();
+    verb_button(
+        label,
+        tokens,
+        cx.listener(move |this, _, _, cx| {
+            this.run_action(
+                "POST".into(),
+                format!("/containers/{id}{route}"),
+                past.into(),
+                cx,
+            )
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Point, ScrollDelta, ScrollEvent, TestAppContext, px};
+
+    #[gpui::test]
+    fn a_follow_poll_never_blanks_the_logs_already_on_screen(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.logs_text = "line one\nline two\n".into();
+            // A poll is in flight.
+            app.logs_loading = true;
+            assert_eq!(log_body(app, cx), "line one\nline two\n");
+            // Only the very first read has nothing to show yet.
+            app.logs_text.clear();
+            assert_eq!(log_body(app, cx), "Reading…");
+            app.logs_loading = false;
+            assert_eq!(
+                log_body(app, cx),
+                "No output yet. A container that has said nothing says nothing."
+            );
+            // A search that matches nothing says so.
+            app.logs_text = "alpha\nbeta\n".into();
+            app.log_search
+                .update(cx, |input, cx| input.set_value("gamma", cx));
+            assert_eq!(log_body(app, cx), "No line contains \"gamma\".");
+            app.log_search
+                .update(cx, |input, cx| input.set_value("beta", cx));
+            assert_eq!(log_body(app, cx), "beta");
+        });
+    }
+
+    #[gpui::test]
+    fn follow_keeps_the_well_at_its_end_until_the_reader_scrolls_up(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.select(0, cx);
+            app.logs_text = (0..400).map(|line| format!("line {line}\n")).collect();
+            app.logs_loading = false;
+            app.logs_follow = true;
+            // What a finished read does when Follow is on.
+            app.log_scroll.scroll_to_bottom();
+        });
+        crate::testkit::draw(cx);
+        app.read_with(&*cx, |app, _| {
+            let max = app.log_scroll.max_offset().y;
+            assert!(max > px(0.0), "the logs overflow the well ({max:?})");
+            assert_eq!(
+                app.log_scroll.offset().y,
+                -max,
+                "the newest lines are on screen"
+            );
+        });
+
+        // The reader scrolls back up: Follow pauses, and the toggle shows it.
+        let well = cx
+            .debug_bounds("log-well")
+            .expect("the log well was laid out");
+        cx.simulate_event(ScrollEvent {
+            position: well.center(),
+            delta: ScrollDelta::Pixels(Point::new(px(0.0), px(40.0))),
+            ..Default::default()
+        });
+        assert!(
+            !app.read_with(&*cx, |app, _| app.logs_follow),
+            "scrolling up pauses Follow"
+        );
+    }
 }

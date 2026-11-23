@@ -257,6 +257,21 @@ pub fn is_podman_machine_socket(path: &str) -> bool {
             .is_some_and(|base| base.ends_with("-api.sock"))
 }
 
+/// Whether an engine of this kind runs inside a virtual machine. Its disk is
+/// then a disk image on the host, and freeing space inside the machine
+/// doesn't shrink that image until it is compacted.
+pub fn vm_backed(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::DockerDesktop
+            | Kind::OrbStack
+            | Kind::Rancher
+            | Kind::Colima
+            | Kind::Lima
+            | Kind::PodmanMachine
+    )
+}
+
 /// Podman 5 names its socket `<machine>-api.sock` or places `podman.sock` inside
 /// a `<machine>/` subdirectory; the unnamed 4.x layout sits directly in `machine/`.
 pub fn podman_machine_name(path: &str) -> Option<&str> {
@@ -383,6 +398,23 @@ mod tests {
             kind_of("/Users/me/.local/share/containers/podman/machine/podman.sock"),
             Kind::PodmanMachine
         );
+    }
+
+    #[test]
+    fn only_vm_backed_engines_keep_their_disk_in_an_image() {
+        for kind in [
+            Kind::DockerDesktop,
+            Kind::OrbStack,
+            Kind::Rancher,
+            Kind::Colima,
+            Kind::Lima,
+            Kind::PodmanMachine,
+        ] {
+            assert!(vm_backed(kind), "{kind:?}");
+        }
+        // A native daemon, and rootless Podman, write straight to the host.
+        assert!(!vm_backed(Kind::Dockerd));
+        assert!(!vm_backed(Kind::Podman));
     }
 
     #[test]

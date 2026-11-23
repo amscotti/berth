@@ -223,22 +223,31 @@ fn runtime_card(
         );
     }
     if ops_supported(runtime.kind) {
-        card = card.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(6.0))
-                .pt(px(2.0))
-                .child(small_button("Start", index, runtime, tokens, cx))
-                .child(small_button("Stop", index, runtime, tokens, cx))
-                .child(small_button("Restart", index, runtime, tokens, cx)),
-        );
+        let mut row = div().flex().flex_row().gap(px(6.0)).pt(px(2.0));
+        for verb in machine_ops(runtime) {
+            row = row.child(small_button(verb, index, runtime, tokens, cx));
+        }
+        card = card.child(row);
     }
     card
 }
 
 fn ops_supported(kind: Kind) -> bool {
     matches!(kind, Kind::Lima | Kind::Colima | Kind::PodmanMachine)
+}
+
+/// What can be done to a machine. One that is answering can be stopped or
+/// restarted; one that isn't can only be started. Offering the others is
+/// offering a refusal.
+pub(crate) fn machine_ops(runtime: &Runtime) -> &'static [&'static str] {
+    if !ops_supported(runtime.kind) {
+        return &[];
+    }
+    if runtime.reachable {
+        &["Stop", "Restart"]
+    } else {
+        &["Start"]
+    }
 }
 
 fn chip(color: gpui::Hsla) -> Div {
@@ -284,4 +293,24 @@ fn small_button(
                 .text_color(tokens.text)
                 .child(label),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_machine_offers_only_what_its_state_allows() {
+        let mut runtime = Runtime {
+            kind: Kind::Lima,
+            reachable: true,
+            ..Default::default()
+        };
+        assert_eq!(machine_ops(&runtime), ["Stop", "Restart"]);
+        runtime.reachable = false;
+        assert_eq!(machine_ops(&runtime), ["Start"]);
+        // Not a machine at all.
+        runtime.kind = Kind::Dockerd;
+        assert!(machine_ops(&runtime).is_empty());
+    }
 }

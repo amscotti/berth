@@ -17,7 +17,11 @@ use gpui::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
+    /// The text changed, whether by the user or by the app.
     Changed,
+    /// The user changed the text themselves. Sent together with `Changed`,
+    /// so a subscriber can tell an edit from the app filling a field in.
+    Edited,
     Submitted,
     Cancelled,
 }
@@ -97,20 +101,20 @@ impl InputState {
             "backspace" if command => {
                 self.buffer.home(true);
                 self.buffer.backspace();
-                cx.emit(InputEvent::Changed);
+                self.edited(cx);
             }
             "backspace" if modifiers.alt => {
                 self.buffer.move_word_left(true);
                 self.buffer.backspace();
-                cx.emit(InputEvent::Changed);
+                self.edited(cx);
             }
             "backspace" => {
                 self.buffer.backspace();
-                cx.emit(InputEvent::Changed);
+                self.edited(cx);
             }
             "delete" => {
                 self.buffer.delete();
-                cx.emit(InputEvent::Changed);
+                self.edited(cx);
             }
             "left" if command => self.buffer.home(extend),
             "right" if command => self.buffer.end(extend),
@@ -131,13 +135,13 @@ impl InputState {
                 if let Some(text) = self.buffer.selected_text() {
                     cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
                     self.buffer.insert("");
-                    cx.emit(InputEvent::Changed);
+                    self.edited(cx);
                 }
             }
             "v" if command => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     self.buffer.insert(&text);
-                    cx.emit(InputEvent::Changed);
+                    self.edited(cx);
                 }
             }
             "enter" => {
@@ -162,6 +166,12 @@ impl InputState {
         self.marked = None;
         window.notify_text_input_changed(&self.focus_handle);
         cx.notify();
+    }
+
+    /// Announce an edit made by the user.
+    fn edited(&mut self, cx: &mut Context<Self>) {
+        cx.emit(InputEvent::Edited);
+        cx.emit(InputEvent::Changed);
     }
 
     fn focus_and_place_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -189,9 +199,10 @@ impl Focusable for InputState {
 
 impl Render for InputState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The tokens are resolved by the root; the field reads the current
-        // window appearance so it stays correct without a second observer.
-        let tokens = berth_ui::theme::for_appearance(window.appearance());
+        // The root publishes its tokens for entities that render on their
+        // own. Reading the window's appearance here would ignore an
+        // Appearance choice that differs from the system's.
+        let tokens = berth_ui::theme::ActiveTokens::get(window, cx);
         let focused = self.focus_handle.is_focused(window);
         let empty = self.buffer.is_empty();
         let (before, selected, after) = self.visual_parts();
@@ -366,7 +377,7 @@ impl EntityInputHandler for InputState {
         self.buffer.insert(text);
         self.marked = None;
         window.notify_text_input_changed(&self.focus_handle);
-        cx.emit(InputEvent::Changed);
+        self.edited(cx);
         cx.notify();
     }
 
@@ -520,6 +531,27 @@ mod gpui_tests {
             input.read_with(&*cx, |input, _| input.text().to_owned()),
             "ngXin"
         );
+    }
+
+    #[gpui::test]
+    fn a_field_is_painted_with_the_published_tokens(cx: &mut TestAppContext) {
+        // An Appearance choice that differs from the system's is published…
+        cx.update(|app| berth_ui::theme::ActiveTokens::set(berth_ui::theme::dark(), app));
+        let (_input, _cx) = cx.add_window_view(|window, cx| {
+            // …and the field follows it, not the window's own appearance.
+            let tokens = berth_ui::theme::ActiveTokens::get(window, cx);
+            assert_eq!(tokens, berth_ui::theme::dark());
+            InputState::new("Search", 190.0, cx)
+        });
+    }
+
+    #[gpui::test]
+    fn before_anything_is_published_a_field_follows_the_window(cx: &mut TestAppContext) {
+        let (_input, _cx) = cx.add_window_view(|window, cx| {
+            let tokens = berth_ui::theme::ActiveTokens::get(window, cx);
+            assert_eq!(tokens, berth_ui::theme::for_appearance(window.appearance()));
+            InputState::new("Search", 190.0, cx)
+        });
     }
 
     #[gpui::test]

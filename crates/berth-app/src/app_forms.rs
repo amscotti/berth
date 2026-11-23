@@ -115,7 +115,6 @@ impl BerthApp {
             self.notify("no engine is selected", true, cx);
             return;
         };
-        self.create_in_flight = true;
         let request = match kind {
             CreateKind::Volume => Request::CreateVolume {
                 socket: client.socket().to_owned(),
@@ -128,7 +127,7 @@ impl BerthApp {
                 name,
             },
         };
-        self.start_mutation(request, cx);
+        self.create_in_flight = self.start_mutation(request, cx);
     }
 
     pub(crate) fn open_prune(&mut self, cx: &mut Context<Self>) {
@@ -153,8 +152,7 @@ impl BerthApp {
             berth_engine::discovery::Dialect::Podman => berth_engine::prune::Engine::Podman,
             _ => berth_engine::prune::Engine::Docker,
         };
-        self.prune_in_flight = true;
-        self.start_mutation(
+        self.prune_in_flight = self.start_mutation(
             Request::Prune {
                 socket: client.socket().to_owned(),
                 api: client.api().to_owned(),
@@ -261,10 +259,13 @@ impl BerthApp {
         );
     }
 
-    pub(crate) fn start_mutation(&mut self, request: Request, cx: &mut Context<Self>) {
+    /// Start an engine mutation. False when one is already running: the
+    /// request was refused and a toast said so, so the caller must not mark
+    /// any sheet or row as waiting on it.
+    pub(crate) fn start_mutation(&mut self, request: Request, cx: &mut Context<Self>) -> bool {
         if self.mutation_task.is_some() {
             self.notify("wait for the current engine operation to finish", true, cx);
-            return;
+            return false;
         }
         let generation = self.engine.generation;
         let is_engine_op = matches!(request, Request::EngineOp { .. });
@@ -278,6 +279,7 @@ impl BerthApp {
             })
             .ok();
         }));
+        true
     }
 
     fn finish_mutation(
@@ -316,8 +318,11 @@ impl BerthApp {
         }
     }
 
+    /// True while an engine mutation is running. A refresh pass is not a
+    /// mutation: counting it made the confirm sheets flicker every few
+    /// seconds and refused actions that would have run.
     pub(crate) fn mutating(&self) -> bool {
-        self.mutation_task.is_some() || self.refresh_task.is_some()
+        self.mutation_task.is_some()
     }
 
     pub(crate) fn notify(&mut self, text: &str, bad: bool, cx: &mut Context<Self>) {

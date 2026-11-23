@@ -70,6 +70,9 @@ fn confirm_panel(
 ) -> Div {
     let engine = pending.method == "ENGINE";
     let title = format!("{} {}?", pending.verb, pending.name);
+    // Confirm waits for a running mutation, instead of closing the sheet and
+    // dropping the action when the request is refused.
+    let busy = app.mutating();
     let body = if engine {
         format!(
             "Stopping or restarting this machine takes every running container on {} down with it.",
@@ -106,16 +109,16 @@ fn confirm_panel(
                     "Cancel",
                     false,
                     tokens,
-                    cx.listener(|this, _, _, cx| this.resolve_pending(false, cx)),
+                    Some(cx.listener(|this, _, _, cx| this.resolve_pending(false, cx))),
                 ))
                 .child(button(
                     "Confirm",
                     true,
                     tokens,
-                    cx.listener(|this, _, _, cx| this.resolve_pending(true, cx)),
+                    (!busy).then(|| cx.listener(|this, _, _, cx| this.resolve_pending(true, cx))),
                 )),
         )
-        .when(app.mutating(), |this| {
+        .when(busy, |this| {
             this.child(
                 div()
                     .text_size(px(11.0))
@@ -168,13 +171,13 @@ fn create_panel(
                 "Cancel",
                 false,
                 tokens,
-                cx.listener(|this, _, _, cx| this.close_create(cx)),
+                Some(cx.listener(|this, _, _, cx| this.close_create(cx))),
             ))
             .child(button(
                 "Create",
                 true,
                 tokens,
-                cx.listener(|this, _, _, cx| this.submit_create(cx)),
+                Some(cx.listener(|this, _, _, cx| this.submit_create(cx))),
             )),
     )
 }
@@ -307,13 +310,13 @@ fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Di
                 "Cancel",
                 false,
                 tokens,
-                cx.listener(|this, _, _, cx| this.close_prune(cx)),
+                Some(cx.listener(|this, _, _, cx| this.close_prune(cx))),
             ))
             .child(button(
                 "Clean up",
                 true,
                 tokens,
-                cx.listener(|this, _, _, cx| this.run_prune(cx)),
+                Some(cx.listener(|this, _, _, cx| this.run_prune(cx))),
             )),
     )
 }
@@ -374,13 +377,15 @@ fn option(
         )
 }
 
+/// A dialog button. Without `on_click` it is disabled: it can't be pressed,
+/// it says why, and it is drawn faded.
 fn button(
     label: &'static str,
     primary: bool,
     tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    on_click: Option<impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>,
 ) -> impl IntoElement {
-    div()
+    let button = div()
         .id(gpui::SharedString::from(format!("sheet-button-{label}")))
         .flex()
         .items_center()
@@ -394,16 +399,21 @@ fn button(
             tokens.surface_hover
         })
         .role(Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(if primary {
-                    tokens.accent_text
-                } else {
-                    tokens.text
-                })
-                .child(label),
-        )
+        .aria_label(label);
+    let button = match on_click {
+        Some(on_click) => button.on_click(on_click),
+        None => button
+            .opacity(0.45)
+            .aria_description("Unavailable until the running engine operation finishes"),
+    };
+    button.child(
+        div()
+            .text_size(px(12.0))
+            .text_color(if primary {
+                tokens.accent_text
+            } else {
+                tokens.text
+            })
+            .child(label),
+    )
 }

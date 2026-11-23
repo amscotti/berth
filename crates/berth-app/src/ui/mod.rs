@@ -8,6 +8,7 @@ pub mod inspect_shared;
 pub mod inspect_tabs;
 pub mod inspector;
 pub mod rail;
+pub mod row_actions;
 pub mod sheets;
 pub mod table;
 pub mod table_cells;

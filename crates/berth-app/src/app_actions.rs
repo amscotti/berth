@@ -5,6 +5,14 @@ use crate::settings::{self, Appearance};
 use berth_commands::app_actions::*;
 use gpui::{Context, Window};
 
+/// The lowest published port, for sorting. A container with none sorts last.
+fn first_port(container: &berth_engine::dto::Container) -> u16 {
+    container
+        .published_ports()
+        .first()
+        .map_or(u16::MAX, |binding| binding.port)
+}
+
 impl BerthApp {
     // --- actions -----------------------------------------------------------
 
@@ -255,18 +263,38 @@ impl BerthApp {
                 let _ = settings::save(&data);
             })
             .detach();
-        self.engine.client = None;
         self.start_discovery(cx);
     }
 
+    /// Look for engines again. The engine being read stays live meanwhile, so
+    /// the figures on screen keep moving; only a real change of engine starts
+    /// them over.
     pub(crate) fn rescan(&mut self, cx: &mut Context<Self>) {
-        self.engine.client = None;
         self.start_discovery(cx);
     }
 
     pub(crate) fn refresh_now(&mut self, cx: &mut Context<Self>) {
         self.engine.df_at = 0;
         self.start_refresh(cx);
+        cx.notify();
+    }
+
+    /// Show another subset of containers. A selection that no longer fits the
+    /// subset is cleared completely, the way `clear_selection` does it: the
+    /// detail job is cancelled, not left to finish against nothing.
+    pub(crate) fn set_filter(&mut self, filter: Filter, cx: &mut Context<Self>) {
+        if self.filter == filter {
+            return;
+        }
+        self.filter = filter;
+        if self
+            .selected_id
+            .as_deref()
+            .and_then(|id| self.snapshot.selected_container(id))
+            .is_some_and(|container| !filter.keeps(container))
+        {
+            self.clear_selection(cx);
+        }
         cx.notify();
     }
 
@@ -325,7 +353,7 @@ impl BerthApp {
                 7 => berth_engine::detail::up_seconds(&ca.status)
                     .unwrap_or(-1)
                     .cmp(&berth_engine::detail::up_seconds(&cb.status).unwrap_or(-1)),
-                8 => ca.ports_text(4).cmp(&cb.ports_text(4)),
+                8 => first_port(ca).cmp(&first_port(cb)),
                 _ => ca.name().cmp(cb.name()),
             };
             if asc { ord } else { ord.reverse() }

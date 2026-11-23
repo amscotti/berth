@@ -37,13 +37,21 @@ impl BerthApp {
         cx.notify();
     }
 
+    /// Apply one detail read. A read from an older generation is simply
+    /// dropped: a newer one owns the task slot. A read of the current
+    /// generation releases the slot even when the selection has gone away
+    /// under it, so nothing is left behind to hold the next read back.
     fn finish_detail(&mut self, outcome: detail::Outcome, cx: &mut Context<Self>) {
-        if outcome.generation != self.detail_generation
-            || self.selected_id.as_deref() != Some(outcome.id.as_str())
-        {
+        if outcome.generation != self.detail_generation {
             return;
         }
         self.detail_task = None;
+        let Some(selected) = self.selected_id.as_deref() else {
+            return;
+        };
+        if selected != outcome.id {
+            return;
+        }
         self.logs_loading = false;
         self.inspect_loading = false;
         self.detail_top = outcome.top;
@@ -51,6 +59,10 @@ impl BerthApp {
         self.logs_text = outcome
             .logs
             .unwrap_or_else(|error| format!("could not read logs: {error}"));
+        // Follow means the newest lines are on screen.
+        if self.logs_follow {
+            self.log_scroll.scroll_to_bottom();
+        }
         self.inspect_text = match outcome.inspect {
             Ok(inspect) => {
                 self.detail_lifetime =
@@ -63,12 +75,13 @@ impl BerthApp {
     }
 
     fn finish_image_detail(&mut self, outcome: detail::ImageOutcome, cx: &mut Context<Self>) {
-        if outcome.generation != self.detail_generation
-            || self.selected_id.as_deref() != Some(outcome.id.as_str())
-        {
+        if outcome.generation != self.detail_generation {
             return;
         }
         self.detail_task = None;
+        if self.selected_id.as_deref() != Some(outcome.id.as_str()) {
+            return;
+        }
         self.image_layers_loading = false;
         if let Ok(layers) = outcome.layers {
             self.image_layers = layers;
@@ -169,7 +182,9 @@ impl BerthApp {
     pub(crate) fn select_container_by_id(&mut self, id: &str, cx: &mut Context<Self>) {
         if let Some(ix) = self.snapshot.containers.iter().position(|c| c.id == id) {
             self.tab = Tab::Containers;
-            self.filter = Filter::All;
+            // The row has to be on screen: drop whatever was hiding it.
+            self.set_filter(Filter::All, cx);
+            self.clear_search(SearchKind::Containers, cx);
             self.select(ix, cx);
         }
     }
@@ -193,7 +208,7 @@ impl BerthApp {
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let (volumes, env) = if let Some(life) = &self.detail_lifetime {
+        let (volumes, env, missing) = if let Some(life) = &self.detail_lifetime {
             let vols = life
                 .mounts
                 .iter()
@@ -207,16 +222,25 @@ impl BerthApp {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
+            // A redacted value is carried as an empty one: the copy has every
+            // variable its source had, and the form says which need filling in.
+            let mut missing = 0;
             let envs = life
                 .env
                 .iter()
-                .filter(|(_, _, secret)| !*secret)
-                .map(|(k, v, _)| format!("{k}={v}"))
+                .map(|(key, value, secret)| {
+                    if *secret {
+                        missing += 1;
+                        format!("{key}=")
+                    } else {
+                        format!("{key}={value}")
+                    }
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
-            (vols, envs)
+            (vols, envs, missing)
         } else {
-            (String::new(), String::new())
+            (String::new(), String::new(), 0)
         };
         let image = container.image.clone();
         let next_name = format!("{}-copy", container.name());
@@ -233,6 +257,7 @@ impl BerthApp {
             .update(cx, |input, cx| input.set_value(volumes, cx));
         self.run_env
             .update(cx, |input, cx| input.set_value(env, cx));
+        self.run_env_missing = missing;
         cx.notify();
     }
 
@@ -308,5 +333,130 @@ impl BerthApp {
         self.detail_task = None;
         self.detail_generation = self.detail_generation.wrapping_add(1);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Task, TestAppContext};
+    use std::sync::Arc;
+
+    fn outcome(id: &str, generation: u64) -> detail::Outcome {
+        detail::Outcome {
+            id: id.into(),
+            generation,
+            logs: Ok("hello\n".into()),
+            inspect: Err("not read in this test".into()),
+            top: None,
+            changes: Vec::new(),
+        }
+    }
+
+    /// A queued read that stands in for the real one.
+    fn queued(cx: &mut Context<BerthApp>) -> Task<()> {
+        cx.spawn(async move |_, _| ())
+    }
+
+    #[gpui::test]
+    fn a_read_that_outlives_its_selection_releases_the_task_slot(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.select(0, cx);
+            app.detail_task = Some(queued(cx));
+            let generation = app.detail_generation;
+
+            // The container goes away under the read, as a delete makes it.
+            app.snapshot = Arc::new(crate::state::Snapshot::empty());
+            app.reconcile_selection();
+            assert!(app.selected_id.is_none());
+
+            app.finish_detail(outcome("demo-1", generation), cx);
+            assert!(
+                app.detail_task.is_none(),
+                "a finished read must not stay in the slot and hold the next one back"
+            );
+            assert!(app.logs_text.is_empty(), "and it put nothing on screen");
+        });
+    }
+
+    #[gpui::test]
+    fn a_read_from_an_older_generation_leaves_the_newer_task_alone(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.select(0, cx);
+            app.detail_task = Some(queued(cx));
+            app.finish_detail(outcome("demo-1", app.detail_generation - 1), cx);
+            assert!(
+                app.detail_task.is_some(),
+                "the older read doesn't own the slot"
+            );
+            assert!(app.logs_text.is_empty());
+        });
+    }
+
+    #[gpui::test]
+    fn a_finished_read_shows_its_logs(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.select(0, cx);
+            app.logs_loading = true;
+            let generation = app.detail_generation;
+            let mut read = outcome("demo-1", generation);
+            read.logs = Ok("first\nsecond\n".into());
+            app.finish_detail(read, cx);
+            assert!(!app.logs_loading);
+            assert_eq!(app.logs_text, "first\nsecond\n");
+        });
+    }
+
+    #[gpui::test]
+    fn a_clone_keeps_every_variable_and_says_which_need_filling_in(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.select(0, cx);
+            app.detail_lifetime = Some(berth_engine::detail::Lifetime {
+                env: vec![
+                    ("PORT".into(), "8080".into(), false),
+                    ("API_KEY".into(), "<redacted>".into(), true),
+                    ("TOKEN".into(), "<redacted>".into(), true),
+                ],
+                ..Default::default()
+            });
+            app.clone_container_to_run(cx);
+            let env = app.run_env.read(cx).text().to_owned();
+            assert_eq!(env, "PORT=8080, API_KEY=, TOKEN=");
+            assert_eq!(app.run_env_missing, 2);
+            assert_eq!(app.tab, Tab::Images);
+            assert!(app.creation_open);
+        });
+        // The clone filled the field in itself; that must not retire the
+        // note a moment later, once its own change event is delivered.
+        cx.run_until_parked();
+        app.read_with(&*cx, |app, _| assert_eq!(app.run_env_missing, 2));
+        // The user's own edit does.
+        cx.update(|window, cx| {
+            let input = app.read(cx).run_env.clone();
+            input.update(cx, |input, cx| input.focus(window, cx));
+        });
+        cx.simulate_input("X");
+        cx.run_until_parked();
+        app.read_with(&*cx, |app, _| assert_eq!(app.run_env_missing, 0));
+    }
+
+    #[gpui::test]
+    fn jumping_to_a_container_clears_whatever_was_hiding_it(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.tab = Tab::Disk;
+            app.set_filter(Filter::Stopped, cx);
+            app.searches[SearchKind::Containers as usize]
+                .update(cx, |input, cx| input.set_value("nothing-matches", cx));
+            app.select_container_by_id("demo-1", cx);
+            assert_eq!(app.tab, Tab::Containers);
+            assert_eq!(app.filter, Filter::All);
+            assert_eq!(app.query(SearchKind::Containers), "");
+            assert_eq!(app.selected_id.as_deref(), Some("demo-1"));
+        });
     }
 }

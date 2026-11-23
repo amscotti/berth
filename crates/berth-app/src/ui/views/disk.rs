@@ -1,7 +1,8 @@
 //! Disk: what the engine's stores hold and what a cleanup could reclaim.
 
 use berth_core::format;
-use berth_engine::df::Df;
+use berth_engine::df::Store;
+use berth_engine::discovery::Kind;
 use berth_ui::layout::{self, Widths};
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
@@ -30,7 +31,8 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
             .into_any_element();
     };
 
-    let stores = df.stores();
+    let dialect = app.engine.dialect;
+    let figure = |store: Store| format::measured(df.store(dialect, store));
     let free = df.reclaimable_by_store();
     let shares = df.shares();
     let metrics = div()
@@ -40,11 +42,15 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
         .items_end()
         .gap(px(28.0))
         .pb(px(12.0))
-        .child(metric("IMAGES", stores.images, tokens))
-        .child(metric("CONTAINERS", stores.containers, tokens))
-        .child(metric("VOLUMES", stores.volumes, tokens))
-        .child(metric("BUILD CACHE", stores.build_cache, tokens))
-        .child(metric("RECLAIMABLE", Some(free.total()), tokens));
+        .child(metric("IMAGES", figure(Store::Images), tokens))
+        .child(metric("CONTAINERS", figure(Store::Containers), tokens))
+        .child(metric("VOLUMES", figure(Store::Volumes), tokens))
+        .child(metric("BUILD CACHE", figure(Store::BuildCache), tokens))
+        .child(metric(
+            "RECLAIMABLE",
+            format::measured(Some(free.total())),
+            tokens,
+        ));
 
     let bar = graph::stacked_bar(
         vec![
@@ -56,6 +62,7 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
         tokens.track,
     );
 
+    let engine_kind = app.engine.active_runtime().map(|runtime| runtime.kind);
     let explanation = div()
         .flex()
         .flex_col()
@@ -83,7 +90,7 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
             div()
                 .text_size(px(12.0))
                 .text_color(tokens.muted)
-                .child("On macOS this is space inside the engine's VM. Pruning frees it in the guest; the disk image file itself only shrinks when it is compacted."),
+                .child(location_note(engine_kind)),
         )
         .child(
             div()
@@ -113,25 +120,25 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
                 .py(px(10.0))
                 .child(legend(
                     "images",
-                    stores.images,
+                    figure(Store::Images),
                     tokens.accent_fill(),
                     tokens,
                 ))
                 .child(legend(
                     "containers",
-                    stores.containers,
+                    figure(Store::Containers),
                     tokens.success,
                     tokens,
                 ))
                 .child(legend(
                     "volumes",
-                    stores.volumes,
+                    figure(Store::Volumes),
                     tokens.store_volume(),
                     tokens,
                 ))
                 .child(legend(
                     "build cache",
-                    stores.build_cache,
+                    figure(Store::BuildCache),
                     tokens.muted,
                     tokens,
                 )),
@@ -161,7 +168,22 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     content.into_any_element()
 }
 
-fn metric(label: &'static str, bytes: Option<i64>, tokens: Tokens) -> Div {
+/// Where the engine's disk is. That decides what pruning does to the host's
+/// free space: inside a virtual machine it frees space in the guest, and the
+/// disk image only shrinks when it is compacted.
+pub(crate) fn location_note(engine: Option<Kind>) -> &'static str {
+    match engine {
+        Some(kind) if berth_engine::discovery::vm_backed(kind) => {
+            "This is space inside the engine's virtual machine. Pruning frees it there; the disk image on the host only shrinks when it is compacted."
+        }
+        Some(_) => {
+            "This is space on the host, in the engine's data directory. Pruning frees it at once."
+        }
+        None => "These are the engine's stores. Pruning frees what they no longer need.",
+    }
+}
+
+fn metric(label: &'static str, figure: String, tokens: Tokens) -> Div {
     div()
         .flex()
         .flex_col()
@@ -179,11 +201,11 @@ fn metric(label: &'static str, bytes: Option<i64>, tokens: Tokens) -> Div {
                 .font_weight(FontWeight::SEMIBOLD)
                 .font_features(crate::ui::tabular())
                 .text_color(tokens.text)
-                .child(format::measured(bytes)),
+                .child(figure),
         )
 }
 
-fn legend(label: &str, bytes: Option<i64>, color: Hsla, tokens: Tokens) -> Div {
+fn legend(label: &str, figure: String, color: Hsla, tokens: Tokens) -> Div {
     div()
         .flex()
         .flex_row()
@@ -194,7 +216,7 @@ fn legend(label: &str, bytes: Option<i64>, color: Hsla, tokens: Tokens) -> Div {
             div()
                 .text_size(px(11.5))
                 .text_color(tokens.muted)
-                .child(format!("{label} {}", format::measured(bytes))),
+                .child(format!("{label} {figure}")),
         )
 }
 
@@ -232,5 +254,19 @@ fn button(
         )
 }
 
-#[allow(dead_code)]
-fn _df_shape(_: &Df) {}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_note_says_where_the_disk_really_is() {
+        // A machine that runs in a VM frees space inside it, not on the host.
+        assert!(location_note(Some(Kind::Lima)).contains("virtual machine"));
+        assert!(location_note(Some(Kind::DockerDesktop)).contains("virtual machine"));
+        // A native daemon frees space on the host at once.
+        assert!(location_note(Some(Kind::Dockerd)).contains("on the host"));
+        assert!(location_note(Some(Kind::Podman)).contains("on the host"));
+        assert!(!location_note(Some(Kind::Dockerd)).contains("VM"));
+        assert!(location_note(None).contains("engine's stores"));
+    }
+}

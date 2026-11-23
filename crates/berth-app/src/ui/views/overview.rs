@@ -88,7 +88,15 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
     };
 
     let engine = engine_card(tokens, left_w, runtime, &info, snapshot, cx);
-    let disk = disk_card(tokens, right_w, snapshot, &disk_value, &reclaimable, cx);
+    let disk = disk_card(
+        tokens,
+        right_w,
+        snapshot,
+        app.engine.dialect,
+        &disk_value,
+        &reclaimable,
+        cx,
+    );
     let row_two = if wide {
         div()
             .flex()

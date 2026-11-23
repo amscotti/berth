@@ -81,6 +81,8 @@ impl BerthApp {
 
     pub(crate) fn start_discovery(&mut self, cx: &mut Context<Self>) {
         if self.discovery_task.is_some() {
+            // A scan is running. This one goes next instead of being dropped.
+            self.rescan_wanted = true;
             return;
         }
         self.engine.loading = true;
@@ -112,10 +114,37 @@ impl BerthApp {
         if generation != self.engine.generation && self.engine.client.is_some() {
             // A newer engine was chosen while this scan was in flight. Do not
             // let the old scan overwrite the runtime list the new choice uses.
-            cx.notify();
+        } else {
+            self.adopt(runtimes, cx);
+        }
+        // A rescan asked for while this one ran goes next.
+        if std::mem::take(&mut self.rescan_wanted) {
+            self.start_discovery(cx);
+        }
+        cx.notify();
+    }
+
+    /// Take a scan's answer. Finding the same engine again changes nothing
+    /// but the list: the figures already learned from it stay. A different
+    /// engine, or the same one after it had gone away, starts over.
+    fn adopt(&mut self, runtimes: Vec<berth_engine::discovery::Runtime>, cx: &mut Context<Self>) {
+        use berth_engine::discovery::identity;
+        let connected = self.engine.client.is_some();
+        let same_engine = self
+            .engine
+            .identity
+            .as_ref()
+            .filter(|_| connected)
+            .and_then(|current| {
+                runtimes
+                    .iter()
+                    .position(|runtime| runtime.reachable && current == &identity(runtime))
+            });
+        self.engine.runtimes = runtimes;
+        if let Some(index) = same_engine {
+            self.engine.active = index;
             return;
         }
-        self.engine.runtimes = runtimes;
         if let Some(index) = self
             .engine
             .runtimes
@@ -132,7 +161,6 @@ impl BerthApp {
             self.sample_host_async(cx);
             self.schedule_discovery(cx);
         }
-        cx.notify();
     }
 
     fn sample_host_async(&mut self, cx: &mut Context<Self>) {
@@ -319,7 +347,7 @@ impl BerthApp {
         cx.notify();
     }
 
-    fn reconcile_selection(&mut self) {
+    pub(crate) fn reconcile_selection(&mut self) {
         self.bulk_selected.retain(|id| {
             self.snapshot
                 .containers
@@ -366,5 +394,94 @@ impl BerthApp {
                 .await;
             this.update(cx, |app, cx| app.start_refresh(cx)).ok();
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use berth_core::history::Sample;
+    use berth_engine::df::Df;
+    use gpui::TestAppContext;
+
+    /// The fixture engine, on a socket that exists nowhere: the tasks a scan
+    /// or a refresh spawns must never reach this machine's real engine.
+    fn runtime() -> berth_engine::discovery::Runtime {
+        let mut runtime = crate::state::fixture_runtime();
+        runtime.socket = "/nowhere/berth-test.sock".into();
+        runtime
+    }
+
+    #[gpui::test]
+    fn finding_the_same_engine_again_keeps_what_was_learned_from_it(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            let runtime = runtime();
+            app.adopt_runtimes(vec![runtime.clone()], app.engine.generation, cx);
+            let generation = app.engine.generation;
+            app.engine.history.push(Sample::default());
+            app.engine.df = Some(Df::default());
+            app.engine.events_since = 42;
+
+            // The same daemon, found again by a rescan, now with a silent
+            // neighbour: nothing starts over.
+            let silent = berth_engine::discovery::Runtime {
+                socket: "/nowhere/other.sock".into(),
+                ..Default::default()
+            };
+            app.adopt_runtimes(vec![silent, runtime], generation, cx);
+            assert_eq!(app.engine.generation, generation);
+            assert_eq!(app.engine.history.len(), 1);
+            assert!(app.engine.df.is_some());
+            assert_eq!(app.engine.events_since, 42);
+            assert_eq!(
+                app.engine.active, 1,
+                "the list may reorder; the engine stays"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn a_different_engine_starts_over_and_a_returning_one_reconnects(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            let runtime = runtime();
+            app.adopt_runtimes(vec![runtime.clone()], app.engine.generation, cx);
+            app.engine.history.push(Sample::default());
+
+            // Another daemon behind the same socket is a new engine.
+            let mut other = runtime.clone();
+            other.info.id = "daemon-2".into();
+            app.adopt_runtimes(vec![other], app.engine.generation, cx);
+            assert!(app.engine.history.is_empty());
+
+            // The same daemon, after it had gone away and the client was
+            // dropped: what was learned before it went is not trusted.
+            app.engine.history.push(Sample::default());
+            app.engine.client = None;
+            app.adopt_runtimes(vec![runtime], app.engine.generation, cx);
+            assert!(app.engine.client.is_some(), "it reconnects");
+            assert!(app.engine.history.is_empty(), "and starts over");
+        });
+    }
+
+    #[gpui::test]
+    fn a_rescan_asked_for_during_a_scan_runs_after_it(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.start_discovery(cx);
+            assert!(app.discovery_task.is_some());
+            app.start_discovery(cx);
+            app.rescan(cx);
+            assert!(
+                app.rescan_wanted,
+                "the later requests are kept, not dropped"
+            );
+            // The engine being read is not put on hold for the scan.
+            assert_eq!(
+                app.snapshot.containers.len(),
+                2,
+                "the snapshot on screen is untouched"
+            );
+        });
     }
 }
