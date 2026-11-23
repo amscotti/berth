@@ -38,6 +38,15 @@ impl EngineOp {
             EngineOp::Restart => "Restart",
         }
     }
+
+    /// What it is doing, to name it in a sentence: "stopping".
+    pub(crate) fn doing(self) -> &'static str {
+        match self {
+            EngineOp::Start => "starting",
+            EngineOp::Stop => "stopping",
+            EngineOp::Restart => "restarting",
+        }
+    }
 }
 
 /// How long a machine command may run before berth stops waiting for it.

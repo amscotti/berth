@@ -47,7 +47,9 @@ BERTH_SOCKET=/path/to.sock cargo run -p berth-app
 - **Unknown is `—`, never `0`.** A partial stats sum says "partial sample". A
   failed list keeps the previous list, never an empty one.
 - **One mutation at a time.** Container actions, bulk, pull/run, prune and
-  engine machine commands share one slot. A second request is refused.
+  engine machine commands share one slot (`MutationSlot`, `slot.rs`), which
+  names what is running and when it was asked for. A second request is
+  refused, and the refusal says what it is waiting for.
 - **Generations guard every completion.** Discovery, refresh, detail, mutation
   and image tasks compare their generation before touching state.
 - **Selection is by id**, re-resolved after every commit. Never hold a pointer

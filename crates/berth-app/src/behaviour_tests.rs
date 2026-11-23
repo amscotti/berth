@@ -8,6 +8,7 @@ use gpui::{Entity, TestAppContext, VisualTestContext};
 use crate::actions::{ContainerAction, Pending, Target};
 use crate::app::{BerthApp, CreateKind, Filter};
 use crate::jobs::mutation::{PruneOptions, Request};
+use crate::slot::{MutationKind, MutationSlot};
 use crate::testkit;
 use crate::view::Sheet;
 
@@ -22,9 +23,11 @@ fn stop(socket: &str) -> Request {
     Request::Action {
         socket: socket.to_owned(),
         api: "v1.43".into(),
-        method: "POST",
-        path: "/containers/demo-1/stop".into(),
-        verb: "Stopped",
+        target: Target::Container {
+            action: ContainerAction::Stop,
+            id: "demo-1".into(),
+            name: "demo-1".into(),
+        },
     }
 }
 
@@ -41,7 +44,7 @@ fn a_refused_prune_leaves_its_sheet_open_and_no_unrelated_success_closes_it(
         app.run_prune(cx);
         // Refused, so the sheet is not waiting on anything, and nothing was sent.
         assert!(cleanup(app));
-        assert!(!app.view.prune_in_flight);
+        assert!(!prune_running(app));
     });
     assert_eq!(engine.count("/prune"), 0);
 
@@ -49,7 +52,7 @@ fn a_refused_prune_leaves_its_sheet_open_and_no_unrelated_success_closes_it(
     cx.run_until_parked();
     app.read_with(&*cx, |app, _| {
         assert!(cleanup(app));
-        assert!(!app.view.prune_in_flight);
+        assert!(!prune_running(app));
     });
     assert_eq!(engine.count("/prune"), 0, "a refused prune is never sent");
     assert_eq!(engine.count("/containers/demo-1/stop"), 1);
@@ -61,7 +64,7 @@ fn an_accepted_prune_closes_its_sheet_only_once_it_has_run(cx: &mut TestAppConte
     app.update(cx, |app, cx| {
         app.open_prune(cx);
         app.run_prune(cx);
-        assert!(app.view.prune_in_flight);
+        assert!(prune_running(app));
         assert!(cleanup(app));
     });
     assert_eq!(
@@ -72,7 +75,7 @@ fn an_accepted_prune_closes_its_sheet_only_once_it_has_run(cx: &mut TestAppConte
     cx.run_until_parked();
     app.read_with(&*cx, |app, _| {
         assert!(!cleanup(app));
-        assert!(!app.view.prune_in_flight);
+        assert!(!prune_running(app));
         assert_eq!(app.view.toast.as_ref().map(|toast| toast.bad), Some(false));
     });
     assert!(engine.count("/prune") >= 1);
@@ -236,6 +239,17 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
     });
 }
 
+/// Whether the cleanup's own request is the one running.
+fn prune_running(app: &BerthApp) -> bool {
+    matches!(
+        app.mutation,
+        MutationSlot::Running {
+            kind: MutationKind::Prune,
+            ..
+        }
+    )
+}
+
 /// Whether the cleanup sheet is the one that is open.
 fn cleanup(app: &BerthApp) -> bool {
     matches!(app.view.sheet, Some(Sheet::Prune(_)))
@@ -339,4 +353,52 @@ fn a_sheet_opened_over_another_replaces_it_whole(cx: &mut TestAppContext) {
         app.open_prune(cx);
         assert_eq!(app.prune_options(), Some(PruneOptions::default()));
     });
+}
+
+/// A second request is refused while one is running, and the refusal says
+/// what it is waiting for.
+#[gpui::test]
+fn a_second_request_is_refused_with_the_running_one_named(cx: &mut TestAppContext) {
+    let (app, engine, cx) = wired(cx);
+    let socket = engine.socket();
+
+    // A cleanup is running: a stop waits, and is not sent.
+    app.update(cx, |app, cx| {
+        app.open_prune(cx);
+        app.run_prune(cx);
+        assert!(!app.start_mutation(stop(&socket), cx), "refused");
+        assert_eq!(
+            app.view
+                .toast
+                .as_ref()
+                .map(|toast| (toast.text.as_str(), toast.bad)),
+            Some(("still cleaning up; wait for it to finish", true))
+        );
+    });
+    cx.run_until_parked();
+    assert!(engine.count("/prune") >= 1, "the cleanup ran");
+    assert_eq!(
+        engine.count("/containers/demo-1/stop"),
+        0,
+        "the stop never did"
+    );
+
+    // A stop is running: the cleanup waits, says what for, and its sheet
+    // stays open because nothing of it was sent.
+    app.update(cx, |app, cx| {
+        assert!(app.start_mutation(stop(&socket), cx));
+        app.open_prune(cx);
+        app.run_prune(cx);
+        assert_eq!(
+            app.view
+                .toast
+                .as_ref()
+                .map(|toast| (toast.text.as_str(), toast.bad)),
+            Some(("still stopping demo-1; wait for it to finish", true))
+        );
+        assert!(!prune_running(app));
+        assert!(cleanup(app));
+    });
+    cx.run_until_parked();
+    assert_eq!(engine.count("/containers/demo-1/stop"), 1);
 }

@@ -67,6 +67,18 @@ impl ContainerAction {
         if self.destroys() { "DELETE" } else { "POST" }
     }
 
+    /// What it is doing, to name it in a sentence: "deleting".
+    pub(crate) fn doing(self) -> &'static str {
+        match self {
+            ContainerAction::Resume => "resuming",
+            ContainerAction::Pause => "pausing",
+            ContainerAction::Start => "starting",
+            ContainerAction::Stop => "stopping",
+            ContainerAction::Restart => "restarting",
+            ContainerAction::Delete => "deleting",
+        }
+    }
+
     /// Where its request goes for the container `id`.
     pub(crate) fn path(self, id: &str) -> String {
         let id = berth_engine::client::encode(id);
@@ -99,6 +111,15 @@ impl Removal {
         }
     }
 
+    /// What it is doing, to name it in a sentence: "removing volume".
+    pub(crate) fn doing(self) -> &'static str {
+        match self {
+            Removal::Image => "removing image",
+            Removal::Volume => "removing volume",
+            Removal::Network => "removing network",
+        }
+    }
+
     /// Where its request goes for the thing's `id`, which is a name for a
     /// volume or a network.
     pub(crate) fn path(self, id: &str) -> String {
@@ -113,7 +134,7 @@ impl Removal {
 
 /// One thing a request is about: a container to act on, or an image, a
 /// volume or a network to remove.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Target {
     Container {
         action: ContainerAction,
@@ -137,20 +158,22 @@ impl Target {
         }
     }
 
-    /// The request it is, to send to the engine at `client`.
-    pub(crate) fn request(&self, client: &Client) -> Request {
-        let (method, path, verb) = match self {
+    /// The method, the path and the verb of its request.
+    pub(crate) fn parts(&self) -> (&'static str, String, &'static str) {
+        match self {
             Target::Container { action, id, .. } => {
                 (action.method(), action.path(id), action.verb())
             }
             Target::Removal { what, id, .. } => ("DELETE", what.path(id), what.verb()),
-        };
+        }
+    }
+
+    /// The request it is, to send to the engine at `client`.
+    pub(crate) fn request(&self, client: &Client) -> Request {
         Request::Action {
             socket: client.socket().to_owned(),
             api: client.api().to_owned(),
-            method,
-            path,
-            verb,
+            target: self.clone(),
         }
     }
 }
@@ -192,16 +215,16 @@ mod tests {
         Client::new("/tmp/docker.sock").with_api("v1.43")
     }
 
-    /// The request a target makes, as the parts the engine is asked for.
     fn asked(target: &Target) -> (String, String, &'static str, String, &'static str) {
         match target.request(&client()) {
             Request::Action {
                 socket,
                 api,
-                method,
-                path,
-                verb,
-            } => (socket, api, method, path, verb),
+                target,
+            } => {
+                let (method, path, verb) = target.parts();
+                (socket, api, method, path, verb)
+            }
             other => panic!("one thing is one request, not {other:?}"),
         }
     }

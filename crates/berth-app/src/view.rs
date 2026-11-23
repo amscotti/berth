@@ -99,10 +99,7 @@ pub(crate) struct ViewState {
     /// How many env values a clone left empty because they were redacted.
     pub(crate) run_env_missing: usize,
 
-    // The sheets' own requests: the sheet closes when its request succeeds.
     pub(crate) create_name: Entity<InputState>,
-    pub(crate) create_in_flight: bool,
-    pub(crate) prune_in_flight: bool,
 
     // Keyboard focus: the page's own handle (rail, table and inspector; focus
     // lives here unless a sheet is open), the container table's, and the
@@ -223,8 +220,6 @@ impl ViewState {
             run_attempted: false,
             run_env_missing: 0,
             create_name,
-            create_in_flight: false,
-            prune_in_flight: false,
             focus_handle: cx.focus_handle(),
             table_focus: cx.focus_handle().tab_stop(true),
             sheet_focus: SheetFocus::new(cx),

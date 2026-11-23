@@ -32,6 +32,7 @@ mod jobs;
 mod settings;
 #[cfg(test)]
 mod settings_tests;
+mod slot;
 mod state;
 mod subviews;
 #[cfg(test)]

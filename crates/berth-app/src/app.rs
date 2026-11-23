@@ -13,6 +13,7 @@ use gpui::{AppContext, Context, Entity, Subscription, Task};
 
 use crate::inspector::Inspector;
 use crate::settings::{self, Appearance};
+use crate::slot::MutationSlot;
 use crate::state::{EngineState, HostSample, SharedSnapshot, Snapshot};
 use crate::subviews::Subview;
 use crate::view::ViewState;
@@ -225,7 +226,7 @@ pub struct BerthApp {
     pub(crate) discovery_task: Option<Task<()>>,
     pub(crate) terminal_task: Option<Task<()>>,
     /// The one engine mutation in flight, whatever asked for it.
-    pub(crate) mutation_task: Option<Task<()>>,
+    pub(crate) mutation: MutationSlot,
     pub(crate) refresh_wanted: bool,
     /// A rescan asked for while one was already running. It goes next.
     pub(crate) rescan_wanted: bool,
@@ -314,7 +315,7 @@ impl BerthApp {
             host_task: None,
             discovery_task: None,
             terminal_task: None,
-            mutation_task: None,
+            mutation: MutationSlot::Idle,
             refresh_wanted: false,
             rescan_wanted: false,
             view: ViewState::new(&saved.socket, cx),

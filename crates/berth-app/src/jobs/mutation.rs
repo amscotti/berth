@@ -7,7 +7,7 @@ use berth_engine::discovery::Dialect;
 use berth_engine::discovery::Kind;
 use berth_engine::prune;
 
-use crate::actions::ContainerAction;
+use crate::actions::{ContainerAction, Target};
 
 use super::engine_ops::{self, EngineOp};
 
@@ -37,9 +37,7 @@ pub enum Request {
     Action {
         socket: String,
         api: String,
-        method: &'static str,
-        path: String,
-        verb: &'static str,
+        target: Target,
     },
     CreateVolume {
         socket: String,
@@ -103,10 +101,8 @@ pub fn run(request: Request) -> Outcome {
         Request::Action {
             socket,
             api,
-            method,
-            path,
-            verb,
-        } => action(&socket, &api, method, &path, verb),
+            target,
+        } => action(&socket, &api, &target),
         Request::CreateVolume { socket, api, name } => {
             let client = Client::new(socket).with_api(api);
             match client.create_volume(&name) {
@@ -178,9 +174,10 @@ fn bulk(socket: &str, api: &str, action: ContainerAction, ids: &[String]) -> Out
     ok(format!("{} {done} of {total} containers", action.label()))
 }
 
-fn action(socket: &str, api: &str, method: &str, path: &str, verb: &str) -> Outcome {
+fn action(socket: &str, api: &str, target: &Target) -> Outcome {
     let client = Client::new(socket).with_api(api);
-    match client.action(method, path) {
+    let (method, path, verb) = target.parts();
+    match client.action(method, &path) {
         Ok(()) => ok(verb.to_owned()),
         Err(error) => bad(error.message()),
     }

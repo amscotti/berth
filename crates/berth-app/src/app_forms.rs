@@ -1,9 +1,12 @@
 //! Container/image creation, mutation dispatch and cleanup sheets.
 
+use std::time::Instant;
+
 use crate::actions::{ContainerAction, Pending, Target};
 use crate::app::*;
 use crate::jobs::engine_ops::EngineOp;
 use crate::jobs::mutation::{self, PruneOptions, Request};
+use crate::slot::{MutationKind, MutationSlot};
 use crate::view::Sheet;
 use berth_core::validation;
 use gpui::Context;
@@ -140,7 +143,7 @@ impl BerthApp {
                 name,
             },
         };
-        self.view.create_in_flight = self.start_mutation(request, cx);
+        self.start_mutation(request, cx);
     }
 
     pub(crate) fn open_prune(&mut self, cx: &mut Context<Self>) {
@@ -305,7 +308,7 @@ impl BerthApp {
             return;
         };
         let dialect = self.engine.dialect;
-        self.view.prune_in_flight = self.start_mutation(
+        self.start_mutation(
             Request::Prune {
                 socket: client.socket().to_owned(),
                 api: client.api().to_owned(),
@@ -388,25 +391,30 @@ impl BerthApp {
     }
 
     /// Start an engine mutation. False when one is already running: the
-    /// request was refused and a toast said so, so the caller must not mark
-    /// any sheet or row as waiting on it.
+    /// request was refused and a toast said what it is waiting for, so the
+    /// caller must not mark any sheet or row as waiting on it.
     pub(crate) fn start_mutation(&mut self, request: Request, cx: &mut Context<Self>) -> bool {
-        if self.mutation_task.is_some() {
-            self.notify("wait for the current engine operation to finish", true, cx);
+        if let Some(refusal) = self.mutation.refusal() {
+            self.notify(&refusal, true, cx);
             return false;
         }
+        let kind = MutationKind::of(&request);
         let generation = self.engine.generation;
-        let is_engine_op = matches!(request, Request::EngineOp { .. });
-        self.mutation_task = Some(cx.spawn(async move |this, cx| {
-            let outcome = cx
-                .background_executor()
-                .spawn(async move { mutation::run(request) })
-                .await;
-            this.update(cx, |app, cx| {
-                app.finish_mutation(outcome, generation, is_engine_op, cx)
-            })
-            .ok();
-        }));
+        let is_engine_op = matches!(kind, MutationKind::EngineOp { .. });
+        self.mutation = MutationSlot::Running {
+            kind,
+            since: Instant::now(),
+            task: cx.spawn(async move |this, cx| {
+                let outcome = cx
+                    .background_executor()
+                    .spawn(async move { mutation::run(request) })
+                    .await;
+                this.update(cx, |app, cx| {
+                    app.finish_mutation(outcome, generation, is_engine_op, cx)
+                })
+                .ok();
+            }),
+        };
         true
     }
 
@@ -417,20 +425,16 @@ impl BerthApp {
         is_engine_op: bool,
         cx: &mut Context<Self>,
     ) {
-        self.mutation_task = None;
-        // Each sheet closes when its own request succeeds, and only then:
-        // the sheet that is open by then has to be the one that asked.
-        if self.view.create_in_flight {
-            self.view.create_in_flight = false;
-            if !outcome.bad && matches!(self.view.sheet, Some(Sheet::Create { .. })) {
-                self.view.sheet = None;
-            }
-        }
-        if self.view.prune_in_flight {
-            self.view.prune_in_flight = false;
-            if !outcome.bad && matches!(self.view.sheet, Some(Sheet::Prune(_))) {
-                self.view.sheet = None;
-            }
+        let ran = self.mutation.finish();
+        // Each sheet closes when its own request succeeds, and only its own.
+        if !outcome.bad
+            && self
+                .view
+                .sheet
+                .as_ref()
+                .is_some_and(|sheet| ran.as_ref().is_some_and(|ran| ran.frees(sheet)))
+        {
+            self.view.sheet = None;
         }
         if !is_engine_op && generation != self.engine.generation {
             cx.notify();
@@ -451,7 +455,7 @@ impl BerthApp {
     /// mutation: counting it made the confirm sheets flicker every few
     /// seconds and refused actions that would have run.
     pub(crate) fn mutating(&self) -> bool {
-        self.mutation_task.is_some()
+        self.mutation.is_running()
     }
 
     pub(crate) fn notify(&mut self, text: &str, bad: bool, cx: &mut Context<Self>) {
