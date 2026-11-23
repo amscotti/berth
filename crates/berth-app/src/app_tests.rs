@@ -41,7 +41,7 @@ fn the_running_filter_counts_paused_as_up() {
 fn rail_figures_come_from_the_snapshot() {
     let snapshot = crate::state::fixture_snapshot();
     assert_eq!(Tab::Containers.figure(&snapshot, 1), "2/2");
-    assert_eq!(Tab::Images.figure(&snapshot, 1), "2");
+    assert_eq!(Tab::Images.figure(&snapshot, 1), "3");
     assert_eq!(Tab::Volumes.figure(&snapshot, 1), "1");
     assert_eq!(Tab::Networks.figure(&snapshot, 1), "4");
     assert_eq!(Tab::Settings.figure(&snapshot, 1), "");

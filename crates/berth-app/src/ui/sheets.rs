@@ -1,13 +1,18 @@
 //! Modal sheets: destructive confirmation, create volume/network, and prune.
 //! One sheet at a time; the backdrop owns every click outside the panel.
+//!
+//! A sheet owns the keyboard while it is open. Its controls focus through
+//! handles the app keeps, so that Tab crosses only them; see `focus.rs`.
 
 use berth_core::format;
-use berth_engine::prune::{self, Engine};
+use berth_ui::layout::{CARD_PADDING, CARD_RADIUS, DIALOG_BUTTON_WIDTH, SHEET_MAX_WIDTH};
 use berth_ui::theme::Tokens;
+use berth_ui::typography;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, Role, div, px};
+use gpui::{AnyElement, Context, Div, FontWeight, Role, SharedString, div, px};
 
 use crate::app::{BerthApp, CreateKind, Pending};
+use crate::ui::kit::{Button, button, caption, checkbox};
 
 pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Option<AnyElement> {
     let (label, panel) = if let Some(pending) = &app.pending {
@@ -37,7 +42,7 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
             .flex()
             .items_center()
             .justify_center()
-            .bg(tokens.text.alpha(0.38))
+            .bg(tokens.backdrop())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.on_dismiss(&berth_commands::app_actions::Dismiss, window, cx);
             }))
@@ -47,9 +52,9 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
                     .role(Role::Dialog)
                     .aria_label(label)
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .w(px(620.0))
-                    .p(px(16.0))
-                    .rounded(px(10.0))
+                    .w(px(SHEET_MAX_WIDTH))
+                    .p(px(CARD_PADDING))
+                    .rounded(px(CARD_RADIUS))
                     .bg(tokens.surface)
                     .border_1()
                     .border_color(tokens.border)
@@ -62,69 +67,77 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
     )
 }
 
+/// A sheet's title. A dialog is the most important thing on screen while it
+/// is open, so its title is a card's title, not body text.
+fn sheet_title(text: impl Into<SharedString>, color: gpui::Hsla) -> Div {
+    div()
+        .text_size(px(typography::TITLE_SMALL))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child(text.into())
+}
+
+/// A dialog's buttons: Cancel, then the way forward, on one baseline.
+fn dialog_buttons(cancel: Button, accept: Button) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .w_full()
+        .justify_end()
+        .gap(px(8.0))
+        .child(cancel)
+        .child(accept)
+}
+
 fn confirm_panel(
     app: &BerthApp,
     pending: &Pending,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Div {
-    let engine = pending.method == "ENGINE";
+    let machine = pending.method == "ENGINE";
     let title = format!("{} {}?", pending.verb, pending.name);
     // Confirm waits for a running mutation, instead of closing the sheet and
     // dropping the action when the request is refused.
     let busy = app.mutating();
-    let body = if engine {
+    // A confirmation names what it costs. A machine takes its whole fleet
+    // down with it: say how many.
+    let body = if machine {
         format!(
-            "Stopping or restarting this machine takes every running container on {} down with it.",
+            "{} on {} will stop with the engine.",
+            format::count(
+                app.snapshot.running(),
+                "running container",
+                "running containers"
+            ),
             pending.name
         )
     } else {
         "This cannot be undone.".to_owned()
     };
+
+    let cancel = button("sheet-Cancel", "Cancel", tokens)
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.sheet_focus.cancel.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.resolve_pending(false, cx)));
+    // The way forward destroys something, so it is the destructive button.
+    let confirm = button("sheet-Confirm", "Confirm", tokens)
+        .danger()
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.sheet_focus.confirm.clone())
+        .description("Unavailable until the running engine operation finishes")
+        .disabled(busy)
+        .on_click(cx.listener(|this, _, _, cx| this.resolve_pending(true, cx)));
+
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.danger_text())
-                .child(title),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(tokens.muted)
-                .child(body),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .w_full()
-                .justify_end()
-                .gap(px(8.0))
-                .child(button(
-                    "Cancel",
-                    false,
-                    tokens,
-                    Some(cx.listener(|this, _, _, cx| this.resolve_pending(false, cx))),
-                ))
-                .child(button(
-                    "Confirm",
-                    true,
-                    tokens,
-                    (!busy).then(|| cx.listener(|this, _, _, cx| this.resolve_pending(true, cx))),
-                )),
-        )
+        .child(sheet_title(title, tokens.danger_text()))
+        .child(caption(body, tokens))
+        .child(dialog_buttons(cancel, confirm))
         .when(busy, |this| {
-            this.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(tokens.muted)
-                    .child("An engine operation is already running."),
-            )
+            this.child(caption("An engine operation is already running.", tokens))
         })
 }
 
@@ -140,280 +153,149 @@ fn create_panel(
         .then(|| crate::app_forms::create_name_error(kind, &name, &app.snapshot.volumes))
         .flatten();
 
+    let cancel = button("sheet-Cancel", "Cancel", tokens)
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.sheet_focus.cancel.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.close_create(cx)));
+    let create = button("sheet-Create", "Create", tokens)
+        .primary()
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.sheet_focus.create.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.submit_create(cx)));
+
     let mut panel = div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.text)
-                .child(format!("New {}", kind.noun())),
-        )
+        .child(sheet_title(format!("New {}", kind.noun()), tokens.text))
         .child(app.create_name.clone());
     if let Some(error) = error {
         panel = panel.child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(typography::SECONDARY))
                 .text_color(tokens.danger_text())
                 .child(error),
         );
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .justify_end()
-            .gap(px(8.0))
-            .child(button(
-                "Cancel",
-                false,
-                tokens,
-                Some(cx.listener(|this, _, _, cx| this.close_create(cx))),
-            ))
-            .child(button(
-                "Create",
-                true,
-                tokens,
-                Some(cx.listener(|this, _, _, cx| this.submit_create(cx))),
-            )),
-    )
+    panel.child(dialog_buttons(cancel, create))
 }
 
+/// What a cleanup can remove, in the order the sheet lists it. A network is
+/// fourth: it has no size, so there is no figure to show for it.
+const PRUNE_LABELS: [&str; 5] = [
+    "Stopped containers",
+    "Unused images",
+    "Unused volumes",
+    "Unused networks",
+    "Build cache",
+];
+
 fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
-    let engine = match app.engine.dialect {
-        berth_engine::discovery::Dialect::Podman => Engine::Podman,
-        _ => Engine::Docker,
-    };
-    let build_supported = prune::supported(prune::Kind::BuildCache, engine);
-    let build_on = prune::build_cache_enabled(app.prune_options.build_cache, engine);
-    let free = app
-        .snapshot
-        .df
-        .as_ref()
-        .map(|df| df.reclaimable_by_store())
-        .unwrap_or_default();
-    let selected = {
-        let mut total = 0i64;
-        if app.prune_options.containers {
-            total = total.saturating_add(free.containers);
-        }
-        if app.prune_options.images {
-            total = total.saturating_add(free.images);
-        }
-        if app.prune_options.volumes {
-            total = total.saturating_add(free.volumes);
-        }
-        if build_on {
-            total = total.saturating_add(free.build_cache);
-        }
-        total
-    };
+    let build_supported = app.prune_build_supported();
+    let selected = app.prune_selected_bytes();
+
+    let cancel = button("sheet-Cancel", "Cancel", tokens)
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.sheet_focus.cancel.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.close_prune(cx)));
+    // Cleaning up destroys, so it is the destructive button. It waits only
+    // while berth can see there is nothing ticked that would go.
+    let clean_up = button("sheet-Clean up", "Clean up", tokens)
+        .danger()
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.sheet_focus.clean_up.clone())
+        .description("Tick something there is left to clean up")
+        .disabled(app.prune_has_work() == Some(false))
+        .on_click(cx.listener(|this, _, _, cx| this.run_prune(cx)));
 
     let mut panel = div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
+        .gap(px(4.0))
         .child(
             div()
                 .flex()
                 .flex_row()
                 .w_full()
                 .items_center()
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(tokens.text)
-                        .child("Clean up unused data"),
-                )
+                .gap(px(8.0))
+                .child(sheet_title("Clean up unused data", tokens.text))
                 .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(tokens.muted)
-                        .child(format!("{} selected", format::bytes(selected.max(0) as u64))),
-                ),
+                .child(caption(
+                    format!(
+                        "{} selected",
+                        // Unknown is a dash, not zero.
+                        selected.map_or_else(|| "—".to_owned(), |bytes| format::measured(Some(bytes)))
+                    ),
+                    tokens,
+                )),
         )
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.muted)
-                .child(if build_supported {
-                    "Stopped containers, unused images and build cache. Volumes and networks are opt-in; this cannot be undone."
-                } else {
-                    "Stopped containers and unused images. Volumes and networks are opt-in; this cannot be undone."
-                }),
-        )
-        .child(option(
-            "Stopped containers",
-            free.containers,
-            app.prune_options.containers,
+        .child(caption(
+            if build_supported {
+                "Removes stopped containers, every image no container uses, and build cache. Volumes and networks are opt-in; this cannot be undone."
+            } else {
+                "Removes stopped containers and every image no container uses. Volumes and networks are opt-in; this cannot be undone."
+            },
             tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.containers = !this.prune_options.containers;
-                cx.notify();
-            }),
-        ))
-        .child(option(
-            "Unused images",
-            free.images,
-            app.prune_options.images,
-            tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.images = !this.prune_options.images;
-                cx.notify();
-            }),
-        ))
-        .child(option(
-            "Unused volumes",
-            free.volumes,
-            app.prune_options.volumes,
-            tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.volumes = !this.prune_options.volumes;
-                cx.notify();
-            }),
-        ))
-        .child(option(
-            "Unused networks",
-            -1,
-            app.prune_options.networks,
-            tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.networks = !this.prune_options.networks;
-                cx.notify();
-            }),
         ));
-    if build_supported {
-        panel = panel.child(option(
-            "Build cache",
-            free.build_cache,
-            build_on,
+    for (field, label) in PRUNE_LABELS.iter().enumerate() {
+        if field == 4 && !build_supported {
+            continue;
+        }
+        panel = panel.child(prune_option(
+            app,
+            field,
+            label,
+            app.prune_bytes(field),
+            app.prune_ticked(field),
             tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.build_cache = !this.prune_options.build_cache;
-                cx.notify();
-            }),
+            cx,
         ));
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .justify_end()
-            .gap(px(8.0))
-            .child(button(
-                "Cancel",
-                false,
-                tokens,
-                Some(cx.listener(|this, _, _, cx| this.close_prune(cx))),
-            ))
-            .child(button(
-                "Clean up",
-                true,
-                tokens,
-                Some(cx.listener(|this, _, _, cx| this.run_prune(cx))),
-            )),
-    )
+    panel.child(dialog_buttons(cancel, clean_up))
 }
 
-fn option(
+/// What an option amounts to: how many things, and how much data, as far as
+/// each is known.
+fn amount(count: Option<i64>, bytes: Option<i64>) -> String {
+    match (count, bytes.filter(|bytes| *bytes >= 0)) {
+        (Some(count), Some(bytes)) => {
+            format!("{count} · {}", format::measured(Some(bytes)))
+        }
+        (Some(count), None) => count.to_string(),
+        (None, Some(bytes)) => format::measured(Some(bytes)),
+        (None, None) => "—".to_owned(),
+    }
+}
+
+/// One kind of data a cleanup can remove, with what it amounts to.
+#[allow(clippy::too_many_arguments)]
+fn prune_option(
+    app: &BerthApp,
+    field: usize,
     label: &'static str,
-    amount: i64,
+    bytes: Option<i64>,
     on: bool,
     tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!("prune-option-{label}")))
-        .flex()
-        .flex_row()
-        .w_full()
-        .items_center()
-        .gap(px(8.0))
-        .h(px(24.0))
-        .role(Role::CheckBox)
-        .aria_label(label)
-        .aria_selected(on)
-        .on_click(on_click)
-        .child(
-            div()
-                .w(px(14.0))
-                .h(px(14.0))
-                .rounded(px(4.0))
-                .bg(if on { tokens.accent } else { tokens.track })
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(on, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(9.0))
-                            .text_color(tokens.accent_text)
-                            .child("✓"),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(tokens.text)
-                .child(label),
-        )
-        .child(div().flex_1())
-        .child(
-            div()
-                .text_size(px(11.0))
-                .text_color(tokens.muted)
-                .child(if amount < 0 {
-                    "—".to_owned()
-                } else {
-                    format::bytes(amount.max(0) as u64)
-                }),
-        )
-}
-
-/// A dialog button. Without `on_click` it is disabled: it can't be pressed,
-/// it says why, and it is drawn faded.
-fn button(
-    label: &'static str,
-    primary: bool,
-    tokens: Tokens,
-    on_click: Option<impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static>,
-) -> impl IntoElement {
-    let button = div()
-        .id(gpui::SharedString::from(format!("sheet-button-{label}")))
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(px(92.0))
-        .h(px(28.0))
-        .rounded(px(14.0))
-        .bg(if primary {
-            tokens.accent
-        } else {
-            tokens.surface_hover
-        })
-        .role(Role::Button)
-        .aria_label(label);
-    let button = match on_click {
-        Some(on_click) => button.on_click(on_click),
-        None => button
-            .opacity(0.45)
-            .aria_description("Unavailable until the running engine operation finishes"),
-    };
-    button.child(
-        div()
-            .text_size(px(12.0))
-            .text_color(if primary {
-                tokens.accent_text
-            } else {
-                tokens.text
-            })
-            .child(label),
+    cx: &mut Context<BerthApp>,
+) -> crate::ui::kit::Checkbox {
+    checkbox(
+        SharedString::from(format!("prune-option-{label}")),
+        label,
+        on,
+        tokens,
     )
+    .figure(amount(app.prune_count(field), bytes))
+    .focus(app.sheet_focus.options[field].clone())
+    .on_click(cx.listener(move |this, _, _, cx| {
+        let options = &mut this.prune_options;
+        match field {
+            0 => options.containers = !options.containers,
+            1 => options.images = !options.images,
+            2 => options.volumes = !options.volumes,
+            3 => options.networks = !options.networks,
+            _ => options.build_cache = !options.build_cache,
+        }
+        cx.notify();
+    }))
 }

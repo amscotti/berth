@@ -2,14 +2,14 @@
 
 use berth_core::format;
 use berth_core::history::Which;
-use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{Context, Div, FontWeight, Role, div, px};
+use gpui::{Context, Div, FontWeight, div, px};
 
 use crate::app::{BerthApp, Tab};
 use crate::ui::graph;
+use crate::ui::kit::{Card, button, caption, card, card_title};
 
 pub(crate) fn fleet_card(
     app: &BerthApp,
@@ -18,34 +18,24 @@ pub(crate) fn fleet_card(
     complete: bool,
     cpu: &str,
     memory: &str,
-) -> Div {
+) -> Card {
     let chart_w = ((width - 32.0 - 12.0) / 2.0).max(120.0);
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(10.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .gap(px(8.0))
-                .child(title("Fleet activity", tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(type_scale::META))
-                        .text_color(tokens.muted)
-                        .child("recent"),
-                ),
-        );
+    let mut card = card(tokens).w(px(width)).gap(px(10.0)).child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .gap(px(8.0))
+            .child(card_title("Fleet activity", tokens))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(type_scale::META))
+                    .text_color(tokens.muted)
+                    .child("recent"),
+            ),
+    );
     card = card.child(
         div()
             .flex()
@@ -55,25 +45,28 @@ pub(crate) fn fleet_card(
             .gap(px(14.0))
             .child(
                 div()
-                    .text_size(px(34.0))
+                    .text_size(px(type_scale::METRIC))
                     .font_weight(FontWeight::BOLD)
                     .font_features(crate::ui::tabular())
                     .text_color(tokens.text)
                     .child(app.snapshot.running().to_string()),
             )
-            .child(div().flex().flex_col().gap(px(1.0)).pb(px(3.0)).child(
-                div().text_size(px(12.0)).text_color(tokens.text).child(
-                    if app.snapshot.running() == 1 {
-                        "container running"
-                    } else {
-                        "containers running"
-                    },
+            .child(
+                div().flex().flex_col().gap(px(1.0)).pb(px(3.0)).child(
+                    div()
+                        .text_size(px(type_scale::SECONDARY))
+                        .text_color(tokens.text)
+                        .child(if app.snapshot.running() == 1 {
+                            "container running"
+                        } else {
+                            "containers running"
+                        }),
                 ),
-            ))
+            )
             .child(div().flex_1())
             .child(
                 div()
-                    .text_size(px(11.0))
+                    .text_size(px(type_scale::LABEL))
                     .text_color(if complete {
                         tokens.muted
                     } else {
@@ -162,13 +155,13 @@ fn io_stat(label: &'static str, value: &str, tokens: Tokens) -> Div {
         .gap(px(6.0))
         .child(
             div()
-                .text_size(px(10.5))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .child(label),
         )
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_features(crate::ui::tabular())
                 .text_color(tokens.text)
                 .child(value.to_owned()),
@@ -216,20 +209,14 @@ fn spark(
                 .child(div().flex_1())
                 .child(
                     div()
-                        .text_size(px(12.0))
+                        .text_size(px(type_scale::SECONDARY))
                         .font_weight(FontWeight::SEMIBOLD)
                         .font_features(crate::ui::tabular())
                         .text_color(tokens.text)
                         .child(value.to_owned()),
                 ),
         )
-        .child(graph::cell_graph(
-            values,
-            color,
-            tokens.track,
-            ceiling,
-            56.0,
-        ))
+        .child(graph::cell_graph(values, color, tokens, ceiling, 56.0))
 }
 
 pub(crate) fn host_card(
@@ -237,43 +224,33 @@ pub(crate) fn host_card(
     tokens: Tokens,
     width: f32,
     containers_mem: Option<u64>,
-) -> Div {
+) -> Card {
     let sample = &app.snapshot.host;
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(10.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .child(title("Host", tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_features(crate::ui::tabular())
-                        .text_color(tokens.muted)
-                        .child(format!(
-                            "CPU {}",
-                            if sample.cpu_known {
-                                format::percent(sample.cpu_percent as f64)
-                            } else {
-                                "—".to_owned()
-                            }
-                        )),
-                ),
-        );
+    let mut card = card(tokens).w(px(width)).gap(px(10.0)).child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .child(card_title("Host", tokens))
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(type_scale::LABEL))
+                    .font_features(crate::ui::tabular())
+                    .text_color(tokens.muted)
+                    .child(format!(
+                        "CPU {}",
+                        if sample.cpu_known {
+                            format::percent(sample.cpu_percent as f64)
+                        } else {
+                            "—".to_owned()
+                        }
+                    )),
+            ),
+    );
     if sample.mem_total == 0 {
-        return card.child(muted(
+        return card.child(caption(
             "Host memory is unavailable on this platform.",
             tokens,
         ));
@@ -286,7 +263,7 @@ pub(crate) fn host_card(
             .gap(px(8.0))
             .child(
                 div()
-                    .text_size(px(26.0))
+                    .text_size(px(type_scale::METRIC))
                     .font_weight(FontWeight::BOLD)
                     .font_features(crate::ui::tabular())
                     .text_color(tokens.text)
@@ -294,14 +271,14 @@ pub(crate) fn host_card(
             )
             .child(
                 div()
-                    .text_size(px(11.5))
+                    .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.muted)
                     .pb(px(3.0))
                     .child(format!("of {} in use", format::bytes(sample.mem_total))),
             ),
     );
     let Some(containers_mem) = containers_mem else {
-        return card.child(muted(
+        return card.child(caption(
             "Containers — · per-container stats incomplete",
             tokens,
         ));
@@ -317,7 +294,7 @@ pub(crate) fn host_card(
             vec![
                 (in_containers as f32 / total, tokens.accent_fill()),
                 (engine as f32 / total, tokens.warning_fill),
-                (elsewhere as f32 / total, tokens.muted.alpha(0.55)),
+                (elsewhere as f32 / total, tokens.elsewhere()),
                 (free as f32 / total, tokens.track),
             ],
             tokens.track,
@@ -354,41 +331,27 @@ pub(crate) fn engine_card(
     info: &berth_engine::dto::Info,
     snapshot: &crate::state::Snapshot,
     cx: &mut Context<BerthApp>,
-) -> Div {
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(6.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .child(title("Engine", tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("open-runtimes")
-                        .text_size(px(11.0))
-                        .text_color(tokens.muted)
-                        .role(Role::Button)
-                        .aria_label("Open Runtimes")
-                        .on_click(cx.listener(|this, _, _, cx| this.switch_to(Tab::Runtimes, cx)))
-                        .child("Runtimes →"),
-                ),
-        );
+) -> Card {
+    let mut card = card(tokens).w(px(width)).gap(px(6.0)).child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .child(card_title("Engine", tokens))
+            .child(div().flex_1())
+            .child(
+                button("open-runtimes", "Runtimes →", tokens)
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|this, _, _, cx| this.switch_to(Tab::Runtimes, cx))),
+            ),
+    );
     card = match runtime {
         Some(runtime) if runtime.reachable => card
             .child(
                 div()
-                    .text_size(px(12.5))
+                    .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.text)
                     .child(format!(
                         "{} {} · API {} · storage {}",
@@ -398,17 +361,17 @@ pub(crate) fn engine_card(
                         info.driver
                     )),
             )
-            .child(muted(&format!("root {}", info.docker_root_dir), tokens))
-            .child(muted(
-                &format!(
+            .child(caption(format!("root {}", info.docker_root_dir), tokens))
+            .child(caption(
+                format!(
                     "{} · {}/{} · cgroups {}",
                     info.operating_system, info.os_type, info.architecture, info.cgroup_version
                 ),
                 tokens,
             ))
             .child(div().w_full().h(px(1.0)).my(px(2.0)).bg(tokens.border))
-            .child(muted(
-                &format!(
+            .child(caption(
+                format!(
                     "{} · {} · {} · {}",
                     format::count(snapshot.containers.len(), "container", "containers"),
                     format::count(snapshot.images.len(), "image", "images"),
@@ -417,11 +380,11 @@ pub(crate) fn engine_card(
                 ),
                 tokens,
             )),
-        Some(_) => card.child(muted(
+        Some(_) => card.child(caption(
             "Nothing is answering on the sockets berth knows. Open Runtimes to see what was tried.",
             tokens,
         )),
-        None => card.child(muted(
+        None => card.child(caption(
             "No engine selected. Open Runtimes to see what was found.",
             tokens,
         )),
@@ -434,34 +397,10 @@ pub(crate) fn engine_card(
             .justify_end()
             .pt(px(2.0))
             .child(
-                div()
-                    .id("overview-refresh")
-                    .flex()
-                    .items_center()
-                    .h(px(26.0))
-                    .px(px(10.0))
-                    .rounded(px(13.0))
-                    .bg(tokens.surface_hover)
-                    .hover(move |style| style.bg(tokens.accent.alpha(0.12)))
-                    .role(Role::Button)
-                    .aria_label("Refresh engine now")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx)))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(tokens.text)
-                            .child("Refresh now"),
-                    ),
+                button("overview-refresh", "Refresh now", tokens)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx))),
             ),
     )
-}
-
-pub(crate) fn title(text: &'static str, tokens: Tokens) -> Div {
-    div()
-        .text_size(px(12.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(tokens.text)
-        .child(text)
 }
 
 fn host_split(
@@ -485,7 +424,7 @@ fn host_split(
         .child(div().w(px(7.0)).h(px(7.0)).rounded(px(4.0)).bg(color))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .child(label),
         )
@@ -507,18 +446,11 @@ fn host_split(
         .child(
             div()
                 .w(px(82.0))
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_features(crate::ui::tabular())
                 .text_color(tokens.text)
                 .child(format::bytes(bytes)),
         )
-}
-
-pub(crate) fn muted(text: &str, tokens: Tokens) -> Div {
-    div()
-        .text_size(px(12.0))
-        .text_color(tokens.muted)
-        .child(text.to_owned())
 }
 
 #[cfg(test)]

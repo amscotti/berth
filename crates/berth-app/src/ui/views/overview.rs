@@ -6,12 +6,14 @@
 use berth_core::format;
 use berth_ui::layout::{self, Widths};
 use berth_ui::theme::Tokens;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Role, div, px};
+use gpui::{AnyElement, Context, FontWeight, div, px};
 
 use super::overview_cards::{engine_card, fleet_card, host_card};
 use super::overview_disk::disk_card;
 use crate::app::{BerthApp, Tab};
+use crate::ui::kit::{Card, button, card, card_row};
 use crate::ui::table::page_header;
 
 pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
@@ -54,7 +56,7 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
     let status = status_band(app, tokens, runtime, connected, reading, cx);
 
     let wide = widths.content >= 800.0;
-    let gap = 12.0;
+    let gap = layout::CARD_GAP;
     let right_w = if wide {
         (widths.content * 0.36).clamp(300.0, 380.0)
     } else {
@@ -69,14 +71,9 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
     let fleet = fleet_card(app, tokens, left_w, complete, &cpu_value, &mem_value);
     let host = host_card(app, tokens, right_w, complete.then_some(memory));
 
+    // Side by side, two cards stretch to the taller one: one bottom edge.
     let row_one = if wide {
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .gap(px(gap))
-            .child(fleet)
-            .child(host)
+        card_row().child(fleet).child(host)
     } else {
         div()
             .flex()
@@ -98,14 +95,7 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         cx,
     );
     let row_two = if wide {
-        div()
-            .flex()
-            .flex_row()
-            .items_start()
-            .w_full()
-            .gap(px(gap))
-            .child(engine)
-            .child(disk)
+        card_row().child(engine).child(disk)
     } else {
         div()
             .flex()
@@ -139,7 +129,7 @@ fn status_band(
     connected: bool,
     reading: bool,
     cx: &mut Context<BerthApp>,
-) -> Div {
+) -> Card {
     let error = !app.engine.error.is_empty();
     let (label, note) = if error {
         ("Engine warning", app.engine.error.clone())
@@ -171,17 +161,12 @@ fn status_band(
         tokens.warning_fill
     };
 
-    div()
+    card(tokens)
         .flex()
         .flex_row()
         .items_center()
         .w_full()
         .gap(px(18.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
         .child(
             div()
                 .flex()
@@ -197,7 +182,7 @@ fn status_band(
                         .child(div().w(px(7.0)).h(px(7.0)).rounded(px(4.0)).bg(dot))
                         .child(
                             div()
-                                .text_size(px(12.5))
+                                .text_size(px(type_scale::SECONDARY))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(tokens.text)
                                 .child(label),
@@ -205,7 +190,7 @@ fn status_band(
                 )
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(type_scale::LABEL))
                         .text_color(tokens.muted)
                         .truncate()
                         .child(note),
@@ -220,7 +205,7 @@ fn status_band(
                 .gap(px(8.0))
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(type_scale::LABEL))
                         .font_features(crate::ui::tabular())
                         .text_color(tokens.muted)
                         .child(if app.engine.last_update == 0 {
@@ -230,24 +215,9 @@ fn status_band(
                         }),
                 )
                 .child(
-                    div()
-                        .id("view-containers")
-                        .flex()
-                        .items_center()
-                        .h(px(30.0))
-                        .px(px(12.0))
-                        .rounded(px(15.0))
-                        .bg(tokens.surface_hover)
-                        .hover(move |style| style.bg(tokens.accent.alpha(0.12)))
-                        .role(Role::Button)
-                        .aria_label("View containers")
-                        .on_click(cx.listener(|this, _, _, cx| this.switch_to(Tab::Containers, cx)))
-                        .child(
-                            div()
-                                .text_size(px(11.5))
-                                .text_color(tokens.text)
-                                .child("View containers"),
-                        ),
+                    button("view-containers", "View containers", tokens).on_click(
+                        cx.listener(|this, _, _, cx| this.switch_to(Tab::Containers, cx)),
+                    ),
                 ),
         )
 }

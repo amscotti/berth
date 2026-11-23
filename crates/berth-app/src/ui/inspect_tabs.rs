@@ -3,10 +3,12 @@
 
 use berth_engine::dto::Container;
 use berth_ui::theme::Tokens;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{Context, Div, FontWeight, Role, SharedString, Stateful, div, px};
 
-use super::inspect_shared::{fact, small_action};
+use super::inspect_shared::{fact, inspector_quiet};
+use super::kit::button;
 use super::tabular;
 use crate::app::{BerthApp, Tab};
 
@@ -71,7 +73,7 @@ pub(crate) fn config_tab(
                     .border_color(tokens.border)
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(type_scale::LABEL))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(tokens.text)
                             .child(net_name.clone()),
@@ -81,35 +83,24 @@ pub(crate) fn config_tab(
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(11.0))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .font_features(tabular())
                             .text_color(tokens.muted)
                             .child(ip.clone()),
                     )
                     .child(
-                        div()
-                            .id(SharedString::from(format!("copy-ip-{net_name}")))
-                            .flex()
-                            .items_center()
-                            .h(px(20.0))
-                            .px(px(7.0))
-                            .rounded(px(10.0))
-                            .bg(tokens.surface_hover)
-                            .role(Role::Button)
-                            .aria_label(format!("Copy IP {ip}"))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    ip_copy.clone(),
-                                ));
-                                this.notify("Container IP copied", false, cx);
-                            }))
-                            .child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(tokens.text)
-                                    .child("Copy"),
-                            ),
+                        button(
+                            SharedString::from(format!("copy-ip-{net_name}")),
+                            "Copy",
+                            tokens,
+                        )
+                        .small()
+                        .name(format!("Copy IP {ip}"))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.write_to_clipboard(gpui::ClipboardItem::new_string(ip_copy.clone()));
+                            this.notify("Container IP copied", false, cx);
+                        })),
                     ),
             );
         }
@@ -164,8 +155,11 @@ pub(crate) fn config_tab(
                     .bg(tokens.background)
                     .border_1()
                     .border_color(tokens.border)
+                    // A mount of a volume berth knows leads to that volume.
                     .when(is_known_volume, |this| {
-                        this.role(Role::Button)
+                        crate::ui::kit::focusable(this, tokens.focus_ring())
+                            .role(Role::Link)
+                            .hover(move |style| style.bg(tokens.surface_hover))
                             .aria_label(format!("Inspect volume {vol_name}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.tab = Tab::Volumes;
@@ -194,8 +188,8 @@ pub(crate) fn config_tab(
                                     .flex_1()
                                     .min_w(px(0.0))
                                     .truncate()
-                                    .text_size(px(11.0))
-                                    .font_family("Menlo")
+                                    .text_size(px(type_scale::MONO))
+                                    .font_family(type_scale::MONO_FAMILY)
                                     .text_color(tokens.text)
                                     .child(dest),
                             ),
@@ -205,8 +199,8 @@ pub(crate) fn config_tab(
                             .w_full()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.muted)
                             .child(format!("from {source}")),
                     ),
@@ -230,7 +224,7 @@ pub(crate) fn config_tab(
             .map(|(k, v, _)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("\n");
-        env_header = env_header.child(small_action(
+        env_header = env_header.child(inspector_quiet(
             "copy-env",
             "Copy .env",
             tokens,
@@ -270,8 +264,8 @@ pub(crate) fn config_tab(
                     .gap(px(6.0))
                     .child(
                         div()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(tokens.text)
                             .child(key.clone()),
@@ -281,8 +275,8 @@ pub(crate) fn config_tab(
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(if *secret {
                                 tokens.warning_text()
                             } else {
@@ -327,7 +321,7 @@ pub(crate) fn runtime_tab(
             .w_full()
             .child(section_heading("Processes", proc_count, tokens))
             .child(div().flex_1())
-            .child(small_action(
+            .child(inspector_quiet(
                 "runtime-refresh",
                 "Refresh",
                 tokens,
@@ -382,8 +376,8 @@ pub(crate) fn runtime_tab(
                     .child(
                         div()
                             .w(px(48.0))
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .font_features(tabular())
                             .text_color(tokens.muted)
                             .child(pid.to_owned()),
@@ -393,7 +387,7 @@ pub(crate) fn runtime_tab(
                             div()
                                 .w(px(54.0))
                                 .truncate()
-                                .text_size(px(10.5))
+                                .text_size(px(type_scale::LABEL))
                                 .text_color(tokens.muted)
                                 .child(user.to_owned()),
                         )
@@ -403,8 +397,8 @@ pub(crate) fn runtime_tab(
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.text)
                             .child(cmd.to_owned()),
                     ),
@@ -459,8 +453,8 @@ pub(crate) fn runtime_tab(
                     .child(
                         div()
                             .w(px(16.0))
-                            .text_size(px(10.0))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .font_weight(FontWeight::BOLD)
                             .text_color(color)
                             .child(tag),
@@ -470,8 +464,8 @@ pub(crate) fn runtime_tab(
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.text)
                             .child(change.path.clone()),
                     ),
@@ -491,16 +485,16 @@ fn section_heading(title: &'static str, count: usize, tokens: Tokens) -> Div {
         .gap(px(6.0))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(tokens.muted)
                 .child(title),
         )
         .child(
             div()
-                .text_size(px(10.5))
+                .text_size(px(type_scale::LABEL))
                 .font_features(tabular())
-                .text_color(tokens.muted.alpha(0.75))
+                .text_color(tokens.faint())
                 .child(format!("({count})")),
         )
 }
@@ -515,7 +509,7 @@ fn badge(text: &str, color: gpui::Hsla, tokens: Tokens) -> Div {
         .bg(tokens.surface_hover)
         .child(
             div()
-                .text_size(px(10.0))
+                .text_size(px(type_scale::LABEL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(color)
                 .child(text.to_owned()),
@@ -524,7 +518,7 @@ fn badge(text: &str, color: gpui::Hsla, tokens: Tokens) -> Div {
 
 fn empty_note(text: &str, tokens: Tokens) -> Div {
     div()
-        .text_size(px(11.0))
+        .text_size(px(type_scale::LABEL))
         .text_color(tokens.muted)
         .child(text.to_owned())
 }

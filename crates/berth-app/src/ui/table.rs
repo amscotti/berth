@@ -1,13 +1,14 @@
 //! Page headers and the container table, including its cell vocabulary.
 
 use berth_core::format;
-use berth_ui::layout::{ContainerColumns, Widths};
+use berth_ui::layout::{self, ContainerColumns, Widths};
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Role, div, px};
+use gpui::{AnyElement, Context, Div, FontWeight, IntoElement, Role, SharedString, div, px};
 
 use crate::app::{BerthApp, Filter, SearchKind, Tab};
+use crate::ui::kit::{Button, button, caption, chip};
 use crate::ui::table_cells as cells;
 pub(crate) use crate::ui::table_cells::{
     empty_state, header_cell, pill, sortable_header_cell, text_cell,
@@ -60,7 +61,7 @@ pub(crate) fn page_header(
         )
         .child(
             div()
-                .text_size(px(type_scale::SUBTITLE))
+                .text_size(px(type_scale::SECONDARY))
                 .text_color(tokens.muted)
                 .child(subtitle),
         )
@@ -69,36 +70,22 @@ pub(crate) fn page_header(
     if let Some(kind) = search_kind {
         let search_width = if widths.content < 760.0 { 132.0 } else { 190.0 };
         if let Some(label) = action_label {
-            header = header.child(
-                div()
-                    .id("page-action")
-                    .flex()
-                    .items_center()
-                    .h(px(26.0))
-                    .px(px(10.0))
-                    .rounded(px(13.0))
-                    .bg(tokens.surface_hover)
-                    .role(Role::Button)
-                    .aria_label(label)
-                    .on_click(cx.listener(|this, _, _, cx| match this.tab {
-                        Tab::Containers => this.toggle_bulk(cx),
-                        Tab::Volumes => this.open_create(crate::app::CreateKind::Volume, cx),
-                        Tab::Networks => this.open_create(crate::app::CreateKind::Network, cx),
-                        _ => {}
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(tokens.text)
-                            .child(label),
-                    ),
-            );
+            header = header.child(button("page-action", label, tokens).on_click(cx.listener(
+                |this, _, _, cx| match this.tab {
+                    Tab::Containers => this.toggle_bulk(cx),
+                    Tab::Volumes => this.open_create(crate::app::CreateKind::Volume, cx),
+                    Tab::Networks => this.open_create(crate::app::CreateKind::Network, cx),
+                    _ => {}
+                },
+            )));
         }
         let search = app.search(kind).clone();
         search.update(cx, |input, _| input.set_width(search_width));
         header = header.child(search);
     }
 
+    // The chip that is on is the one that looks switched on: a wash of the
+    // accent in the accent's own text colour. The others are plain surfaces.
     let chips = div()
         .flex()
         .flex_row()
@@ -106,38 +93,13 @@ pub(crate) fn page_header(
         .gap(px(6.0))
         .pb(px(10.0))
         .children(Filter::ALL.into_iter().map(|filter| {
-            let selected = app.filter == filter;
-            div()
-                .id(("filter", filter as usize))
-                .flex()
-                .items_center()
-                .h(px(26.0))
-                .px(px(12.0))
-                .rounded(px(13.0))
-                .bg(if selected {
-                    tokens.surface_hover
-                } else {
-                    tokens.surface
-                })
-                .border_1()
-                .border_color(tokens.border)
-                .role(Role::Button)
-                .aria_label(filter.label())
-                .aria_selected(selected)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.set_filter(filter, cx);
-                }))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(if selected {
-                            FontWeight::MEDIUM
-                        } else {
-                            FontWeight::NORMAL
-                        })
-                        .text_color(tokens.text)
-                        .child(filter.label()),
-                )
+            chip(
+                ("filter", filter as usize),
+                filter.label(),
+                app.filter == filter,
+                tokens,
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.set_filter(filter, cx)))
         }));
 
     if app.tab == Tab::Containers {
@@ -171,19 +133,18 @@ pub(crate) fn table_header(
         .flex_row()
         .w_full()
         .items_center()
-        .px(px(12.0))
-        .pb(px(6.0))
-        .gap(px(10.0))
+        .px(px(layout::ROW_PADDING))
+        .gap(px(layout::ROW_GAP))
         .role(Role::Row)
         .aria_label("Containers table header");
 
     if app.bulk_enabled {
-        row = row.child(header_cell("", 28.0, false, tokens));
+        row = row.child(header_cell("", layout::BULK_COLUMN, false, tokens));
         row = row.child(sortable_header_cell(
             0,
             0,
             "NAME",
-            columns.name - 28.0,
+            columns.name - layout::BULK_COLUMN,
             false,
             sort,
             tokens,
@@ -363,24 +324,30 @@ pub(crate) fn table(
         })
         .collect::<Vec<_>>();
 
-    div()
-        .id("containers-table")
-        .flex()
-        .flex_col()
-        .w_full()
-        .flex_1()
-        .min_h(px(0.0))
-        .role(Role::Table)
-        .aria_label("Containers")
-        .child(bar)
-        .children(children)
-        .into_any_element()
+    // The table is one tab stop: a hundred rows must not mean a hundred
+    // presses. The arrow keys move inside it.
+    crate::ui::kit::focused(
+        div().id("containers-table"),
+        Some(&app.table_focus),
+        tokens.focus_ring(),
+        true,
+    )
+    .flex_col()
+    .w_full()
+    .flex_1()
+    .min_h(px(0.0))
+    .role(Role::Table)
+    .aria_label("Containers")
+    .child(bar)
+    .children(children)
+    .into_any_element()
 }
 
 fn bulk_bar(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
     if !app.bulk_enabled {
         return div();
     }
+    let none_selected = app.bulk_selected.is_empty();
     div()
         .flex()
         .flex_row()
@@ -388,70 +355,49 @@ fn bulk_bar(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
         .w_full()
         .gap(px(8.0))
         .py(px(6.0))
+        .child(caption(
+            format!("{} selected", app.bulk_selected.len()),
+            tokens,
+        ))
         .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.muted)
-                .child(format!("{} selected", app.bulk_selected.len())),
+            button("bulk-All", "All", tokens)
+                .small()
+                .on_click(cx.listener(|this, _, _, cx| this.bulk_select_all(cx))),
         )
-        .child(small(
-            "All",
-            tokens,
-            cx.listener(|this, _, _, cx| this.bulk_select_all(cx)),
-        ))
-        .child(small(
-            "None",
-            tokens,
-            cx.listener(|this, _, _, cx| this.bulk_clear(cx)),
-        ))
+        .child(
+            button("bulk-None", "None", tokens)
+                .small()
+                .on_click(cx.listener(|this, _, _, cx| this.bulk_clear(cx))),
+        )
         .child(div().flex_1())
-        .child(small(
-            "Start",
-            tokens,
-            cx.listener(|this, _, _, cx| this.bulk_request("Start", cx)),
-        ))
-        .child(small(
-            "Restart",
-            tokens,
-            cx.listener(|this, _, _, cx| this.bulk_request("Restart", cx)),
-        ))
-        .child(small(
-            "Stop",
-            tokens,
-            cx.listener(|this, _, _, cx| this.bulk_request("Stop", cx)),
-        ))
-        .child(small(
-            "Delete",
-            tokens,
-            cx.listener(|this, _, _, cx| this.bulk_request("Delete", cx)),
-        ))
-        .child(small(
-            "Cancel",
-            tokens,
-            cx.listener(|this, _, _, cx| this.toggle_bulk(cx)),
-        ))
+        .child(bulk_action("Start", tokens, none_selected, cx))
+        .child(bulk_action("Restart", tokens, none_selected, cx))
+        .child(bulk_action("Stop", tokens, none_selected, cx))
+        .child(bulk_action("Delete", tokens, none_selected, cx))
+        .child(
+            button("bulk-Cancel", "Cancel", tokens)
+                .small()
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_bulk(cx))),
+        )
 }
 
-fn small(
+/// Something to do to every selected container. With nothing selected there is
+/// nothing to do, and the button says so instead of doing nothing at all.
+fn bulk_action(
     label: &'static str,
     tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!("bulk-{label}")))
-        .flex()
-        .items_center()
-        .h(px(24.0))
-        .px(px(8.0))
-        .rounded(px(12.0))
-        .bg(tokens.surface_hover)
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.text)
-                .child(label),
-        )
+    none_selected: bool,
+    cx: &mut Context<BerthApp>,
+) -> Button {
+    let button = button(SharedString::from(format!("bulk-{label}")), label, tokens).small();
+    // Deleting destroys; starting and stopping don't.
+    let button = if label == "Delete" {
+        button.danger_wash()
+    } else {
+        button
+    };
+    button
+        .description("Select at least one container")
+        .disabled(none_selected)
+        .on_click(cx.listener(move |this, _, _, cx| this.bulk_request(label, cx)))
 }

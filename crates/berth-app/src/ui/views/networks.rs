@@ -6,6 +6,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, Role, SharedString, div, px};
 
 use crate::app::{BerthApp, DetailKind, SearchKind};
+use crate::ui::kit::table;
 use crate::ui::table::{empty_state, page_header, sortable_header_cell, text_cell};
 
 pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
@@ -90,9 +91,8 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
                     .flex_row()
                     .w_full()
                     .items_center()
-                    .px(px(12.0))
-                    .pb(px(6.0))
-                    .gap(px(10.0))
+                    .px(px(layout::ROW_PADDING))
+                    .gap(px(layout::ROW_GAP))
                     .child(sortable_header_cell(
                         3, 0, "NAME", name, false, sort, tokens, cx,
                     ))
@@ -126,13 +126,13 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
             .items_center()
             .w_full()
             .h(px(layout::ROW_CONTAINER))
-            .px(px(12.0))
-            .gap(px(10.0))
-            .rounded(px(4.0))
+            .px(px(layout::ROW_PADDING))
+            .gap(px(layout::ROW_GAP))
+            .rounded(px(layout::RADIUS_ROW))
             .bg(if selected {
-                tokens.accent.alpha(0.10)
+                tokens.selected_row()
             } else if index % 2 == 1 {
-                tokens.surface_hover.alpha(0.35)
+                tokens.alt_row()
             } else {
                 tokens.surface
             })
@@ -142,6 +142,8 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
             .role(Role::Row)
             .aria_label(&network.name)
             .aria_selected(selected)
+            // While the table has focus it speaks for its selected row.
+            .when(selected, |this| this.aria_active_descendant())
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_network(&click_id, &click_name, cx);
             }));
@@ -167,15 +169,6 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         row
     });
     content
-        .child(
-            div()
-                .id("networks-table")
-                .flex()
-                .flex_col()
-                .w_full()
-                .role(Role::Table)
-                .aria_label("Networks")
-                .children(rows),
-        )
+        .child(table("networks-table", "Networks", tokens).children(rows))
         .into_any_element()
 }

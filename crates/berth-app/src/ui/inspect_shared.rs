@@ -1,111 +1,92 @@
-//! Shared inspector chrome: the panel shell, small buttons, facts and IDs.
+//! Shared inspector chrome: the panel shell, its tabs and toggles, facts and
+//! IDs.
+//!
+//! The inspector sits on `surface`, not on the page, so its chips are washed
+//! over that: a chip washed over the page would read as a patch of something
+//! else on the panel.
 
+use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{Context, Div, FontWeight, IntoElement, Role, Stateful, div, px};
+use gpui::{
+    App, ClickEvent, Context, Div, FontWeight, IntoElement, Role, SharedString, Stateful, Window,
+    div, px,
+};
 
+use super::kit::{Button, button, chip};
 use super::tabular;
 use crate::app::BerthApp;
 
-pub(crate) fn pane_tab(
+/// A page of the inspector: Facts, Config, Runtime, Inspect. One is selected.
+pub(crate) fn inspector_tab(
     label: &'static str,
     active: bool,
     tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!("inspector-tab-{label}")))
-        .flex()
-        .items_center()
-        .h(px(24.0))
-        .px(px(9.0))
-        .rounded(px(12.0))
-        .bg(if active {
-            tokens.accent.alpha(0.16)
-        } else {
-            tokens.surface_hover
-        })
-        .role(Role::Button)
-        .aria_label(label)
-        .aria_selected(active)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(11.0))
-                .font_weight(if active {
-                    FontWeight::MEDIUM
-                } else {
-                    FontWeight::NORMAL
-                })
-                .text_color(if active {
-                    tokens.accent_text_pill()
-                } else {
-                    tokens.muted
-                })
-                .child(label),
-        )
+    chip(
+        SharedString::from(format!("inspector-tab-{label}")),
+        label,
+        active,
+        tokens,
+    )
+    .tab()
+    .on_surface(tokens.surface)
+    .on_click(on_click)
 }
 
-pub(crate) fn small_action(
-    id: &'static str,
-    label: &'static str,
-    tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .h(px(22.0))
-        .px(px(8.0))
-        .rounded(px(11.0))
-        .bg(tokens.surface_hover)
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(10.5))
-                .text_color(tokens.muted)
-                .child(label),
-        )
-}
-
-pub(crate) fn toggle(
+/// A switch in the logs header: Follow, Times. On or off on its own.
+pub(crate) fn inspector_toggle(
     label: &'static str,
     on: bool,
     tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!(
-            "inspector-toggle-{label}"
-        )))
-        .flex()
-        .items_center()
-        .h(px(22.0))
-        .px(px(8.0))
-        .rounded(px(11.0))
-        .bg(if on {
-            tokens.accent.alpha(0.16)
-        } else {
-            tokens.surface_hover
-        })
-        .role(Role::Button)
-        .aria_label(label)
-        .aria_selected(on)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(10.5))
-                .text_color(if on {
-                    tokens.accent_text_pill()
-                } else {
-                    tokens.muted
-                })
-                .child(label),
-        )
+    chip(
+        SharedString::from(format!("inspector-toggle-{label}")),
+        label,
+        on,
+        tokens,
+    )
+    .toggle()
+    .on_surface(tokens.surface)
+    .on_click(on_click)
+}
+
+/// A quiet button of the inspector: Refresh, Copy. Here when wanted, and
+/// nothing in the way otherwise.
+pub(crate) fn inspector_quiet(
+    id: &'static str,
+    label: &'static str,
+    tokens: Tokens,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    button(id, label, tokens).small().ghost().on_click(on_click)
+}
+
+/// A button of an inspector's action row.
+pub(crate) fn inspector_button(
+    label: &'static str,
+    tokens: Tokens,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    button(
+        SharedString::from(format!("inspector-verb-{label}")),
+        label,
+        tokens,
+    )
+    .on_click(on_click)
+}
+
+/// The one destructive action of an inspector: Delete, Remove. It destroys,
+/// so it is drawn in the danger wash.
+pub(crate) fn inspector_delete(
+    label: &'static str,
+    tokens: Tokens,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Button {
+    inspector_button(label, tokens, on_click).danger_wash()
 }
 
 pub(crate) fn fact(label: &'static str, value: &str, tokens: Tokens) -> Div {
@@ -114,11 +95,11 @@ pub(crate) fn fact(label: &'static str, value: &str, tokens: Tokens) -> Div {
         .flex_row()
         .items_center()
         .w_full()
-        .gap(px(10.0))
+        .gap(px(layout::ROW_GAP))
         .child(
             div()
-                .w(px(64.0))
-                .text_size(px(type_scale::FACT_LABEL))
+                .w(px(layout::FACT_LABEL))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .child(label),
         )
@@ -126,7 +107,7 @@ pub(crate) fn fact(label: &'static str, value: &str, tokens: Tokens) -> Div {
             div()
                 .flex_1()
                 .min_w(px(0.0))
-                .text_size(px(type_scale::FACT_VALUE))
+                .text_size(px(type_scale::BODY))
                 .font_features(tabular())
                 .text_color(tokens.text)
                 .truncate()
@@ -134,6 +115,7 @@ pub(crate) fn fact(label: &'static str, value: &str, tokens: Tokens) -> Div {
         )
 }
 
+/// The panel: its title, a close, a rule, and then whatever page is showing.
 pub(crate) fn pane_shell(
     name: &str,
     label: &'static str,
@@ -148,7 +130,7 @@ pub(crate) fn pane_shell(
         .w(px(width))
         .flex_shrink_0()
         .h_full()
-        .p(px(14.0))
+        .p(px(layout::INSPECTOR_PADDING))
         .gap(px(8.0))
         .bg(tokens.surface)
         .border_l_1()
@@ -166,85 +148,21 @@ pub(crate) fn pane_shell(
                     div()
                         .flex_1()
                         .min_w(px(0.0))
-                        .text_size(px(15.0))
+                        .text_size(px(type_scale::TITLE_SMALL))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(tokens.text)
                         .truncate()
                         .child(name.to_owned()),
                 )
                 .child(
-                    div()
-                        .id("inspector-close")
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .w(px(24.0))
-                        .h(px(24.0))
-                        .rounded(px(12.0))
-                        .bg(tokens.surface_hover)
-                        .role(Role::Button)
-                        .aria_label("Close inspector")
-                        .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx)))
-                        .child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(tokens.muted)
-                                .child("×"),
-                        ),
+                    button("inspector-close", "Close inspector", tokens)
+                        .small()
+                        .icon("xmark")
+                        .icon_only()
+                        .on_click(cx.listener(|this, _, _, cx| this.clear_selection(cx))),
                 ),
         )
         .child(div().w_full().h(px(1.0)).bg(tokens.border))
-}
-
-pub(crate) fn verb_button(
-    label: &'static str,
-    tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!("inspector-verb-{label}")))
-        .flex()
-        .items_center()
-        .h(px(26.0))
-        .px(px(10.0))
-        .rounded(px(13.0))
-        .bg(tokens.surface_hover)
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.text)
-                .child(label),
-        )
-}
-
-pub(crate) fn delete_button(
-    label: &'static str,
-    tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!(
-            "inspector-delete-{label}"
-        )))
-        .flex()
-        .items_center()
-        .h(px(26.0))
-        .px(px(10.0))
-        .rounded(px(13.0))
-        .bg(tokens.danger_text().alpha(0.12))
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(11.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(tokens.danger_text())
-                .child(label),
-        )
 }
 
 pub(crate) fn short_id(id: &str) -> String {

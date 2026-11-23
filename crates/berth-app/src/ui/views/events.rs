@@ -7,6 +7,7 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, Role, div, px};
 
 use crate::app::{BerthApp, SearchKind};
+use crate::ui::kit::table;
 use crate::ui::table::{empty_state, header_cell, page_header, pill, text_cell};
 
 pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
@@ -73,9 +74,8 @@ pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         .flex_row()
         .w_full()
         .items_center()
-        .px(px(12.0))
-        .pb(px(6.0))
-        .gap(px(10.0))
+        .px(px(layout::ROW_PADDING))
+        .gap(px(layout::ROW_GAP))
         .child(header_cell("TIME", time, false, tokens))
         .child(header_cell("TYPE", kind, false, tokens))
         .child(header_cell("ACTION", action, false, tokens))
@@ -106,11 +106,11 @@ pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .items_center()
             .w_full()
             .h(px(layout::ROW_EVENT))
-            .px(px(12.0))
-            .gap(px(10.0))
-            .rounded(px(4.0))
+            .px(px(layout::ROW_PADDING))
+            .gap(px(layout::ROW_GAP))
+            .rounded(px(layout::RADIUS_ROW))
             .bg(if index % 2 == 1 {
-                tokens.surface_hover.alpha(0.35)
+                tokens.alt_row()
             } else {
                 tokens.surface
             })
@@ -133,16 +133,7 @@ pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         row
     });
     content
-        .child(
-            div()
-                .id("events-table")
-                .flex()
-                .flex_col()
-                .w_full()
-                .role(Role::Table)
-                .aria_label("Events")
-                .children(rows),
-        )
+        .child(table("events-table", "Events", tokens).children(rows))
         .into_any_element()
 }
 

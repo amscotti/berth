@@ -3,7 +3,7 @@
 use berth_core::format;
 use berth_engine::df::Store;
 use berth_engine::discovery::Kind;
-use berth_ui::layout::{self, Widths};
+use berth_ui::layout::Widths;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
@@ -11,6 +11,7 @@ use gpui::{AnyElement, Context, Div, FontWeight, Hsla, div, px};
 
 use crate::app::BerthApp;
 use crate::ui::graph;
+use crate::ui::kit::{button, caption, card, card_title};
 use crate::ui::table::{empty_state, page_header};
 
 pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
@@ -63,43 +64,25 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     );
 
     let engine_kind = app.engine.active_runtime().map(|runtime| runtime.kind);
-    let explanation = div()
-        .flex()
-        .flex_col()
-        .w_full()
-        .gap(px(6.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .text_size(px(type_scale::CARD_TITLE))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.text)
-                .child("What these numbers are"),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(tokens.muted)
-                .child("Read from /system/df, which walks the image and volume stores. It is cached because it is expensive."),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(tokens.muted)
-                .child(location_note(engine_kind)),
-        )
+    let explanation = card(tokens)
+        .child(card_title("What these numbers are", tokens))
+        .child(caption(
+            "Read from /system/df, which walks the image and volume stores. It is cached because it is expensive.",
+            tokens,
+        ))
+        .child(caption(location_note(engine_kind), tokens))
         .child(
             div()
                 .flex()
                 .flex_row()
                 .w_full()
                 .justify_end()
-                .pt(px(2.0))
-                .child(button("Clean up unused…", tokens, true, cx)),
+                // Opening the cleanup asks first; it destroys nothing itself.
+                .child(
+                    button("disk-cleanup", "Clean up unused…", tokens)
+                        .primary()
+                        .on_click(cx.listener(|this, _, _, cx| this.open_prune(cx))),
+                ),
         );
 
     let mut content = div()
@@ -148,7 +131,7 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     if app.snapshot.df_error.is_empty() {
         content = content.child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .pt(px(8.0))
                 .child(format!(
@@ -159,7 +142,7 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     } else {
         content = content.child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(type_scale::SECONDARY))
                 .text_color(tokens.warning_text())
                 .pt(px(8.0))
                 .child(app.snapshot.df_error.clone()),
@@ -214,43 +197,9 @@ fn legend(label: &str, figure: String, color: Hsla, tokens: Tokens) -> Div {
         .child(div().w(px(6.0)).h(px(6.0)).rounded(px(3.0)).bg(color))
         .child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(type_scale::SECONDARY))
                 .text_color(tokens.muted)
                 .child(format!("{label} {figure}")),
-        )
-}
-
-fn button(
-    label: &'static str,
-    tokens: Tokens,
-    primary: bool,
-    cx: &mut Context<BerthApp>,
-) -> impl IntoElement {
-    div()
-        .id(label)
-        .flex()
-        .items_center()
-        .h(px(28.0))
-        .px(px(12.0))
-        .rounded(px(14.0))
-        .bg(if primary {
-            tokens.accent
-        } else {
-            tokens.surface_hover
-        })
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .on_click(cx.listener(|this, _, _, cx| this.open_prune(cx)))
-        .child(
-            div()
-                .text_size(px(12.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(if primary {
-                    tokens.accent_text
-                } else {
-                    tokens.text
-                })
-                .child(label),
         )
 }
 

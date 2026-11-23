@@ -163,3 +163,63 @@ fn a_container_with_no_port_sorts_after_those_with_one(cx: &mut TestAppContext) 
         assert_eq!(app.visible_rows(), [0, 1]);
     });
 }
+
+/// What a cleanup would remove is counted from the lists on screen, not just
+/// weighed; and where it can't be counted, that is unknown, not zero.
+#[gpui::test]
+fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAppContext) {
+    let (app, cx) = testkit::fixture(cx);
+    app.read_with(&*cx, |app, _| {
+        // The fixture: nothing stopped, one image no container uses, a
+        // volume in use, and no network that could go.
+        assert_eq!(app.prune_count(0), Some(0));
+        assert_eq!(app.prune_count(1), Some(1));
+        assert_eq!(app.prune_count(2), Some(0));
+        assert_eq!(app.prune_count(3), Some(0));
+        assert_eq!(app.prune_count(4), None, "build cache isn't things");
+        assert_eq!(app.prune_selected_bytes(), Some(13 * 1024 * 1024));
+        assert_eq!(app.prune_has_work(), Some(true));
+    });
+
+    // With only the options that have nothing left ticked, the button knows
+    // there is nothing to do, and Tab passes it by.
+    app.update(cx, |app, cx| {
+        app.prune_options.images = false;
+        app.open_prune(cx);
+    });
+    let (work, stops) = app.read_with(&*cx, |app, cx| {
+        (app.prune_has_work(), app.sheet_focus.stops(app, cx).len())
+    });
+    assert_eq!(work, Some(false));
+    assert_eq!(
+        stops, 6,
+        "five options and Cancel; Clean up is out of reach"
+    );
+
+    // A stopped container goes even where it takes no space.
+    app.update(cx, |app, cx| {
+        let mut snapshot = (*app.snapshot).clone();
+        snapshot.containers[0].state = "exited".into();
+        app.snapshot = std::sync::Arc::new(snapshot);
+        cx.notify();
+    });
+    assert_eq!(
+        app.read_with(&*cx, |app, _| (app.prune_count(0), app.prune_has_work())),
+        (Some(1), Some(true))
+    );
+
+    // Without the engine's disk figures nothing can be counted or weighed.
+    // That is unknown, and the engine decides: the button isn't refused.
+    app.update(cx, |app, cx| {
+        let mut snapshot = (*app.snapshot).clone();
+        snapshot.df = None;
+        app.snapshot = std::sync::Arc::new(snapshot);
+        cx.notify();
+    });
+    app.read_with(&*cx, |app, _| {
+        assert_eq!(app.prune_count(0), None);
+        assert_eq!(app.prune_count(1), None);
+        assert_eq!(app.prune_selected_bytes(), None);
+        assert_eq!(app.prune_has_work(), None);
+    });
+}

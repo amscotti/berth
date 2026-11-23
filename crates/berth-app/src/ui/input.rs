@@ -8,6 +8,8 @@
 use std::ops::Range;
 
 use berth_core::TextBuffer;
+use berth_ui::layout;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{
     App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
@@ -33,9 +35,13 @@ pub struct InputState {
     placeholder: SharedString,
     focus_handle: FocusHandle,
     width: f32,
-    height: f32,
-    font_size: f32,
     marked: Option<Range<usize>>,
+}
+
+impl InputState {
+    /// A field is a control of the usual height, set in the secondary size.
+    const HEIGHT: f32 = layout::CONTROL;
+    const FONT: f32 = type_scale::SECONDARY;
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -45,10 +51,8 @@ impl InputState {
         Self {
             buffer: TextBuffer::default(),
             placeholder: placeholder.into(),
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             width,
-            height: 28.0,
-            font_size: 12.5,
             marked: None,
         }
     }
@@ -215,9 +219,9 @@ impl Render for InputState {
             .flex_row()
             .items_center()
             .w(px(self.width))
-            .h(px(self.height))
+            .h(px(Self::HEIGHT))
             .px(px(9.0))
-            .rounded(px(6.0))
+            .rounded(px(layout::RADIUS_NESTED))
             .bg(tokens.surface)
             .border_1()
             .border_color(if focused {
@@ -237,16 +241,11 @@ impl Render for InputState {
 
         if empty {
             if focused {
-                field = field.child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(self.font_size + 2.0))
-                        .bg(tokens.accent),
-                );
+                field = field.child(div().w(px(1.5)).h(px(Self::FONT + 2.0)).bg(tokens.accent));
             }
             field = field.child(
                 div()
-                    .text_size(px(self.font_size))
+                    .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.muted)
                     .child(self.placeholder.clone()),
             );
@@ -254,33 +253,28 @@ impl Render for InputState {
             if !before.is_empty() {
                 field = field.child(
                     div()
-                        .text_size(px(self.font_size))
+                        .text_size(px(type_scale::SECONDARY))
                         .text_color(tokens.text)
                         .child(before.to_owned()),
                 );
             }
             if !selected.is_empty() {
                 field = field.child(
-                    div().rounded(px(2.0)).bg(tokens.accent.alpha(0.24)).child(
+                    div().rounded(px(2.0)).bg(tokens.text_selection()).child(
                         div()
-                            .text_size(px(self.font_size))
+                            .text_size(px(type_scale::SECONDARY))
                             .text_color(tokens.text)
                             .child(selected.to_owned()),
                     ),
                 );
             }
             if focused {
-                field = field.child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(self.font_size + 2.0))
-                        .bg(tokens.accent),
-                );
+                field = field.child(div().w(px(1.5)).h(px(Self::FONT + 2.0)).bg(tokens.accent));
             }
             if !after.is_empty() {
                 field = field.child(
                     div()
-                        .text_size(px(self.font_size))
+                        .text_size(px(type_scale::SECONDARY))
                         .text_color(tokens.text)
                         .child(after.to_owned()),
                 );
@@ -405,7 +399,7 @@ impl EntityInputHandler for InputState {
         let text = self.buffer.text();
         let start = utf16_to_byte(text, range_utf16.start);
         let end = utf16_to_byte(text, range_utf16.end);
-        let char_width = self.font_size * 0.58;
+        let char_width = Self::FONT * 0.58;
         let prefix_chars = text[..start].chars().count();
         let span_chars = text[start..end].chars().count().max(1);
         let x = element_bounds.left() + px(9.0) + px(prefix_chars as f32 * char_width);
@@ -424,7 +418,7 @@ impl EntityInputHandler for InputState {
     ) -> Option<usize> {
         let _ = window;
         let text = self.buffer.text();
-        let char_width = self.font_size * 0.58;
+        let char_width = Self::FONT * 0.58;
         let x = (f32::from(point.x) - 9.0).max(0.0);
         let index = ((x / char_width).round()).max(0.0) as usize;
         Some(byte_to_utf16(text, snap_to_char_boundary(text, index)))

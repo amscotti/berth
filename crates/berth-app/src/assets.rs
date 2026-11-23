@@ -33,6 +33,7 @@ icons!(
     "memory",
     "running",
     "host",
+    "check",
     "sparkles",
     "plus",
     "xmark",

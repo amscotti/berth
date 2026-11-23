@@ -9,8 +9,9 @@ use berth_ui::layout::{self, ContainerColumns};
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, Hsla, IntoElement, Role, div, px};
+use gpui::{AnyElement, Context, Div, FontWeight, Hsla, IntoElement, Role, SharedString, div, px};
 
+use super::kit::{button, checkbox};
 use super::row_actions::action_cell;
 use super::tabular;
 use crate::app::BerthApp;
@@ -37,8 +38,8 @@ pub(crate) fn shade(position: usize, selected: bool) -> Shade {
 impl Shade {
     fn background(self, tokens: Tokens) -> gpui::Hsla {
         match self {
-            Shade::Selected => tokens.accent.alpha(0.10),
-            Shade::Alt => tokens.surface_hover.alpha(0.35),
+            Shade::Selected => tokens.selected_row(),
+            Shade::Alt => tokens.alt_row(),
             Shade::Plain => tokens.surface,
         }
     }
@@ -67,9 +68,9 @@ pub(crate) fn container_row(
         .items_center()
         .w_full()
         .h(px(layout::ROW_CONTAINER))
-        .px(px(12.0))
-        .gap(px(10.0))
-        .rounded(px(4.0))
+        .px(px(layout::ROW_PADDING))
+        .gap(px(layout::ROW_GAP))
+        .rounded(px(layout::RADIUS_ROW))
         .bg(shade(position, selected).background(tokens))
         .when(!selected, |this| {
             this.hover(move |style| style.bg(tokens.surface_hover))
@@ -77,49 +78,37 @@ pub(crate) fn container_row(
         .role(Role::Row)
         .aria_label(container.name())
         .aria_selected(selected)
+        // While the table has focus it speaks for its selected row, as a
+        // list does: the row is what assistive technology announces.
+        .when(selected, |this| this.aria_active_descendant())
         .on_click(cx.listener(move |this, _, _, cx| {
             this.select(index, cx);
         }));
 
     if app.bulk_enabled {
         let checked = app.bulk_selected.contains(&container.id);
-        let check_id = gpui::SharedString::from(format!("bulk-check-{}", container.id));
         let id = container.id.clone();
         element = element.child(
-            div()
-                .id(check_id)
-                .flex()
-                .items_center()
-                .justify_center()
-                .w(px(28.0))
-                .h(px(20.0))
-                .role(Role::CheckBox)
-                .aria_label(format!("Select {}", container.name()))
-                .aria_selected(checked)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.bulk_toggle(&id, cx);
-                    cx.stop_propagation();
-                }))
-                .child(
-                    div()
-                        .w(px(14.0))
-                        .h(px(14.0))
-                        .rounded(px(4.0))
-                        .bg(if checked { tokens.accent } else { tokens.track })
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .when(checked, |this| {
-                            this.child(
-                                div()
-                                    .text_size(px(9.0))
-                                    .text_color(tokens.accent_text)
-                                    .child("✓"),
-                            )
-                        }),
-                ),
+            checkbox(
+                SharedString::from(format!("bulk-check-{}", container.id)),
+                format!("Select {}", container.name()),
+                checked,
+                tokens,
+            )
+            .box_only()
+            // The table is the tab stop: a hundred rows must not mean a
+            // hundred presses. Space toggles the selected row's box.
+            .tab_stop(false)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.bulk_toggle(&id, cx);
+                cx.stop_propagation();
+            })),
         );
-        element = element.child(name_cell(container, columns.name - 28.0, tokens));
+        element = element.child(name_cell(
+            container,
+            columns.name - layout::BULK_COLUMN,
+            tokens,
+        ));
     } else {
         element = element.child(name_cell(container, columns.name, tokens));
     }
@@ -225,13 +214,13 @@ pub(crate) fn empty_state(heading: &str, detail: &str, tokens: Tokens) -> Div {
         .gap(px(6.0))
         .child(
             div()
-                .text_size(px(13.0))
+                .text_size(px(type_scale::BODY))
                 .text_color(tokens.text)
                 .child(heading.to_owned()),
         )
         .child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(type_scale::SECONDARY))
                 .text_color(tokens.muted)
                 .child(detail.to_owned()),
         )
@@ -252,7 +241,7 @@ pub(crate) fn header_cell(label: &'static str, width: f32, align_end: bool, toke
                 .child(label),
         );
     if align_end {
-        cell = cell.justify_end().pr(px(8.0));
+        cell = cell.justify_end().pr(px(layout::CELL_PADDING_END));
     }
     cell
 }
@@ -288,7 +277,11 @@ pub(crate) fn sortable_header_cell(
         .flex_row()
         .items_center()
         .w(px(width))
-        .h(px(layout::TABLE_HEADER))
+        .h(px(layout::CONTROL_SMALL))
+        .rounded(px(layout::RADIUS_ROW))
+        // The hairline that the focus ring is drawn in.
+        .border_1()
+        .border_color(tokens.invisible())
         .role(Role::ColumnHeader)
         .aria_label(aria)
         .on_click(cx.listener(move |this, _, _, cx| {
@@ -302,9 +295,11 @@ pub(crate) fn sortable_header_cell(
                 .child(format!("{label}{arrow}")),
         );
     if align_end {
-        cell = cell.justify_end().pr(px(8.0));
+        cell = cell.justify_end().pr(px(layout::CELL_PADDING_END));
     }
-    cell
+    // A header sorts, so it is a control: Tab reaches it, and Enter or Space
+    // sorts by it.
+    crate::ui::kit::focusable(cell, tokens.focus_ring())
 }
 
 fn name_cell(container: &Container, width: f32, tokens: Tokens) -> Div {
@@ -323,7 +318,7 @@ fn name_cell(container: &Container, width: f32, tokens: Tokens) -> Div {
         )
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .truncate()
                 .child(container.image.clone()),
@@ -340,7 +335,7 @@ pub(crate) fn text_cell(text: String, width: f32, align_end: bool, tokens: Token
             .child(text),
     );
     if align_end {
-        cell = cell.justify_end().pr(px(8.0));
+        cell = cell.justify_end().pr(px(layout::CELL_PADDING_END));
     }
     cell
 }
@@ -371,13 +366,13 @@ fn io_line(label: &'static str, value: String, tokens: Tokens) -> Div {
         .gap(px(4.0))
         .child(
             div()
-                .text_size(px(10.0))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .child(label),
         )
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_features(tabular())
                 .text_color(tokens.text)
                 .child(value),
@@ -389,13 +384,14 @@ pub(crate) fn pill(state: &str, tokens: Tokens) -> Div {
     div()
         .flex()
         .items_center()
-        .h(px(20.0))
-        .px(px(8.0))
-        .rounded(px(10.0))
-        .bg(color.alpha(0.14))
+        .flex_shrink_0()
+        .h(px(layout::PILL_HEIGHT))
+        .px(px(layout::PILL_PADDING))
+        .rounded(px(layout::PILL_HEIGHT / 2.0))
+        .bg(tokens.pill_wash(color))
         .child(
             div()
-                .text_size(px(type_scale::PILL))
+                .text_size(px(type_scale::LABEL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(color)
                 .child(state.to_owned()),
@@ -419,35 +415,27 @@ fn ports_cell(
         let host = binding.ip.clone();
         let port = binding.port;
         cell = cell.child(
-            div()
-                .id(gpui::SharedString::from(format!(
-                    "row-port-{}-{}",
-                    container.id, port
-                )))
-                .flex()
-                .items_center()
-                .h(px(20.0))
-                .px(px(8.0))
-                .rounded(px(10.0))
-                .bg(tokens.warning_fill.alpha(0.14))
-                .role(Role::Button)
-                .aria_label(format!("Open port {port}"))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.open_port(&host, port, cx);
-                }))
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_features(tabular())
-                        .text_color(tokens.warning_text())
-                        .child(binding.port.to_string()),
-                ),
+            button(
+                SharedString::from(format!("row-port-{}-{port}", container.id)),
+                binding.port.to_string(),
+                tokens,
+            )
+            .small()
+            .port()
+            .tabular()
+            .name(format!("Open port {port}"))
+            // Skipped by Tab, like everything else that repeats in a row.
+            .tab_stop(false)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                // The press opens the port; it doesn't open the row.
+                cx.stop_propagation();
+                this.open_port(&host, port, cx);
+            })),
         );
         if ports.len() > 1 {
             cell = cell.child(
                 div()
-                    .text_size(px(10.5))
+                    .text_size(px(type_scale::LABEL))
                     .text_color(tokens.muted)
                     .child(format!("+{}", ports.len() - 1)),
             );

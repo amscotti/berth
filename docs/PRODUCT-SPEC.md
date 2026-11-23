@@ -90,7 +90,10 @@ These are not implementation details; they are what the app promises.
   cannot be removed).
 - Prune: stopped containers, unused images, unused volumes, unused networks,
   build cache; Podman has no build-cache route and its image/volume prune
-  filters differ. Show reclaimable sizes before the first destructive click.
+  filters differ. Before the destructive click each option says how many
+  things and how much data it would free, as far as each is known; unknown is
+  "—", never 0. Clean up can't be pressed while everything ticked has nothing
+  left, and isn't refused when berth can't tell, so the engine decides.
 - Engine machines: start/stop/restart Colima, Lima, Podman machine. Lima/Podman
   restart is stop-then-start. Stopping/restarting confirms how many running
   containers will go down.
@@ -152,16 +155,18 @@ structure but uses berth's own palette. The port must preserve the tokens, not
 | `shadow` | 12% | 40% | layers only; cards never float |
 
 Derived, text-safe variants (must be implemented as functions, not reused
-fills):
+fills). The dark `danger_text` and `muted_text_pill` are a step lighter than
+the first port had them: at `#d4745a` on a 12% wash and `#9b9282` on a 14%
+one they read 4.4:1, just under the floor the tests hold.
 
 | Token | Light | Dark |
 |---|---|---|
 | `accent_fill` (bars/graphs) | `#b26a1e` | `#e3a44b` |
 | `warning` (text) | `#7a4700` | `#ff9f0a` |
 | `success_text` | `#3f5c2e` | `#83a76d` |
-| `danger_text` | `#8f2f1c` | `#d4745a` |
+| `danger_text` | `#8f2f1c` | `#d97b61` |
 | `accent_text_pill` | `#7d430f` | `#e3a44b` |
-| `muted_text_pill` | `#5a5245` | `#9b9282` |
+| `muted_text_pill` | `#5a5245` | `#9f9686` |
 | `running_text` | `#7a4700` | `#d9a441` |
 | `warning_fill` | `#ff9f0a` | `#ff9f0a` |
 | `store_volume` | `#ff9f0a` | `#ff9f0a` |
@@ -187,13 +192,15 @@ on a 12% wash; every status pill on every row background.
   invent a brand font. Bundling Inter is optional if Linux needs consistency.
 - Tabular numerals (`font_features: "tnum"` or `FontFeatures`) on all figures,
   metrics, clocks, byte counts, PIDs, ports, table numbers.
-- Monospace for IDs, socket paths, raw JSON and logs (`Menlo`/`SF Mono` with a
-  generic fallback).
-- Scale: page title 22 semibold; page subtitle 12.5 muted; card title 15
-  semibold; card sub-label 12.5 semibold; metric 26 bold; section label 10.5
-  semibold muted 75%; rail 13; table header 11 medium; table body 13; pills 11
-  medium; small buttons 11.5; inspector label 11 muted; inspector value 11.5;
-  logs 11.5 mono leading 1.4; "recent" 9.5.
+- Monospace for IDs, socket paths, raw JSON and logs. One family, named once
+  (`berth_ui::typography::MONO_FAMILY`): Menlo on macOS, `DejaVu Sans Mono`
+  elsewhere, at 11.5 with leading 1.4.
+- Scale: seven steps and nothing else (`berth_ui::typography`; a test holds
+  the views to it). Page title 22 semibold; card and sheet title 15 semibold;
+  body 13 (table rows, rail, control labels, inspector values); secondary 12.5
+  (page subtitle, captions, field text); label 11 (table headers, pills,
+  chips, small controls, inspector labels); meta 9.5 ("recent", the narrow
+  rail); metric 26 bold.
 - Truncation: end ellipsis by default, middle for paths/IDs. Numbers right
   aligned, text left aligned.
 
@@ -207,8 +214,9 @@ on a 12% wash; every status pill on every row background.
 | Main column | padding 20 left/right, 16 top, 12 bottom, gap 4 |
 | Inspector | 430 at ≥1180, else 360; padding 14, gap 8 |
 | Content width | `window − rail − 40 − inspector`, min 280 |
-| Cards | radius 10, padding 14–16, 1 px border, surface; no shadow |
-| Tables | container/image/volume/network rows 44; events rows 34; row padding 12; gap 10; radius 4; header 18 high with 1 px rule |
+| Cards | radius 10, padding 16, 12 between cards, 1 px border, surface; no shadow; side by side, siblings stretch to the tallest |
+| Controls | 24 (pills, chips, small buttons) or 28 (buttons, fields, checkbox rows); a dialog's buttons are 92 wide |
+| Tables | container/image/volume/network rows 44; events rows 34; row padding 12; gap 10; radius 4; header cells 24 high (a control: they sort) with a 1 px rule |
 | Graph well | 70 high (overview), radius 8, background page colour, 1 px border, 8 inset; dots 4 pt on a 6 pt pitch |
 | Sheets | max 620 wide, top ≈ centred minus 4%, backdrop 38% light / 58% dark |
 | Empty/loading | skeleton rows for first read; empty state names the state and the next action |
@@ -217,7 +225,7 @@ Table density by content width: full ≥1040, medium ≥832, dense ≥656, compa
 ≥510, tiny below. Column sets and widths are in `src/ui/views/columns.zig` and
 must be copied literally (including the 110 pt name-column growth cap).
 
-Bulk mode borrows 34 pt from the name column for a checkbox; it does not widen
+Bulk mode borrows 28 pt from the name column for a checkbox; it does not widen
 the row.
 
 ### 3.4 Components and interaction
@@ -230,17 +238,31 @@ the row.
 - **Page header**: 22 pt title, muted count/subtitle, search at right (190 pt,
   12.5 text), optional action pill (New volume/network) before search, clear
   button appears only when text exists.
-- **Table**: sortable headers (accent + ▲/▼, 8 pt arrow), hover surface,
-  selected accent 10% wash, alternating rows at 35% surface_hover, actions
-  pinned right (Stop/Restart/Delete or Start), 24 pt pills.
+- **Table**: sortable headers (accent + ▲/▼, each a control Tab reaches and
+  Enter or Space sorts by), hover surface, selected accent 8% wash (at 10%
+  muted text on the row read 4.44:1 in light), alternating rows at 35%
+  surface_hover, actions pinned right (Stop/Restart/Delete or Start), 24 pt
+  pills. A table is one tab stop for all its rows; a row's own actions are not
+  stops.
 - **Status pill**: word first, colour second; 20 pt high, 8 px horizontal,
   radius 10, 14% background wash; health overrides state when present.
-- **Cards**: tinted chip, coloured label, one large tabular figure, a context
-  note ("of 4 cores", "partial sample", "reclaimable 12.8 MiB"), graph in a
-  recessed well.
-- **Buttons**: primary = accent fill + accent_text; secondary = surface_hover;
-  destructive = danger (or danger text + 14% wash for inspector actions);
-  dialog buttons share 92×28 and one baseline.
+- **Cards**: one element, radius 10, 15 pt title, optional tinted icon chip
+  and right-hand slot; tinted chip, coloured label, one large tabular figure,
+  a context note ("of 4 cores", "partial sample", "reclaimable 12.8 MiB"),
+  graph in a recessed well.
+- **Buttons**: one element (`ui/kit`), 24 or 28 high. Primary = accent fill +
+  accent_text, hover `accent_hover`; secondary = surface_hover with a
+  hairline, so it stays a button on a tinted card; ghost = no fill, label
+  strengthens on hover (Refresh, Copy); destructive = danger fill, or danger
+  text on a 12% wash where it sits in a crowd (a row, the inspector); a port
+  is a link in the port colours. Hover, pressed, disabled (45% opacity and the
+  reason) and a 1 px focus ring are built in. Dialog buttons share 92×28 and
+  one baseline.
+- **Chips**: 24 high. On = accent wash 16% + accent_text_pill + medium weight;
+  off = surface with a hairline. A filter is announced as one of a set, an
+  inspector tab as a tab, Follow and Times as toggles.
+- **Checkbox**: the whole row is the control (28 high), with a drawn check and
+  room for a figure at the end; in the bulk column only the box is drawn.
 - **Inspector**: title + close, Facts/Inspect pills, rule, content. Facts use a
   fixed 64 pt label column. Container: image/state/status/health/project/
   service/started/CPU/memory/network/disk/PIDs/restarts/ports; Pause/Resume,
@@ -249,8 +271,15 @@ the row.
   scope/mountpoint/size/in use + Remove. Network: name/ID/driver/scope/
   attached + Remove (not built-ins). Inspect: monospace JSON, Copy/Refresh.
 - **Sheets**: one modal slot only. Confirm stop/delete, engine stop/restart,
-  prune options, create volume/network, bulk confirm. A sheet owns the keyboard;
-  background focus is cleared; backdrop consumes clicks and wheel.
+  prune options, create volume/network, bulk confirm. A sheet owns the keyboard:
+  focus moves into it when it opens (Cancel for a confirmation, the name field
+  for a create, the first option for a cleanup), Tab and Shift+Tab cross only
+  its controls, the page behind gets none of its shortcuts, and focus returns
+  to where it was when the sheet closes; backdrop consumes clicks and wheel.
+- **Tab order**: the rail's pages, the page action, the search, the chips, the
+  sortable headers, then the table as one stop, then the inspector. The ring
+  is 1 px in the text colour, drawn in each control's own hairline so nothing
+  moves; it shows for the keyboard only.
 - **States**: first read = skeleton; failed first pass = "Engine not answering"
   + help; later failure = keep stale data + rail warning; search no-match =
   "No results for “q”" + Clear search; empty engine = specific next action.
@@ -329,8 +358,9 @@ POST /build/prune            # Docker only
 - First read: "Reading engine…", "no figures yet", "partial sample", "Engine
   not answering", "no engine found", "probing known sockets…".
 - Disk: "What these numbers are", "Prune frees space inside the engine's VM…".
-- Prune: "Stopped containers, unused images and build cache. Volumes and
-  networks are opt-in; this cannot be undone."
+- Prune: "Removes stopped containers, every image no container uses, and build
+  cache. Volumes and networks are opt-in; this cannot be undone." Each option
+  reads "how many · how much": "Unused images · 1 · 13.0 MiB".
 - Engine stop: "N running containers on <name> will stop with the engine."
 - Toast strings: "Run command copied · some env values redacted", "Logs
   copied", "Inspect JSON copied · truncated", "Terminal did not answer — check

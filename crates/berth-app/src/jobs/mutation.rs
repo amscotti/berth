@@ -8,7 +8,7 @@ use berth_engine::prune::{self, Engine};
 
 use super::engine_ops;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PruneOptions {
     pub containers: bool,
     pub images: bool,

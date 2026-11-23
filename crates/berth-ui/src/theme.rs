@@ -5,14 +5,76 @@
 //! Zig app (`docs/PRODUCT-SPEC.md`). They are stored as [`Hsla`] because that
 //! is what GPUI paints; the contrast helper converts back to sRGB for WCAG.
 //!
+//! A view never mixes its own wash. Every "this colour at some transparency"
+//! the design uses is a method here, with the contrast it needs tested below.
+//!
 //! Text that carries a warning needs the darker `warning` variant. A bright
 //! amber is fine as a drawn mark and unreadable as a word.
 
 use gpui::{Hsla, WindowAppearance, rgb};
 
+/// How much of a colour a background wash carries.
+pub mod wash {
+    /// The row that is open in the inspector. Eight percent, not the ten the
+    /// spec first named: at ten, muted text on the selected row reads 4.44:1
+    /// in the light theme, and the row is still unmistakable at eight.
+    pub const SELECTED: f32 = 0.08;
+    /// The active engine's card.
+    pub const ACTIVE: f32 = 0.08;
+    /// A status pill's background, and the tint behind an icon.
+    pub const PILL: f32 = 0.14;
+    /// A chip or tab that is on.
+    pub const ACCENT: f32 = 0.16;
+    /// The wash behind destructive text.
+    pub const DANGER: f32 = 0.12;
+    /// The alternative row of a table: `surface_hover` at this strength.
+    pub const ZEBRA: f32 = 0.35;
+    /// Selected text in a field.
+    pub const SELECTION: f32 = 0.24;
+    /// The quietest text that is still text.
+    pub const FAINT: f32 = 0.75;
+    /// "Elsewhere" in the host bar.
+    pub const ELSEWHERE: f32 = 0.55;
+    /// The veil behind a sheet, by theme.
+    pub const BACKDROP_LIGHT: f32 = 0.38;
+    /// The veil behind a sheet, by theme.
+    pub const BACKDROP_DARK: f32 = 0.58;
+    /// A graph well's fill and hairline.
+    pub const WELL: f32 = 0.28;
+    /// A graph well's fill and hairline.
+    pub const WELL_BORDER: f32 = 0.55;
+    /// How faint a control is drawn while it can't be used.
+    pub const DISABLED: f32 = 0.45;
+    /// How much a hover moves a filled control's fill toward the text
+    /// colour. Only for fills whose text has contrast to spare.
+    pub const HOVER: f32 = 0.08;
+    /// How much being pressed moves it further.
+    pub const PRESSED: f32 = 0.16;
+    /// The strength of the hairline a wash-filled control shows on hover.
+    pub const OUTLINE_HOVER: f32 = 0.55;
+}
+
+/// Which palette is in use. A token never has to be recognised by its colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Theme {
+    #[default]
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn for_appearance(appearance: WindowAppearance) -> Self {
+        match appearance {
+            WindowAppearance::Dark | WindowAppearance::VibrantDark => Theme::Dark,
+            WindowAppearance::Light | WindowAppearance::VibrantLight => Theme::Light,
+        }
+    }
+}
+
 /// The colors shared by the page and its chrome.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Tokens {
+    pub theme: Theme,
     /// Page background and recessed wells.
     pub background: Hsla,
     /// Rail, cards, inspector.
@@ -46,6 +108,7 @@ pub struct Tokens {
 /// The warm paper theme.
 pub fn light() -> Tokens {
     Tokens {
+        theme: Theme::Light,
         background: hex(0xf7f3ea),
         surface: hex(0xfffcf5),
         surface_hover: hex(0xefe8da),
@@ -66,6 +129,7 @@ pub fn light() -> Tokens {
 /// The charcoal theme.
 pub fn dark() -> Tokens {
     Tokens {
+        theme: Theme::Dark,
         background: hex(0x17140f),
         surface: hex(0x211d16),
         surface_hover: hex(0x2d2820),
@@ -83,11 +147,11 @@ pub fn dark() -> Tokens {
     }
 }
 
-/// Resolve the page tokens for the window's current system appearance.
+/// Resolve the page tokens for an appearance.
 pub fn for_appearance(appearance: WindowAppearance) -> Tokens {
-    match appearance {
-        WindowAppearance::Dark | WindowAppearance::VibrantDark => dark(),
-        WindowAppearance::Light | WindowAppearance::VibrantLight => light(),
+    match Theme::for_appearance(appearance) {
+        Theme::Light => light(),
+        Theme::Dark => dark(),
     }
 }
 
@@ -122,63 +186,64 @@ impl ActiveTokens {
 }
 
 impl Tokens {
+    pub fn is_dark(self) -> bool {
+        self.theme == Theme::Dark
+    }
+
     /// The amber a graph or a store segment is filled with. `accent` itself is
     /// the text-bearing control fill: cream text needs the darker light value,
     /// while a drawn line or segment does not.
     pub fn accent_fill(self) -> Hsla {
-        if self.background == dark().background {
-            self.accent
-        } else {
-            hex(0xb26a1e)
+        match self.theme {
+            Theme::Dark => self.accent,
+            Theme::Light => hex(0xb26a1e),
         }
     }
 
     /// Warning text and pills. The bright amber is a dark-theme value; on
     /// paper it lands near 2:1, so the light theme gets a burnt variant.
     pub fn warning_text(self) -> Hsla {
-        if self.background == dark().background {
-            self.warning_fill
-        } else {
-            hex(0x7a4700)
+        match self.theme {
+            Theme::Dark => self.warning_fill,
+            Theme::Light => hex(0x7a4700),
         }
     }
 
     /// Success text and pills, as opposed to the brighter graph fill.
     pub fn success_text(self) -> Hsla {
-        if self.background == dark().background {
-            self.success
-        } else {
-            hex(0x3f5c2e)
+        match self.theme {
+            Theme::Dark => self.success,
+            Theme::Light => hex(0x3f5c2e),
         }
     }
 
     /// Danger text and error banners.
     pub fn danger_text(self) -> Hsla {
-        if self.background == dark().background {
-            // A 12% wash of the fill drops the raw #d06a4f to 4.46:1. A
-            // slightly lighter word token keeps error text readable without
-            // changing the destructive fill.
-            hex(0xd4745a)
-        } else {
-            hex(0x8f2f1c)
+        match self.theme {
+            // A 12% wash of the fill drops the raw #d06a4f below 4.5:1, and
+            // so does the first lighter word token when the wash sits on a
+            // card rather than the page, which is where Delete lives. This
+            // one clears 4.5:1 on both, without changing the destructive fill.
+            Theme::Dark => hex(0xd97b61),
+            Theme::Light => hex(0x8f2f1c),
         }
     }
 
     /// Accent text for status pills ("created").
     pub fn accent_text_pill(self) -> Hsla {
-        if self.background == dark().background {
-            self.accent
-        } else {
-            hex(0x7d430f)
+        match self.theme {
+            Theme::Dark => self.accent,
+            Theme::Light => hex(0x7d430f),
         }
     }
 
     /// Muted text for status pills ("exited").
     pub fn muted_text_pill(self) -> Hsla {
-        if self.background == dark().background {
-            self.muted
-        } else {
-            hex(0x5a5245)
+        match self.theme {
+            // A touch lighter than `muted`: at the raw value this pill reads
+            // 4.42:1 on its own wash in the dark theme, just under the floor.
+            Theme::Dark => hex(0x9f9686),
+            Theme::Light => hex(0x5a5245),
         }
     }
 
@@ -186,16 +251,147 @@ impl Tokens {
     /// tone, so the dark theme keeps that value; on paper the label needs the
     /// readable amber.
     pub fn running_text(self) -> Hsla {
-        if self.background == dark().background {
-            hex(0xd9a441)
-        } else {
-            self.warning_text()
+        match self.theme {
+            Theme::Dark => hex(0xd9a441),
+            Theme::Light => self.warning_text(),
         }
     }
 
     /// The one token for the volumes store, shared by bars and legends.
     pub fn store_volume(self) -> Hsla {
         self.warning_fill
+    }
+
+    // -- washes ---------------------------------------------------------------
+    //
+    // These are solid colors, mixed over the surface they are normally painted
+    // on. A view never stacks one wash on another, so a pill or a row reads the
+    // same wherever it is placed, and its contrast is a property of the token.
+
+    /// The row that is open in the inspector.
+    pub fn selected_row(self) -> Hsla {
+        washed(self.background, self.accent, wash::SELECTED)
+    }
+
+    /// Every other row of a table.
+    pub fn alt_row(self) -> Hsla {
+        washed(self.background, self.surface_hover, wash::ZEBRA)
+    }
+
+    /// The background of a status pill in `color`. Mixed as the pill were on a
+    /// plain row, so it reads the same on a striped or selected one.
+    pub fn pill_wash(self, color: Hsla) -> Hsla {
+        washed(self.surface, color, wash::PILL)
+    }
+
+    /// The background of a chip or tab that is on, on the page.
+    pub fn accent_wash(self) -> Hsla {
+        washed(self.background, self.accent, wash::ACCENT)
+    }
+
+    /// The background of a chip or tab that is on, over `over`.
+    pub fn accent_wash_on(self, over: Hsla) -> Hsla {
+        washed(over, self.accent, wash::ACCENT)
+    }
+
+    /// The active engine's card.
+    pub fn active_wash(self) -> Hsla {
+        washed(self.background, self.accent, wash::ACTIVE)
+    }
+
+    /// The background behind destructive text. Mixed over a card, where
+    /// Delete lives.
+    pub fn danger_wash(self) -> Hsla {
+        washed(self.surface, self.danger_text(), wash::DANGER)
+    }
+
+    /// The veil behind a sheet. Translucent by nature: it covers the page.
+    pub fn backdrop(self) -> Hsla {
+        self.text.alpha(if self.is_dark() {
+            wash::BACKDROP_DARK
+        } else {
+            wash::BACKDROP_LIGHT
+        })
+    }
+
+    /// Selected text in a field, over the field's own text.
+    pub fn text_selection(self) -> Hsla {
+        self.accent.alpha(wash::SELECTION)
+    }
+
+    /// A graph well's fill, inside a card.
+    pub fn well(self) -> Hsla {
+        washed(self.surface, self.track, wash::WELL)
+    }
+
+    /// A graph well's hairline.
+    pub fn well_border(self) -> Hsla {
+        washed(self.surface, self.track, wash::WELL_BORDER)
+    }
+
+    /// "Elsewhere" in the host bar: what is neither containers nor engine.
+    pub fn elsewhere(self) -> Hsla {
+        washed(self.track, self.muted, wash::ELSEWHERE)
+    }
+
+    // -- text -----------------------------------------------------------------
+
+    /// The quietest text that is still text.
+    pub fn faint(self) -> Hsla {
+        self.muted.alpha(wash::FAINT)
+    }
+
+    /// The tint behind a rail icon, or a card's chip.
+    pub fn tint_wash(self, tint: Hsla) -> Hsla {
+        tint.alpha(wash::PILL)
+    }
+
+    // -- controls ---------------------------------------------------------------
+
+    /// What a filled control is filled with while the pointer is over it.
+    ///
+    /// The fill moves toward the text colour, which is what a person expects
+    /// and which costs a little contrast. So it is only for fills whose text
+    /// has contrast to spare; a control that is an ink on its own wash shows
+    /// [`Tokens::hover_outline`] instead.
+    pub fn hovered(self, fill: Hsla) -> Hsla {
+        mix(fill, self.text, wash::HOVER)
+    }
+
+    /// What it is filled with while it is pressed.
+    pub fn pressed(self, fill: Hsla) -> Hsla {
+        mix(fill, self.text, wash::PRESSED)
+    }
+
+    /// The hairline a wash-filled control shows while the pointer is over it.
+    /// Its fill doesn't change, so its text keeps exactly the contrast it had.
+    pub fn hover_outline(self, ink: Hsla) -> Hsla {
+        ink.alpha(wash::OUTLINE_HOVER)
+    }
+
+    /// The ring around the quiet control that has keyboard focus: one drawn
+    /// in the text colour, so it shows against the page and against a
+    /// secondary fill.
+    pub fn focus_ring(self) -> Hsla {
+        self.text
+    }
+
+    /// The ring around a filled control that has keyboard focus. It is the
+    /// text colour of that fill: in the dark theme the ordinary text colour is
+    /// as light as the amber and would vanish against it.
+    pub fn focus_ring_on_fill(self) -> Hsla {
+        self.accent_text
+    }
+
+    /// Nothing at all: the hairline every control keeps, so that drawing the
+    /// focus ring in its place never moves the control by a pixel.
+    pub fn invisible(self) -> Hsla {
+        self.text.alpha(0.0)
+    }
+
+    /// How faint a control is while it can't be used.
+    pub fn disabled_opacity(self) -> f32 {
+        wash::DISABLED
     }
 }
 
@@ -215,24 +411,23 @@ pub enum TintKind {
 }
 
 pub fn tint(tokens: Tokens, kind: TintKind) -> Hsla {
-    if tokens.background == dark().background {
-        match kind {
+    match tokens.theme {
+        Theme::Dark => match kind {
             TintKind::Overview | TintKind::Containers => tokens.accent,
             TintKind::Images | TintKind::Volumes => hex(0xd9a441),
             TintKind::Networks | TintKind::Events => hex(0x6fb0a8),
             TintKind::Stacks => hex(0xbd80e4),
             TintKind::Disk | TintKind::Runtimes => hex(0x8a9bb0),
             TintKind::Settings => tokens.muted,
-        }
-    } else {
-        match kind {
+        },
+        Theme::Light => match kind {
             TintKind::Overview | TintKind::Containers => tokens.accent,
             TintKind::Images | TintKind::Volumes => hex(0x9a6e1b),
             TintKind::Networks | TintKind::Events => hex(0x2f8f9d),
             TintKind::Stacks => hex(0x7a4ea3),
             TintKind::Disk | TintKind::Runtimes => hex(0x3f6079),
             TintKind::Settings => tokens.muted,
-        }
+        },
     }
 }
 
@@ -241,7 +436,9 @@ pub fn hex(value: u32) -> Hsla {
     rgb(value).into()
 }
 
-/// Linear RGB blend of two opaque colors. `t` is the weight of `b`.
+/// Blend two opaque colors in sRGB. `t` is the weight of `b`. The result is
+/// what a wash over a solid background amounts to, to the eye; the contrast
+/// tests are computed on washes the same way.
 pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
     let a = a.to_rgb();
     let b = b.to_rgb();
@@ -253,6 +450,12 @@ pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
         a: 1.0,
     }
     .into()
+}
+
+/// What a wash of `color` looks like over `over`: the colour a contrast ratio
+/// has to be measured against.
+pub fn washed(over: Hsla, color: Hsla, strength: f32) -> Hsla {
+    mix(over, color, strength)
 }
 
 /// WCAG 2.x relative contrast between two opaque colors.
@@ -277,98 +480,4 @@ fn relative_luminance(color: gpui::Rgba) -> f32 {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn themes() -> [(&'static str, Tokens); 2] {
-        [("light", light()), ("dark", dark())]
-    }
-
-    #[test]
-    fn body_text_clears_its_floor() {
-        for (name, tokens) in themes() {
-            let ratio = contrast_ratio(tokens.text, tokens.background);
-            assert!(ratio >= 7.0, "{name} body contrast was {ratio:.2}:1");
-        }
-    }
-
-    #[test]
-    fn on_accent_text_clears_four_and_a_half() {
-        for (name, tokens) in themes() {
-            let ratio = contrast_ratio(tokens.accent_text, tokens.accent);
-            assert!(ratio >= 4.5, "{name} on-accent contrast was {ratio:.2}:1");
-        }
-    }
-
-    #[test]
-    fn warning_and_success_text_clear_their_pill_wash() {
-        for (name, tokens) in themes() {
-            let warn = tokens.warning_text();
-            let success = tokens.success_text();
-            let warn_wash = mix(tokens.surface, warn, 0.14);
-            let success_wash = mix(tokens.surface, success, 0.14);
-            let warn_ratio = contrast_ratio(warn, warn_wash);
-            let success_ratio = contrast_ratio(success, success_wash);
-            assert!(
-                warn_ratio >= 4.5,
-                "{name} warning contrast was {warn_ratio:.2}:1"
-            );
-            assert!(
-                success_ratio >= 4.5,
-                "{name} success contrast was {success_ratio:.2}:1"
-            );
-        }
-    }
-
-    #[test]
-    fn danger_text_clears_error_washes() {
-        for (name, tokens) in themes() {
-            let danger = tokens.danger_text();
-            let wash = mix(tokens.background, danger, 0.12);
-            let ratio = contrast_ratio(danger, wash);
-            assert!(ratio >= 4.5, "{name} danger contrast was {ratio:.2}:1");
-        }
-    }
-
-    #[test]
-    fn the_palette_follows_the_appearance_choice() {
-        let light = for_appearance(WindowAppearance::Light);
-        let dark = for_appearance(WindowAppearance::Dark);
-        assert_eq!(light, super::light());
-        assert_eq!(dark, super::dark());
-        assert_ne!(light.background, dark.background);
-        let light_accent = light.accent.to_rgb();
-        assert!(
-            light_accent.r > light_accent.b,
-            "light accent is warm amber"
-        );
-        assert!(dark.text.to_rgb().r > dark.background.to_rgb().r);
-    }
-
-    #[test]
-    fn every_rail_section_has_a_distinct_tint() {
-        let tokens = light();
-        assert_ne!(
-            tint(tokens, TintKind::Networks),
-            tint(tokens, TintKind::Images)
-        );
-        assert_ne!(tint(tokens, TintKind::Stacks), tint(tokens, TintKind::Disk));
-        assert_ne!(
-            tint(tokens, TintKind::Overview),
-            tint(tokens, TintKind::Settings)
-        );
-    }
-
-    #[test]
-    fn tokens_are_distinct_and_washes_are_visible() {
-        for (name, tokens) in themes() {
-            assert_ne!(tokens.background, tokens.text, "{name} paper equals ink");
-            assert_ne!(
-                tokens.background, tokens.surface,
-                "{name} surface invisible"
-            );
-            assert_ne!(tokens.border, tokens.background, "{name} rule invisible");
-            assert_ne!(tokens.track, tokens.background, "{name} track invisible");
-        }
-    }
-}
+mod tests;

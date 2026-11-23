@@ -5,6 +5,9 @@ use crate::jobs::mutation::{self, PruneOptions, Request};
 use berth_core::validation;
 use gpui::Context;
 
+/// How many kinds of data a cleanup can offer.
+pub(crate) const PRUNE_OPTIONS: usize = 5;
+
 impl BerthApp {
     // --- creation and cleanup forms ----------------------------------------
 
@@ -143,21 +146,152 @@ impl BerthApp {
         cx.notify();
     }
 
+    /// The dialect a cleanup talks to.
+    pub(crate) fn prune_engine(&self) -> berth_engine::prune::Engine {
+        match self.engine.dialect {
+            berth_engine::discovery::Dialect::Podman => berth_engine::prune::Engine::Podman,
+            _ => berth_engine::prune::Engine::Docker,
+        }
+    }
+
+    /// Whether this engine can clean up build cache.
+    pub(crate) fn prune_build_supported(&self) -> bool {
+        berth_engine::prune::supported(berth_engine::prune::Kind::BuildCache, self.prune_engine())
+    }
+
+    /// What a cleanup option is ticked for, in the order the sheet lists them.
+    pub(crate) fn prune_ticked(&self, field: usize) -> bool {
+        let options = self.prune_options;
+        match field {
+            0 => options.containers,
+            1 => options.images,
+            2 => options.volumes,
+            3 => options.networks,
+            _ => berth_engine::prune::build_cache_enabled(options.build_cache, self.prune_engine()),
+        }
+    }
+
+    /// What a cleanup option would free, in bytes. `None` until the engine
+    /// reports its disk figures. A network has no size.
+    pub(crate) fn prune_bytes(&self, field: usize) -> Option<i64> {
+        let free = self
+            .snapshot
+            .df
+            .as_ref()
+            .map(|df| df.reclaimable_by_store())?;
+        Some(match field {
+            0 => free.containers,
+            1 => free.images,
+            2 => free.volumes,
+            3 => -1,
+            _ => free.build_cache,
+        })
+    }
+
+    /// How many things a cleanup option would remove, where that can be
+    /// counted from the lists on screen: a container that isn't running, an
+    /// image no container uses, a volume nothing has mounted, a network
+    /// nothing is attached to. `None` when it can't be counted, which is
+    /// unknown, not zero.
+    pub(crate) fn prune_count(&self, field: usize) -> Option<i64> {
+        // The lists are only known to be on screen once the disk figures,
+        // which come with them, are.
+        self.snapshot.df.as_ref()?;
+        let snapshot = &self.snapshot;
+        Some(match field {
+            0 => snapshot
+                .containers
+                .iter()
+                .filter(|container| !container.is_up())
+                .count() as i64,
+            1 => snapshot
+                .images
+                .iter()
+                .filter(|image| {
+                    !snapshot
+                        .containers
+                        .iter()
+                        .any(|container| container.uses_image(image))
+                })
+                .count() as i64,
+            2 => {
+                if snapshot
+                    .volumes
+                    .iter()
+                    .any(|volume| volume.usage_data.is_none())
+                {
+                    return None;
+                }
+                snapshot
+                    .volumes
+                    .iter()
+                    .filter(|volume| {
+                        volume
+                            .usage_data
+                            .as_ref()
+                            .is_some_and(|usage| usage.ref_count == 0)
+                    })
+                    .count() as i64
+            }
+            3 => snapshot
+                .networks
+                .iter()
+                .filter(|network| {
+                    !network.builtin() && snapshot.network_counts.get(&network.name) == 0
+                })
+                .count() as i64,
+            _ => return None,
+        })
+    }
+
+    /// What the ticked cleanup options would free, in bytes. `None` until the
+    /// engine reports its disk figures.
+    pub(crate) fn prune_selected_bytes(&self) -> Option<i64> {
+        let mut total: Option<i64> = None;
+        for field in 0..PRUNE_OPTIONS {
+            if !self.prune_ticked(field) {
+                continue;
+            }
+            // A network has no size, so it adds nothing, and its lack of one
+            // doesn't make the total unknown.
+            if let Some(bytes) = self.prune_bytes(field) {
+                total = Some(total.unwrap_or(0).saturating_add(bytes.max(0)));
+            }
+        }
+        total
+    }
+
+    /// Whether anything ticked has something left to remove, as far as berth
+    /// can tell from what is on screen. `None` when it can't tell: the engine
+    /// decides then, rather than the button refusing on a guess.
+    pub(crate) fn prune_has_work(&self) -> Option<bool> {
+        let (mut known, mut work) = (false, false);
+        for field in 0..PRUNE_OPTIONS {
+            if !self.prune_ticked(field) {
+                continue;
+            }
+            let count = self.prune_count(field);
+            let bytes = self.prune_bytes(field);
+            known |= count.is_some() || bytes.is_some();
+            // A stopped container or an unused network is something to
+            // remove even where it takes no space.
+            work |= count.unwrap_or(0) > 0 || bytes.unwrap_or(0) > 0;
+        }
+        known.then_some(work)
+    }
+
     pub(crate) fn run_prune(&mut self, cx: &mut Context<Self>) {
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
         };
-        let engine = match self.engine.dialect {
-            berth_engine::discovery::Dialect::Podman => berth_engine::prune::Engine::Podman,
-            _ => berth_engine::prune::Engine::Docker,
-        };
+        let engine = self.prune_engine();
         self.prune_in_flight = self.start_mutation(
             Request::Prune {
                 socket: client.socket().to_owned(),
                 api: client.api().to_owned(),
                 engine,
-                options: self.prune_options.clone(),
+                options: self.prune_options,
             },
             cx,
         );

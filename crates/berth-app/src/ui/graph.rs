@@ -2,6 +2,7 @@
 //! dot is one step of height. Drawn directly on a canvas so a few hundred dots
 //! do not become a few hundred scene nodes.
 
+use berth_ui::theme::Tokens;
 use gpui::prelude::*;
 use gpui::{Bounds, Hsla, IntoElement, Point, canvas, div, fill, px, size};
 
@@ -18,7 +19,7 @@ const INSET: f32 = 8.0;
 pub fn cell_graph(
     values: Vec<f32>,
     color: Hsla,
-    well_color: Hsla,
+    tokens: Tokens,
     ceiling: Option<f32>,
     height: f32,
 ) -> impl IntoElement {
@@ -27,9 +28,9 @@ pub fn cell_graph(
         .w_full()
         .h(px(height))
         .rounded(px(8.0))
-        .bg(well_color.alpha(0.28))
+        .bg(tokens.well())
         .border_1()
-        .border_color(well_color.alpha(0.55))
+        .border_color(tokens.well_border())
         .p(px(INSET))
         .overflow_hidden()
         .child(

@@ -39,12 +39,50 @@ pub const ROW_CONTAINER: f32 = 44.0;
 pub const ROW_EVENT: f32 = 34.0;
 /// Table header height and the rule beneath it.
 pub const TABLE_HEADER: f32 = 18.0;
+/// The column of checkboxes a table shows while several rows can be picked.
+pub const BULK_COLUMN: f32 = 28.0;
+/// Room inside a row, and between its columns.
+pub const ROW_PADDING: f32 = 12.0;
+pub const ROW_GAP: f32 = 10.0;
+/// Room after a figure set against the right edge of its column.
+pub const CELL_PADDING_END: f32 = 8.0;
+/// A status pill: its height, and the room inside it.
+pub const PILL_HEIGHT: f32 = 20.0;
+pub const PILL_PADDING: f32 = 8.0;
+/// An item of the rail, with its label, and folded to an icon.
+pub const RAIL_ITEM: f32 = 32.0;
+pub const RAIL_ITEM_COMPACT: f32 = 36.0;
 
 /// Cards and graph wells.
 pub const CARD_RADIUS: f32 = 10.0;
 pub const CARD_PADDING: f32 = 16.0;
+/// Between two cards side by side, or stacked.
+pub const CARD_GAP: f32 = 12.0;
+/// A recessed well: logs, raw JSON, a graph.
+pub const RADIUS_WELL: f32 = 8.0;
 pub const GRAPH_HEIGHT: f32 = 70.0;
 pub const SHEET_MAX_WIDTH: f32 = 620.0;
+
+/// Control heights. A control is one of these two and nothing else: a pill,
+/// a chip, a checkbox row or a button.
+pub const CONTROL_SMALL: f32 = 24.0;
+pub const CONTROL: f32 = 28.0;
+/// A dialog's buttons share one width and one baseline.
+pub const DIALOG_BUTTON_WIDTH: f32 = 92.0;
+/// The inspector: its padding, and the column its facts are labelled in.
+pub const INSPECTOR_PADDING: f32 = 14.0;
+pub const FACT_LABEL: f32 = 64.0;
+
+/// Corner radii. A pill's is half its height; everything else is one of these.
+/// A table row.
+pub const RADIUS_ROW: f32 = 4.0;
+/// A well nested inside a card.
+pub const RADIUS_NESTED: f32 = 6.0;
+/// An item of the rail.
+pub const RADIUS_ITEM: f32 = 7.0;
+/// The square of tint behind an icon: its side, and its corner.
+pub const CHIP: f32 = 20.0;
+pub const RADIUS_CHIP: f32 = 5.0;
 
 /// The placed page within a window.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -139,6 +177,23 @@ pub struct ContainerColumns {
 }
 
 impl ContainerColumns {
+    /// How many columns are on screen. Each carries a sortable header.
+    pub fn header_count(&self) -> usize {
+        [
+            self.show_mem,
+            self.show_net,
+            self.show_disk,
+            self.show_pids,
+            self.show_uptime,
+            self.show_ports,
+        ]
+        .iter()
+        .filter(|show| **show)
+        .count()
+            // Name, status and CPU are always there.
+            + 3
+    }
+
     /// The width the row asks for, including padding and the gaps between
     /// columns. The name column already includes any spare it took.
     pub fn row_width(&self) -> f32 {
@@ -161,8 +216,8 @@ impl ContainerColumns {
         if self.show_ports {
             widths.push(self.ports);
         }
-        let gaps = (widths.len().saturating_sub(1)) as f32 * 10.0;
-        widths.iter().sum::<f32>() + gaps + 24.0
+        let gaps = (widths.len().saturating_sub(1)) as f32 * ROW_GAP;
+        widths.iter().sum::<f32>() + gaps + 2.0 * ROW_PADDING
     }
 }
 
@@ -301,6 +356,7 @@ mod tests {
         assert!(columns.show_net && columns.show_ports);
         assert!(columns.row_width() <= 1040.0);
         assert_eq!(columns.name, 190.0); // 162 + the 28 points of spare
+        assert_eq!(columns.header_count(), 9);
     }
 
     #[test]
@@ -313,6 +369,7 @@ mod tests {
         assert!(!columns.show_pids && !columns.show_uptime);
         assert!(columns.show_ports);
         assert!(columns.row_width() <= 832.0);
+        assert_eq!(columns.header_count(), 7);
     }
 
     #[test]

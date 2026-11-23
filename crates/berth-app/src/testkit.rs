@@ -55,6 +55,8 @@ pub(crate) fn scripted_engine_with(events: berth_engine::test_support::Reply) ->
 /// An app on the fixture, in a window. No engine is wired in, so nothing
 /// talks to a socket unless a test says so.
 pub(crate) fn fixture(cx: &mut TestAppContext) -> (Entity<BerthApp>, &mut VisualTestContext) {
+    // The keys the app binds answer in tests as they do in the window.
+    cx.update(|cx| berth_commands::install_keymap(cx, berth_commands::Platform::current()));
     cx.add_window_view(|_, cx| {
         berth_ui::theme::ActiveTokens::set(berth_ui::theme::light(), cx);
         BerthApp::new_fixture(berth_ui::theme::light(), cx)
@@ -67,6 +69,7 @@ pub(crate) fn app_on<'a>(
     engine: &MockEngine,
     cx: &'a mut TestAppContext,
 ) -> (Entity<BerthApp>, &'a mut VisualTestContext) {
+    cx.update(|cx| berth_commands::install_keymap(cx, berth_commands::Platform::current()));
     let socket = engine.socket();
     let (app, cx) = cx.add_window_view(|_, cx| {
         berth_ui::theme::ActiveTokens::set(berth_ui::theme::light(), cx);
@@ -82,4 +85,34 @@ pub(crate) fn app_on<'a>(
 /// bounds, hitboxes) is current. A harmless mouse move does it.
 pub(crate) fn draw(cx: &mut VisualTestContext) {
     cx.simulate_event(gpui::MouseMoveEvent::default());
+}
+
+/// Press a key as a person would: down, then up. GPUI's own helper sends the
+/// down stroke only, and a control is pressed by the release.
+pub(crate) fn press(cx: &mut VisualTestContext, key: &'static str) {
+    cx.simulate_keystrokes(key);
+    if let Ok(keystroke) = gpui::Keystroke::parse(key) {
+        cx.update(|window, cx| {
+            window.dispatch_event(
+                gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
+                cx,
+            );
+        });
+    }
+}
+
+/// Press Tab until `reached` holds, and say how many presses it took. Stops
+/// after `limit` presses, so a broken Tab order fails instead of hanging.
+pub(crate) fn tab_until(
+    cx: &mut VisualTestContext,
+    mut reached: impl FnMut(&mut VisualTestContext) -> bool,
+    limit: usize,
+) -> usize {
+    for presses in 0..=limit {
+        if reached(cx) {
+            return presses;
+        }
+        press(cx, "tab");
+    }
+    limit
 }

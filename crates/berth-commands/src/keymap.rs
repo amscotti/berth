@@ -51,6 +51,9 @@ pub fn install(cx: &mut App, platform: Platform) {
         KeyBinding::new(refresh, Refresh, None),
         KeyBinding::new(quit, Quit, None),
         KeyBinding::new("escape", Dismiss, None),
+        // GPUI installs no default for Tab, so the app owns focus traversal.
+        KeyBinding::new("tab", FocusNext, None),
+        KeyBinding::new("shift-tab", FocusPrevious, None),
         KeyBinding::new("down", SelectNext, Some("Berth")),
         KeyBinding::new("up", SelectPrev, Some("Berth")),
     ];

@@ -2,6 +2,7 @@
 //! status text in the rail is a monitor reading, not a message channel.
 
 use berth_ui::theme::Tokens;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{AnyElement, div, px};
 
@@ -36,7 +37,13 @@ pub fn overlay(
             .border_1()
             .border_color(tokens.border)
             .shadow_lg()
-            .role(gpui::Role::Alert)
+            // Good news is announced when the reader is free; only bad news
+            // interrupts.
+            .role(if toast.bad {
+                gpui::Role::Alert
+            } else {
+                gpui::Role::Status
+            })
             .aria_label(toast.text.clone())
             .on_click(cx.listener(|this, _, _, cx| {
                 this.toast = None;
@@ -46,7 +53,7 @@ pub fn overlay(
             .child(div().w(px(7.0)).h(px(7.0)).rounded(px(4.0)).bg(color))
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.text)
                     .child(toast.text.clone()),
             )

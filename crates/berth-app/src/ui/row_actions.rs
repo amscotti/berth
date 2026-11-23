@@ -6,13 +6,13 @@
 //! table the row, the inspector and the runtime cards all read.
 
 use gpui::prelude::*;
-use gpui::{Context, IntoElement, Role, div, px};
+use gpui::{Context, IntoElement, SharedString, div, px};
 
 use berth_engine::dto::{Actions, Container};
+use berth_ui::theme::Tokens;
 
 use crate::app::BerthApp;
-use berth_ui::theme::Tokens;
-use berth_ui::typography as type_scale;
+use crate::ui::kit::button;
 
 /// One action a row offers.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,7 +72,6 @@ pub(crate) fn action_cell(
     let id = container.id.clone();
     let name = container.name().to_owned();
     let actions = row_actions(&id, container.actions(), container.state != "removing");
-
     let mut cell = div()
         .flex()
         .flex_row()
@@ -81,81 +80,44 @@ pub(crate) fn action_cell(
         .w(px(width))
         .gap(px(4.0));
     for action in actions {
-        cell = cell.child(action_pill(
+        let name = name.clone();
+        // Deleting destroys: it is the one action drawn in the danger colour.
+        let button = button(
+            SharedString::from(format!("action-{id}-{}", action.slot)),
             action.label,
-            &id,
-            action.slot,
-            action.danger,
             tokens,
-            action.method,
-            action.path,
-            action.past,
-            action.confirm,
-            &name,
-            cx,
-        ));
-    }
-    cell
-}
-
-#[allow(clippy::too_many_arguments)]
-fn action_pill(
-    label: &'static str,
-    container_id: &str,
-    slot: u8,
-    danger: bool,
-    tokens: Tokens,
-    method: &'static str,
-    path: String,
-    verb: &'static str,
-    confirm: bool,
-    name: &str,
-    cx: &mut Context<BerthApp>,
-) -> impl IntoElement {
-    let color = if danger {
-        tokens.danger_text()
-    } else {
-        tokens.text
-    };
-    let click_name = name.to_owned();
-    let method = method.to_owned();
-    div()
-        .id(gpui::SharedString::from(format!(
-            "action-{container_id}-{slot}"
-        )))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(24.0))
-        .px(px(8.0))
-        .rounded(px(12.0))
-        .bg(if danger {
-            tokens.danger_text().alpha(0.10)
+        )
+        .small()
+        // The table is the tab stop. Enter opens the row, and its inspector
+        // offers every action in it; Tab must not cross a hundred rows.
+        .tab_stop(false);
+        let button = if action.danger {
+            button.danger_wash()
         } else {
-            tokens.surface_hover
-        })
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(cx.listener(move |this, _, _, cx| {
+            button
+        };
+        cell = cell.child(button.on_click(cx.listener(move |this, _, _, cx| {
+            // The press is for the action, not for opening the row.
             cx.stop_propagation();
-            if confirm {
+            if action.confirm {
                 this.confirm_action(
-                    method.clone(),
-                    path.clone(),
-                    verb.to_owned(),
-                    click_name.clone(),
+                    action.method.to_owned(),
+                    action.path.clone(),
+                    action.past.to_owned(),
+                    name.clone(),
                     cx,
                 );
             } else {
-                this.run_action(method.clone(), path.clone(), verb.to_owned(), cx);
+                this.run_action(
+                    action.method.to_owned(),
+                    action.path.clone(),
+                    action.past.to_owned(),
+                    cx,
+                );
             }
-        }))
-        .child(
-            div()
-                .text_size(px(type_scale::SMALL_BUTTON))
-                .text_color(color)
-                .child(label),
-        )
+        })));
+    }
+    cell
 }
 
 #[cfg(test)]

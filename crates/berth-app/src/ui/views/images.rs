@@ -1,15 +1,18 @@
 //! Images: repository, short ID, size, age and dangling/ready state.
 
 use berth_core::format;
+use berth_core::validation;
 use berth_engine::dto::Image;
 use berth_ui::layout::{self, Widths};
 use berth_ui::theme::Tokens;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, Role, SharedString, div, px};
+use gpui::{AnyElement, Context, Div, Role, SharedString, div, px};
 
 use crate::app::{BerthApp, SearchKind};
+use crate::ui::inspect_shared::short_id;
+use crate::ui::kit::{button, card, table};
 use crate::ui::table::{empty_state, page_header, pill, sortable_header_cell, text_cell};
-use berth_core::validation;
 
 pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -74,9 +77,8 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         .flex_row()
         .w_full()
         .items_center()
-        .px(px(12.0))
-        .pb(px(6.0))
-        .gap(px(10.0));
+        .px(px(layout::ROW_PADDING))
+        .gap(px(layout::ROW_GAP));
     let sort = (sort_col, sort_asc);
     header_row = header_row
         .child(sortable_header_cell(
@@ -140,13 +142,13 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .items_center()
             .w_full()
             .h(px(layout::ROW_CONTAINER))
-            .px(px(12.0))
-            .gap(px(10.0))
-            .rounded(px(4.0))
+            .px(px(layout::ROW_PADDING))
+            .gap(px(layout::ROW_GAP))
+            .rounded(px(layout::RADIUS_ROW))
             .bg(if selected {
-                tokens.accent.alpha(0.10)
+                tokens.selected_row()
             } else if index % 2 == 1 {
-                tokens.surface_hover.alpha(0.35)
+                tokens.alt_row()
             } else {
                 tokens.surface
             })
@@ -156,6 +158,8 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
             .role(Role::Row)
             .aria_label(label)
             .aria_selected(selected)
+            // While the table has focus it speaks for its selected row.
+            .when(selected, |this| this.aria_active_descendant())
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.select_image(&click_id, &click_label, cx);
             }));
@@ -184,16 +188,7 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         ))
     });
     content
-        .child(
-            div()
-                .id("images-table")
-                .flex()
-                .flex_col()
-                .w_full()
-                .role(Role::Table)
-                .aria_label("Images")
-                .children(rows),
-        )
+        .child(table("images-table", "Images", tokens).children(rows))
         .into_any_element()
 }
 
@@ -203,53 +198,50 @@ fn image_matches(image: &Image, query: &str) -> bool {
         || image.id.to_ascii_lowercase().contains(query)
 }
 
-fn short_id(id: &str) -> String {
-    let id = id.strip_prefix("sha256:").unwrap_or(id);
-    id.chars().take(12).collect()
-}
-
+/// "Get and run images": a card that folds down to its heading, and opens on
+/// the two forms.
 fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> AnyElement {
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w_full()
-        .mb(px(12.0))
-        .gap(px(8.0))
-        .p(px(14.0))
-        .rounded(px(10.0))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .id("creation-head")
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .gap(px(8.0))
-                .role(gpui::Role::Button)
-                .aria_label("Get and run images")
-                .on_click(cx.listener(|this, _, _, cx| {
-                    this.set_creation_open(!this.creation_open, cx);
-                }))
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(tokens.text)
-                        .child("Get and run images"),
-                )
-                .child(div().flex_1())
-                .child(div().text_size(px(11.5)).text_color(tokens.muted).child(
-                    if app.creation_open {
+    let open = app.creation_open;
+    let mut card = card(tokens).mb(px(layout::CARD_GAP)).child(
+        // The heading opens and closes the forms. To assistive technology
+        // it says which way it is.
+        crate::ui::kit::focusable(div().id("creation-head"), tokens.focus_ring())
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .gap(px(layout::ROW_GAP))
+            .px(px(6.0))
+            // The hairline that the focus ring is drawn in.
+            .border_1()
+            .border_color(tokens.invisible())
+            .rounded(px(layout::RADIUS_ROW))
+            .role(Role::DisclosureTriangle)
+            .aria_label("Get and run images")
+            .aria_expanded(open)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.set_creation_open(!this.creation_open, cx);
+            }))
+            .child(
+                div()
+                    .text_size(px(type_scale::BODY))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(tokens.text)
+                    .child("Get and run images"),
+            )
+            .child(div().flex_1())
+            .child(
+                div()
+                    .text_size(px(type_scale::SECONDARY))
+                    .text_color(tokens.muted)
+                    .child(if open {
                         "Collapse"
                     } else {
                         "Pull an image, or run one"
-                    },
-                )),
-        );
-    if !app.creation_open {
+                    }),
+            ),
+    );
+    if !open {
         return card.into_any_element();
     }
 
@@ -277,11 +269,11 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .w_full()
         .gap(px(8.0))
         .child(field("Reference", app.pull_input.clone(), tokens))
-        .child(command_button(
-            "Pull",
-            tokens,
-            cx.listener(|this, _, _, cx| this.start_pull(cx)),
-        ));
+        .child(
+            button("images-cmd-Pull", "Pull", tokens)
+                .primary()
+                .on_click(cx.listener(|this, _, _, cx| this.start_pull(cx))),
+        );
     card = card.child(pull_row);
     if let Some(failure) = pull_failure {
         card = card.child(error_line(&validation::describe(&failure), tokens));
@@ -294,7 +286,7 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .flex_wrap()
         .w_full()
         .items_end()
-        .gap(px(10.0));
+        .gap(px(layout::ROW_GAP));
     first = first
         .child(field("Image", app.run_image.clone(), tokens))
         .child(field("Name", app.run_name.clone(), tokens));
@@ -308,7 +300,7 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         .flex_wrap()
         .w_full()
         .items_end()
-        .gap(px(10.0));
+        .gap(px(layout::ROW_GAP));
     second = second
         .child(field("Ports", app.run_ports.clone(), tokens))
         .child(field("Volumes", app.run_volumes.clone(), tokens));
@@ -322,7 +314,7 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         };
         card = card.child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.warning_text())
                 .child(format!(
                     "{} {noun} left empty because the source redacted them. Fill them in before running.",
@@ -336,21 +328,21 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
             .flex_row()
             .w_full()
             .items_center()
-            .gap(px(12.0))
+            .gap(px(layout::CARD_GAP))
             .child(
                 div()
                     .flex_1()
                     .min_w(px(0.0))
                     .truncate()
-                    .text_size(px(10.5))
+                    .text_size(px(type_scale::LABEL))
                     .text_color(tokens.muted)
                     .child("host:container ports, source:container volumes, KEY=value env; comma-separated"),
             )
-            .child(command_button(
-                "Run",
-                tokens,
-                cx.listener(|this, _, _, cx| this.start_run(cx)),
-            )),
+            .child(
+                button("images-cmd-Run", "Run", tokens)
+                    .primary()
+                    .on_click(cx.listener(|this, _, _, cx| this.start_run(cx))),
+            ),
     );
     card.into_any_element()
 }
@@ -366,42 +358,16 @@ fn field(
         .gap(px(2.0))
         .child(
             div()
-                .text_size(px(10.5))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.muted)
                 .child(label),
         )
         .child(input)
 }
 
-fn command_button(
-    label: &'static str,
-    tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(SharedString::from(format!("images-cmd-{label}")))
-        .flex()
-        .items_center()
-        .justify_center()
-        .h(px(28.0))
-        .px(px(14.0))
-        .rounded(px(14.0))
-        .bg(tokens.accent)
-        .role(gpui::Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(12.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(tokens.accent_text)
-                .child(label),
-        )
-}
-
 fn error_line(text: &str, tokens: Tokens) -> Div {
     div()
-        .text_size(px(11.5))
+        .text_size(px(type_scale::SECONDARY))
         .text_color(tokens.danger_text())
         .child(text.to_owned())
 }

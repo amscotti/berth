@@ -318,6 +318,15 @@ pub fn fixture_snapshot() -> Snapshot {
             size: 8 * 1024 * 1024,
             ..Default::default()
         },
+        // Left behind by a build: no container uses it, so it is the image
+        // the disk figures call reclaimable.
+        Image {
+            id: "sha256:3333333333333333333333333333333333333333333333333333333333333333".into(),
+            repo_tags: None,
+            created: format::now() - 86_400 * 3,
+            size: 13 * 1024 * 1024,
+            ..Default::default()
+        },
     ];
     let volumes = vec![Volume {
         name: "shop-data".into(),

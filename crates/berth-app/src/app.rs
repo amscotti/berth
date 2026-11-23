@@ -129,6 +129,24 @@ pub enum InspectorTab {
     Inspect,
 }
 
+impl InspectorTab {
+    pub const ALL: [InspectorTab; 4] = [
+        InspectorTab::Facts,
+        InspectorTab::Config,
+        InspectorTab::Runtime,
+        InspectorTab::Inspect,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InspectorTab::Facts => "Facts",
+            InspectorTab::Config => "Config",
+            InspectorTab::Runtime => "Runtime",
+            InspectorTab::Inspect => "Inspect",
+        }
+    }
+}
+
 /// Which table's search field is being addressed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SearchKind {
@@ -204,7 +222,12 @@ pub struct BerthApp {
     pub(crate) searches: [Entity<InputState>; 5],
     pub(crate) queries: [String; 5],
     pub(crate) sorts: [(usize, bool); 4],
+    /// The page's own handle: rail, table and inspector. Focus lives here
+    /// unless a sheet is open.
     pub(crate) focus_handle: FocusHandle,
+    /// The container table's. One stop for all its rows.
+    pub(crate) table_focus: FocusHandle,
+    pub(crate) sheet_focus: crate::focus::SheetFocus,
     pub(crate) appearance_sub: Option<Subscription>,
     pub(crate) _search_subs: [Subscription; 5],
     pub(crate) _form_subs: Vec<Subscription>,
@@ -443,6 +466,8 @@ impl BerthApp {
             queries: std::array::from_fn(|_| String::new()),
             sorts: [(0, true); 4],
             focus_handle: cx.focus_handle(),
+            table_focus: cx.focus_handle().tab_stop(true),
+            sheet_focus: crate::focus::SheetFocus::new(cx),
             appearance_sub: None,
             _search_subs,
             _form_subs,

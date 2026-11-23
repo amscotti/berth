@@ -5,15 +5,19 @@ use berth_core::format;
 use berth_engine::detail::up_seconds;
 use berth_engine::dto::Container;
 use berth_engine::stats::Sample;
+use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{FontWeight, IntoElement, Role, ScrollEvent, div, px};
+use gpui::{FontWeight, IntoElement, Role, ScrollEvent, SharedString, div, px};
 
 pub(crate) use super::inspect_objects::{image_pane, network_pane, volume_pane};
-use super::inspect_shared::*;
+use super::inspect_shared::{
+    fact, inspector_button, inspector_delete, inspector_tab, inspector_toggle, pane_shell,
+};
 use super::inspect_tabs::{config_tab, runtime_tab};
 use crate::app::InspectorTab;
+use crate::ui::kit::button;
 
 pub(crate) fn container_pane(
     app: &crate::app::BerthApp,
@@ -24,58 +28,25 @@ pub(crate) fn container_pane(
     cx: &mut gpui::Context<crate::app::BerthApp>,
 ) -> impl IntoElement {
     let tab = app.inspector_tab;
+    // The pages of the inspector are tabs: one strip, one of them selected.
     let mut pane = pane_shell(container.name(), "Container inspector", width, tokens, cx).child(
         div()
+            .id("inspector-tabs")
+            .role(Role::TabList)
+            .aria_label("Container inspector")
             .flex()
             .flex_row()
             .flex_wrap()
             .items_center()
             .gap(px(6.0))
-            .child(pane_tab(
-                "Facts",
-                tab == InspectorTab::Facts,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Facts;
-                    cx.notify();
-                }),
-            ))
-            .child(pane_tab(
-                "Config",
-                tab == InspectorTab::Config,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Config;
-                    if this.detail_lifetime.is_none() {
-                        this.reload_detail(cx);
-                    }
-                    cx.notify();
-                }),
-            ))
-            .child(pane_tab(
-                "Runtime",
-                tab == InspectorTab::Runtime,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Runtime;
-                    if this.detail_top.is_none() && this.detail_changes.is_empty() {
-                        this.reload_detail(cx);
-                    }
-                    cx.notify();
-                }),
-            ))
-            .child(pane_tab(
-                "Inspect",
-                tab == InspectorTab::Inspect,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Inspect;
-                    if this.inspect_text.is_none() {
-                        this.reload_detail(cx);
-                    }
-                    cx.notify();
-                }),
-            )),
+            .children(InspectorTab::ALL.into_iter().map(|page| {
+                inspector_tab(
+                    page.label(),
+                    tab == page,
+                    tokens,
+                    cx.listener(move |this, _, _, cx| this.show_inspector_tab(page, cx)),
+                )
+            })),
     );
 
     if tab == InspectorTab::Config {
@@ -92,18 +63,20 @@ pub(crate) fn container_pane(
                     .flex_row()
                     .items_center()
                     .gap(px(6.0))
-                    .child(small_action(
-                        "inspect-copy",
-                        "Copy",
-                        tokens,
-                        cx.listener(|this, _, _, cx| this.copy_inspect(cx)),
-                    ))
-                    .child(small_action(
-                        "inspect-refresh",
-                        "Refresh",
-                        tokens,
-                        cx.listener(|this, _, _, cx| this.reload_detail(cx)),
-                    )),
+                    // Quiet buttons: here when wanted, nothing in the way
+                    // of the document otherwise.
+                    .child(
+                        button("inspect-copy", "Copy", tokens)
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_inspect(cx))),
+                    )
+                    .child(
+                        button("inspect-refresh", "Refresh", tokens)
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _, cx| this.reload_detail(cx))),
+                    ),
             )
             .child(
                 div()
@@ -117,14 +90,14 @@ pub(crate) fn container_pane(
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .p(px(8.0))
-                    .rounded(px(8.0))
+                    .rounded(px(layout::RADIUS_WELL))
                     .bg(tokens.background)
                     .border_1()
                     .border_color(tokens.border)
                     .child(
                         div()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.text)
                             .child(app.inspect_text.clone().unwrap_or_else(|| {
                                 if app.inspect_loading {
@@ -254,7 +227,7 @@ pub(crate) fn container_pane(
             .child(
                 div()
                     .w(px(64.0))
-                    .text_size(px(type_scale::FACT_LABEL))
+                    .text_size(px(type_scale::LABEL))
                     .text_color(tokens.muted)
                     .child("Ports"),
             );
@@ -262,29 +235,21 @@ pub(crate) fn container_pane(
             let host = binding.ip.clone();
             let port = binding.port;
             row = row.child(
-                div()
-                    .id(gpui::SharedString::from(format!(
+                button(
+                    SharedString::from(format!(
                         "port-{}:{}/{}",
                         binding.ip, binding.port, binding.private_port
-                    )))
-                    .flex()
-                    .items_center()
-                    .h(px(20.0))
-                    .px(px(8.0))
-                    .rounded(px(10.0))
-                    .bg(tokens.warning_fill.alpha(0.14))
-                    .role(Role::Button)
-                    .aria_label(format!("Open port {port}"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_port(&host, port, cx);
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_features(super::tabular())
-                            .text_color(tokens.warning_text())
-                            .child(format!("{}→{}", binding.port, binding.private_port)),
-                    ),
+                    )),
+                    format!("{}→{}", binding.port, binding.private_port),
+                    tokens,
+                )
+                .small()
+                .port()
+                .tabular()
+                .name(format!("Open port {port}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_port(&host, port, cx);
+                })),
             );
         }
         if ports.len() > 6 {
@@ -298,7 +263,7 @@ pub(crate) fn container_pane(
                     .bg(tokens.surface_hover)
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(type_scale::LABEL))
                             .font_features(super::tabular())
                             .text_color(tokens.muted)
                             .child(format!("+{}", ports.len() - 6)),
@@ -343,13 +308,13 @@ pub(crate) fn container_pane(
                 this.child(lifecycle("Stop", "/stop", "Stopped", &id, tokens, cx))
             })
             .when(actions.terminal, |this| {
-                this.child(verb_button(
+                this.child(inspector_button(
                     "Terminal",
                     tokens,
                     cx.listener(|this, _, _, cx| this.open_terminal(cx)),
                 ))
             })
-            .child(verb_button(
+            .child(inspector_button(
                 "Clone…",
                 tokens,
                 cx.listener(|this, _, _, cx| this.clone_container_to_run(cx)),
@@ -359,15 +324,16 @@ pub(crate) fn container_pane(
                     .as_ref()
                     .is_some_and(|lifetime| lifetime.run_cmd.is_some()),
                 |this| {
-                    this.child(verb_button(
+                    this.child(inspector_button(
                         "Copy run",
                         tokens,
                         cx.listener(|this, _, _, cx| this.copy_run_command(cx)),
                     ))
                 },
             )
+            // Deleting destroys, and sits apart from the verbs that don't.
             .when(container.state != "removing", |this| {
-                this.child(delete_button(
+                this.child(inspector_delete(
                     "Delete",
                     tokens,
                     cx.listener({
@@ -387,32 +353,32 @@ pub(crate) fn container_pane(
             }),
     );
 
-    let mut logs_head = div()
+    let logs_head = div()
         .flex()
         .flex_row()
         .items_center()
         .w_full()
-        .gap(px(8.0))
+        .gap(px(6.0))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(tokens.muted)
                 .child("Logs · last 500 lines"),
         )
         .child(div().flex_1())
-        .child(small_action(
-            "logs-refresh",
-            "Refresh",
-            tokens,
-            cx.listener(|this, _, _, cx| this.reload_detail(cx)),
-        ));
-    logs_head = logs_head.child(small_action(
-        "logs-copy",
-        "Copy",
-        tokens,
-        cx.listener(|this, _, _, cx| this.copy_logs(cx)),
-    ));
+        .child(
+            button("logs-refresh", "Refresh", tokens)
+                .small()
+                .ghost()
+                .on_click(cx.listener(|this, _, _, cx| this.reload_detail(cx))),
+        )
+        .child(
+            button("logs-copy", "Copy", tokens)
+                .small()
+                .ghost()
+                .on_click(cx.listener(|this, _, _, cx| this.copy_logs(cx))),
+        );
     pane = pane.child(logs_head);
 
     pane = pane.child(
@@ -421,7 +387,7 @@ pub(crate) fn container_pane(
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .child(toggle(
+            .child(inspector_toggle(
                 "Follow",
                 app.logs_follow,
                 tokens,
@@ -433,7 +399,7 @@ pub(crate) fn container_pane(
                     cx.notify();
                 }),
             ))
-            .child(toggle(
+            .child(inspector_toggle(
                 "Times",
                 app.logs_timestamps,
                 tokens,
@@ -456,7 +422,7 @@ pub(crate) fn container_pane(
             .min_h(px(0.0))
             .overflow_y_scroll()
             .p(px(8.0))
-            .rounded(px(8.0))
+            .rounded(px(layout::RADIUS_WELL))
             .bg(tokens.background)
             .border_1()
             .border_color(tokens.border)
@@ -470,8 +436,8 @@ pub(crate) fn container_pane(
             }))
             .child(
                 div()
-                    .text_size(px(11.5))
-                    .font_family("Menlo")
+                    .text_size(px(type_scale::MONO))
+                    .font_family(type_scale::MONO_FAMILY)
                     .text_color(tokens.text)
                     .child(body),
             ),
@@ -513,7 +479,7 @@ fn lifecycle(
     cx: &mut gpui::Context<crate::app::BerthApp>,
 ) -> impl IntoElement {
     let id = id.to_owned();
-    verb_button(
+    inspector_button(
         label,
         tokens,
         cx.listener(move |this, _, _, cx| {

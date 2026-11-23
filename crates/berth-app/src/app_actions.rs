@@ -134,6 +134,26 @@ impl BerthApp {
         self.step_selection(1, cx);
     }
 
+    /// Tab: the next control that can take focus.
+    pub(crate) fn on_focus_next(
+        &mut self,
+        _: &FocusNext,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_focus(true, window, cx);
+    }
+
+    /// Shift+Tab: the previous one.
+    pub(crate) fn on_focus_prev(
+        &mut self,
+        _: &FocusPrevious,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.move_focus(false, window, cx);
+    }
+
     pub(crate) fn on_select_prev(
         &mut self,
         _: &SelectPrev,

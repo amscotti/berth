@@ -17,6 +17,11 @@ mod app_tests;
 mod assets;
 #[cfg(test)]
 mod behaviour_tests;
+#[cfg(test)]
+mod contract_tests;
+mod focus;
+#[cfg(test)]
+mod focus_tests;
 mod host;
 mod jobs;
 mod settings;

@@ -18,6 +18,18 @@ impl BerthApp {
         self.open_prune(cx);
     }
 
+    pub fn show_bulk(&mut self, cx: &mut Context<Self>) {
+        self.toggle_bulk(cx);
+    }
+
+    /// The cleanup sheet with only options ticked that have nothing left.
+    pub fn show_cleanup_with_nothing_to_do(&mut self, cx: &mut Context<Self>) {
+        self.open_prune(cx);
+        self.prune_options.images = false;
+        self.prune_options.build_cache = false;
+        cx.notify();
+    }
+
     pub fn show_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {
         self.open_create(kind, cx);
     }
@@ -202,6 +214,7 @@ impl Focusable for BerthApp {
 
 impl Render for BerthApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.place_focus(window, cx);
         let window_width: f32 = window.viewport_size().width.into();
         let widths = layout::for_window(window_width, self.selected_id.is_some());
         let tokens = self.tokens;
@@ -263,10 +276,11 @@ impl Render for BerthApp {
                     .child(body),
             );
 
-        div()
-            .id("berth-root")
-            .role(Role::Application)
-            .aria_label("berth")
+        // The page: rail, table and inspector. Its shortcuts are bound here
+        // and not on the root, so that a sheet, which is not inside it, owns
+        // the keyboard while it is open.
+        let page = div()
+            .id("berth-page")
             .track_focus(&self.focus_handle)
             .key_context("Berth")
             .on_action(cx.listener(Self::on_show_overview))
@@ -281,9 +295,27 @@ impl Render for BerthApp {
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_refresh))
-            .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_select_prev))
+            .flex()
+            .flex_row()
+            .w_full()
+            .h_full()
+            .min_w(px(0.0))
+            .child(rail::rail(self, widths, cx))
+            .child(main)
+            .children(self.detail_pane(widths.pane, tokens, cx))
+            .children(toast::overlay(self, tokens, cx));
+
+        div()
+            .id("berth-root")
+            .role(Role::Application)
+            .aria_label("berth")
+            // What the shell answers with a sheet open as well: the way out
+            // of it, and moving within it.
+            .on_action(cx.listener(Self::on_dismiss))
+            .on_action(cx.listener(Self::on_focus_next))
+            .on_action(cx.listener(Self::on_focus_prev))
             .flex()
             .flex_row()
             .size_full()
@@ -291,10 +323,7 @@ impl Render for BerthApp {
             .text_color(tokens.text)
             .text_size(px(type_scale::BODY))
             .relative()
-            .child(rail::rail(self, widths, cx))
-            .child(main)
-            .children(self.detail_pane(widths.pane, tokens, cx))
-            .children(toast::overlay(self, tokens, cx))
+            .child(page)
             .children(sheets::overlay(self, tokens, cx))
     }
 }

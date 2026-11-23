@@ -144,6 +144,22 @@ impl BerthApp {
         self.start_detail(cx);
     }
 
+    /// Show one page of the inspector, reading what that page shows if it
+    /// hasn't been read yet.
+    pub(crate) fn show_inspector_tab(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
+        self.inspector_tab = tab;
+        let unread = match tab {
+            InspectorTab::Facts => false,
+            InspectorTab::Config => self.detail_lifetime.is_none(),
+            InspectorTab::Runtime => self.detail_top.is_none() && self.detail_changes.is_empty(),
+            InspectorTab::Inspect => self.inspect_text.is_none(),
+        };
+        if unread {
+            self.start_detail(cx);
+        }
+        cx.notify();
+    }
+
     pub(crate) fn toggle_log_timestamps(&mut self, cx: &mut Context<Self>) {
         self.logs_timestamps = !self.logs_timestamps;
         self.start_detail(cx);
