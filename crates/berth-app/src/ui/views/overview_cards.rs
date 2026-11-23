@@ -225,7 +225,7 @@ pub(crate) fn host_card(
     width: f32,
     containers_mem: Option<u64>,
 ) -> Card {
-    let sample = &app.snapshot.host;
+    let sample = &app.host;
     let mut card = card(tokens).w(px(width)).gap(px(10.0)).child(
         div()
             .flex()

@@ -14,7 +14,7 @@ use gpui::{Context, Entity, FocusHandle, ScrollHandle, Subscription, Task};
 
 use crate::jobs::mutation::PruneOptions;
 use crate::settings::{self, Appearance};
-use crate::state::{EngineState, SharedSnapshot, Snapshot};
+use crate::state::{EngineState, HostSample, SharedSnapshot, Snapshot};
 
 /// The views a window can show, in rail order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,6 +213,8 @@ pub struct BerthApp {
     pub(crate) filter: Filter,
     pub(crate) tokens: Tokens,
     pub(crate) snapshot: SharedSnapshot,
+    /// The machine's own figures, from the last pass or the last host sample.
+    pub(crate) host: HostSample,
     pub(crate) engine: EngineState,
     pub(crate) selected_id: Option<String>,
     pub(crate) selected_name: String,
@@ -423,6 +425,7 @@ impl BerthApp {
             filter: Filter::All,
             tokens,
             snapshot: Arc::new(snapshot),
+            host: HostSample::default(),
             engine,
             selected_id: None,
             selected_name: String::new(),

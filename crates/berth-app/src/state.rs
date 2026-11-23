@@ -34,7 +34,6 @@ pub struct Snapshot {
     pub df: Option<Df>,
     pub df_at: i64,
     pub df_error: String,
-    pub host: HostSample,
 }
 
 impl Snapshot {
@@ -97,7 +96,9 @@ impl Snapshot {
     }
 }
 
-/// The machine's own figures, sampled alongside the engine.
+/// The machine's own figures, sampled alongside the engine. They aren't the
+/// engine's, so they are kept beside the snapshot rather than inside it: a
+/// new sample must not rebuild the snapshot, which is the engine's answer.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostSample {
     pub mem_total: u64,

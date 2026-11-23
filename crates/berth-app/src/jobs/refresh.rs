@@ -33,6 +33,9 @@ pub struct Request {
 #[derive(Debug)]
 pub struct Outcome {
     pub snapshot: Snapshot,
+    /// The machine's own figures, read on the same pass. Kept beside the
+    /// snapshot, not in it, so the next sample doesn't rebuild the snapshot.
+    pub host: crate::state::HostSample,
     /// `None` when the disk figures were not due; `Some(Err(..))` keeps the
     /// previous document and records why.
     pub df: Option<Result<Df, String>>,
@@ -121,11 +124,11 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
         df: None,
         df_at: 0,
         df_error: String::new(),
-        host: crate::host::sample(),
     };
 
     Ok(Outcome {
         snapshot,
+        host: crate::host::sample(),
         df,
         generation: request.generation,
     })

@@ -23,6 +23,7 @@ impl BerthApp {
     /// running app always starts empty and waits for a real snapshot.
     pub fn new_fixture(tokens: Tokens, cx: &mut Context<Self>) -> Self {
         let mut app = Self::with_snapshot(tokens, fixture_snapshot(), cx);
+        app.host = fixture_host();
         app.engine.runtimes = vec![fixture_runtime()];
         app.engine.active = 0;
         app.engine.last_update = format::now();
@@ -438,13 +439,17 @@ pub fn fixture_snapshot() -> Snapshot {
         df: Some(df),
         df_at: format::now(),
         df_error: String::new(),
-        host: HostSample {
-            mem_total: 64 * 1024 * 1024 * 1024,
-            mem_used: 43 * 1024 * 1024 * 1024 + 400 * 1024 * 1024,
-            cpu_percent: 48.9,
-            cpu_known: true,
-            engine_rss: 44 * 1024 * 1024,
-        },
+    }
+}
+
+/// The machine's figures as the fixture's host card shows them.
+fn fixture_host() -> HostSample {
+    HostSample {
+        mem_total: 64 * 1024 * 1024 * 1024,
+        mem_used: 43 * 1024 * 1024 * 1024 + 400 * 1024 * 1024,
+        cpu_percent: 48.9,
+        cpu_known: true,
+        engine_rss: 44 * 1024 * 1024,
     }
 }
 

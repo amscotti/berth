@@ -169,9 +169,9 @@ impl BerthApp {
                 .await;
             this.update(cx, |app, cx| {
                 app.host_task = None;
-                let mut snapshot = (*app.snapshot).clone();
-                snapshot.host = host;
-                app.snapshot = Arc::new(snapshot);
+                // Beside the snapshot, not in it: nothing about the engine
+                // changed, so the snapshot stays the one on screen.
+                app.host = host;
                 cx.notify();
             })
             .ok();
@@ -265,10 +265,17 @@ impl BerthApp {
     }
 
     fn commit(&mut self, outcome: refresh::Outcome, cx: &mut Context<Self>) {
-        let mut snapshot = outcome.snapshot;
+        let refresh::Outcome {
+            snapshot,
+            host,
+            df,
+            generation: _,
+        } = outcome;
+        self.host = host;
+        let mut snapshot = snapshot;
         let previous_events = self.snapshot.events.clone();
         let first_pass = self.engine.last_update == 0;
-        match outcome.df {
+        match df {
             Some(Ok(df)) => {
                 snapshot.df = Some(df.clone());
                 snapshot.df_at = berth_core::format::now();
@@ -314,8 +321,8 @@ impl BerthApp {
             mem_known: snapshot.stats_complete(),
             running: snapshot.running() as f32,
             disk: snapshot.store_bytes().unwrap_or(0) as f32,
-            host_cpu: snapshot.host.cpu_percent,
-            host_mem: snapshot.host.mem_used as f32,
+            host_cpu: self.host.cpu_percent,
+            host_mem: self.host.mem_used as f32,
         });
 
         self.engine.error = snapshot.error.clone();
@@ -389,6 +396,25 @@ mod tests {
         let mut runtime = crate::fixture::fixture_runtime();
         runtime.socket = "/nowhere/berth-test.sock".into();
         runtime
+    }
+
+    /// The machine's own figures aren't the engine's. A new sample lands
+    /// beside the snapshot and leaves the snapshot on screen exactly as it is.
+    #[gpui::test]
+    fn a_host_sample_does_not_rebuild_the_snapshot(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        let on_screen = app.read_with(&*cx, |app, _| app.snapshot.clone());
+        app.update(cx, |app, cx| app.sample_host_async(cx));
+        cx.run_until_parked();
+        app.read_with(&*cx, |app, _| {
+            assert!(app.host_task.is_none(), "the sample finished");
+            assert!(
+                std::sync::Arc::ptr_eq(&app.snapshot, &on_screen),
+                "the snapshot was not rebuilt for the host's figures"
+            );
+            // The fixture's 64 GiB gave way to what this machine really has.
+            assert!(app.host.mem_total > 0, "the sample landed");
+        });
     }
 
     #[gpui::test]
