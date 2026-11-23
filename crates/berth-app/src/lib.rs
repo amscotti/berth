@@ -106,9 +106,11 @@ fn open_main_window(cx: &mut App) {
                 weak.update(cx, |app, cx| app.set_tokens(tokens, cx)).ok();
             });
             app.set_appearance_subscription(subscription);
-            // Where the window is left is where it opens next time.
+            // Where the window is left is where it opens next time: recorded
+            // now, for a window that is never moved, and on every move.
             let bounds = app.watch_window(window, cx);
             app.remember_bounds(bounds);
+            app.remember_window(window.bounds(), window.viewport_size(), cx);
             app.window_handle = Some(handle.into());
             let focus = app.focus_handle(cx);
             window.focus(&focus, cx);

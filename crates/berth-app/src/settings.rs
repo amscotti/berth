@@ -42,20 +42,29 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn of(bounds: Bounds<Pixels>) -> Self {
+    /// What to remember of a window whose frame is `frame`, title bar and
+    /// all, and whose content is `content`.
+    ///
+    /// The place is the frame's corner and the size is the content's,
+    /// because that is what a window is opened from: its frame put at that
+    /// place, with that much content in it. Either alone drifts. The frame's
+    /// size grows by a title bar on every launch; the content's corner,
+    /// which is a title bar below the frame's, walks down the screen.
+    pub fn of(frame: Bounds<Pixels>, content: Size<Pixels>) -> Self {
         let round = |value: Pixels| f32::from(value).round();
         Self {
-            x: round(bounds.origin.x) as i32,
-            y: round(bounds.origin.y) as i32,
-            width: round(bounds.size.width).max(0.0) as u32,
-            height: round(bounds.size.height).max(0.0) as u32,
+            x: round(frame.origin.x) as i32,
+            y: round(frame.origin.y) as i32,
+            width: round(content.width).max(0.0) as u32,
+            height: round(content.height).max(0.0) as u32,
         }
     }
 
-    /// The window as it was saved, if that is a window berth can open: no
-    /// smaller than its minimum, and with its middle on a display, so it is
-    /// somewhere a person can find it. A display unplugged since, or a size
-    /// from an older build, puts it back in the usual place.
+    /// The rect to open the window with, if that is a window berth can
+    /// open: no smaller than its minimum, and with its middle on a
+    /// display, so it is somewhere a person can find it. A display
+    /// unplugged since, or a size from an older build, puts it back in the
+    /// usual place.
     pub fn bounds(
         self,
         minimum: Size<Pixels>,
@@ -264,6 +273,35 @@ mod tests {
         assert!(
             litter.is_empty(),
             "no temporary file left behind: {litter:?}"
+        );
+    }
+
+    #[test]
+    fn a_window_with_a_title_bar_opens_where_it_was_without_drifting() {
+        let minimum = size(px(960.0), px(600.0));
+        // The frame, title bar and all, and the content inside it.
+        let frame = Bounds::new(point(px(116.0), px(128.0)), size(px(1280.0), px(793.0)));
+        let content = size(px(1280.0), px(760.0));
+
+        // What is kept is the frame's corner and the content's size, which
+        // is what a window is opened from.
+        let saved = Window::of(frame, content);
+        assert_eq!(
+            saved.bounds(minimum, &[display()]),
+            Some(Bounds::new(point(px(116.0), px(128.0)), content))
+        );
+        // The window that comes up from that has the same frame and the same
+        // content, so saving it again is the same entry: neither a title bar
+        // taller, nor a title bar lower.
+        assert_eq!(Window::of(frame, content), saved);
+        assert_eq!((saved.width, saved.height), (1280, 760));
+
+        // Where the frame is the content, as on a window system that draws
+        // no title bar of its own, there is nothing to tell apart.
+        let bare = Bounds::new(point(px(10.0), px(20.0)), content);
+        assert_eq!(
+            Window::of(bare, content).bounds(minimum, &[display()]),
+            Some(bare)
         );
     }
 

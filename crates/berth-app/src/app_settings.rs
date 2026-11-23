@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use gpui::{Bounds, Context, Pixels, Subscription, Window};
+use gpui::{Bounds, Context, Pixels, Size, Subscription, Window};
 
 use crate::app::BerthApp;
 use crate::settings;
@@ -47,8 +47,13 @@ impl BerthApp {
 
     /// The window moved, or was resized. Remember where, and write it once
     /// it has been still for a moment.
-    pub(crate) fn remember_window(&mut self, bounds: Bounds<Pixels>, cx: &mut Context<Self>) {
-        self.window = Some(settings::Window::of(bounds));
+    pub(crate) fn remember_window(
+        &mut self,
+        frame: Bounds<Pixels>,
+        content: Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.window = Some(settings::Window::of(frame, content));
         // Starting the wait again cancels the one before it.
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SETTLE).await;
@@ -63,7 +68,8 @@ impl BerthApp {
         cx: &mut Context<Self>,
     ) -> Subscription {
         cx.observe_window_bounds(window, |this, window, cx| {
-            this.remember_window(window.bounds(), cx)
+            // The frame says where it is; the content says how big it is.
+            this.remember_window(window.bounds(), window.viewport_size(), cx)
         })
     }
 }

@@ -111,8 +111,9 @@ These are not implementation details; they are what the app promises.
 
 - `settings.json` in the platform data dir (`~/Library/Application Support/berth`
   on macOS, `~/.local/share/berth` on Linux): `appearance` (`system|light|dark`),
-  the last `socket`, and where the window was (`x`, `y`, `width`, `height` in
-  points). The file is replaced in one step (written beside itself, then
+  the last `socket`, and where the window was: its frame's corner and its
+  content's size (`x`, `y`, `width`, `height` in points), which is what a
+  window is opened from. The file is replaced in one step (written beside itself, then
   renamed), so an interrupted save leaves the old one whole; a save that fails
   is a toast. Where the window was is written once it has been still for a
   moment.
