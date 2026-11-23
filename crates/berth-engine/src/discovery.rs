@@ -362,15 +362,7 @@ pub fn identity(runtime: &Runtime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_socket() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("berth-discovery-{}-{id}.sock", std::process::id()))
-    }
+    use crate::test_support::{MockEngine, TempDir};
 
     #[test]
     fn socket_paths_name_the_engine() {
@@ -416,18 +408,17 @@ mod tests {
 
     #[test]
     fn candidates_keep_the_preferred_socket_first_and_dedupe() {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("berth-cand-{}-{id}", std::process::id()));
-        std::fs::create_dir_all(dir.join(".docker/run")).expect("dir");
-        std::fs::create_dir_all(dir.join(".lima/docker/sock")).expect("dir");
-        let preferred = dir.join(".docker/run/docker.sock");
-        let lima = dir.join(".lima/docker/sock/docker.sock");
+        let home = TempDir::new("home");
+        std::fs::create_dir_all(home.path().join(".docker/run")).expect("dir");
+        std::fs::create_dir_all(home.path().join(".lima/docker/sock")).expect("dir");
+        let preferred = home.path().join(".docker/run/docker.sock");
+        let lima = home.path().join(".lima/docker/sock/docker.sock");
         for path in [&preferred, &lima] {
-            let _ = std::os::unix::net::UnixListener::bind(path).expect("bind");
+            let _listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
         }
         let list = candidates(
             &preferred.to_string_lossy(),
-            &dir.to_string_lossy(),
+            &home.path().to_string_lossy(),
             "",
             "",
             501,
@@ -439,7 +430,7 @@ mod tests {
         assert!(list.iter().any(|path| path.contains(".lima/docker")));
         // The host may also have /var/run/docker.sock; only the sockets under
         // this temporary HOME prove candidate discovery and deduplication.
-        let root = std::fs::canonicalize(&dir).expect("canonical home");
+        let root = std::fs::canonicalize(home.path()).expect("canonical home");
         let root = root.to_string_lossy();
         assert_eq!(
             list.iter()
@@ -451,7 +442,8 @@ mod tests {
 
     #[test]
     fn a_missing_socket_is_reported_not_dropped() {
-        let path = temp_socket();
+        let path = std::env::temp_dir().join(format!("berth-missing-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let runtime = probe(&path.to_string_lossy());
         assert!(!runtime.reachable);
         assert!(!runtime.error_text.is_empty());
@@ -459,26 +451,18 @@ mod tests {
 
     #[test]
     fn probe_reads_version_and_info() {
-        let path = temp_socket();
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            for body in [
-                br#"{"Version":"29.1.3","ApiVersion":"1.56","Components":[]}"#.as_slice(),
-                br#"{"ID":"daemon-1","NCPU":4,"MemTotal":1024,"ContainersRunning":1}"#.as_slice(),
-            ] {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = [0u8; 4096];
-                let _ = std::io::Read::read(&mut stream, &mut request);
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.write_all(body);
-            }
-        });
-        let runtime = probe(&path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine
+            .on("GET /version")
+            .ok(r#"{"Version":"29.1.3","ApiVersion":"1.56","Components":[]}"#)
+            .on("GET /info")
+            .ok(r#"{"ID":"daemon-1","NCPU":4,"MemTotal":1024,"ContainersRunning":1}"#);
+        let runtime = probe(&engine.socket());
         assert!(runtime.reachable);
         assert_eq!(runtime.api, "v1.56");
         assert_eq!(runtime.version.version, "29.1.3");
         assert_eq!(runtime.info.ncpu, 4);
         assert_eq!(identity(&runtime), "daemon-1");
+        assert_eq!(engine.paths().len(), 2);
     }
 }

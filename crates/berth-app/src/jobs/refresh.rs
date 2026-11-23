@@ -195,42 +195,32 @@ const _REFRESH_PERIOD: Duration = Duration::from_secs(5);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use berth_engine::test_support::MockEngine;
 
-    static NEXT: AtomicU64 = AtomicU64::new(0);
+    const CONTAINERS: &str =
+        r#"[{"Id":"a","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 1 hour"}]"#;
+    const STATS: &str = r#"{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000},"memory_stats":{"usage":1000,"limit":2000,"stats":{"inactive_file":200}},"pids_stats":{"current":5}}"#;
+    const DF: &str = r#"{"LayersSize":0,"ImageUsage":{"TotalSize":100,"Reclaimable":40}}"#;
 
-    fn server(
-        body_by_path: impl Fn(&str) -> (u16, &'static str) + Send + 'static,
-        requests: usize,
-    ) -> String {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("berth-refresh-{}-{id}.sock", std::process::id()));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            for _ in 0..requests {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let mut request = [0u8; 4096];
-                let n = stream.read(&mut request).unwrap_or(0);
-                let text = String::from_utf8_lossy(&request[..n]);
-                let request_path = text
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or("/");
-                let (status, body) = body_by_path(request_path);
-                let head = format!(
-                    "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(body.as_bytes());
-            }
-        });
-        path.to_string_lossy().into_owned()
+    /// A mock with one running container and every route a pass visits.
+    fn scripted() -> MockEngine {
+        let engine = MockEngine::start();
+        engine
+            .on("GET /containers/json")
+            .ok(CONTAINERS)
+            .on("/stats")
+            .ok(STATS)
+            .on("GET /images/json")
+            .ok("[]")
+            .on("GET /volumes")
+            .ok(r#"{"Volumes":[]}"#)
+            .on("GET /networks")
+            .ok("[]")
+            .on("GET /events")
+            .ok("")
+            .on("GET /system/df")
+            .ok(DF);
+        engine
     }
 
     fn request(socket: String) -> Request {
@@ -247,51 +237,28 @@ mod tests {
 
     #[test]
     fn one_pass_builds_a_complete_snapshot() {
-        let socket = server(
-            |path| {
-                if path.contains("/containers/json") {
-                    (
-                        200,
-                        r#"[{"Id":"a","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 1 hour"}]"#,
-                    )
-                } else if path.contains("/stats") {
-                    (
-                        200,
-                        r#"{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000},"memory_stats":{"usage":1000,"limit":2000,"stats":{"inactive_file":200}},"pids_stats":{"current":5}}"#,
-                    )
-                } else if path.contains("/images/json") {
-                    (200, "[]")
-                } else if path.contains("/volumes") {
-                    (200, r#"{"Volumes":[]}"#)
-                } else if path.contains("/networks") {
-                    (200, "[]")
-                } else if path.contains("/system/df") {
-                    (
-                        200,
-                        r#"{"LayersSize":0,"ImageUsage":{"TotalSize":100,"Reclaimable":40}}"#,
-                    )
-                } else {
-                    (404, "{}")
-                }
-            },
-            6,
-        );
-        let outcome = load(request(socket)).expect("pass");
+        let engine = scripted();
+        let outcome = load(request(engine.socket())).expect("pass");
         assert_eq!(outcome.snapshot.containers.len(), 1);
         assert!(outcome.snapshot.stats_complete);
         assert_eq!(outcome.snapshot.stat(0).pids, Some(5));
         assert_eq!(outcome.generation, 3);
         let df = outcome.df.expect("df requested").expect("df ok");
         assert_eq!(df.reclaimable(), 40);
+        assert_eq!(engine.count("/stats"), 1);
+        assert_eq!(engine.count("/system/df"), 1);
     }
 
     #[test]
     fn a_core_failure_aborts_the_pass() {
-        let socket = server(|_| (500, r#"{"message":"engine broke"}"#), 1);
-        let error = load(request(socket)).expect_err("must fail");
+        let engine = MockEngine::start();
+        engine.on("*").error(500, "engine broke");
+        let error = load(request(engine.socket())).expect_err("must fail");
         assert!(error.message.contains("engine broke"));
         assert!(!error.engine_dead);
+        assert_eq!(engine.paths().len(), 1);
     }
+
     #[test]
     fn stats_workers_are_bounded_at_sixty_four() {
         assert_eq!(worker_count(1), 1);

@@ -416,33 +416,15 @@ pub fn encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn serve(response: &'static [u8]) -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("berth-client-{}-{id}.sock", std::process::id()));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut request = [0u8; 4096];
-                let _ = stream.read(&mut request);
-                let _ = stream.write_all(response);
-            }
-        });
-        path
-    }
+    use crate::test_support::MockEngine;
 
     #[test]
     fn version_parses_and_adopts_the_prefix() {
-        let path = serve(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 56\r\n\r\n{\"Version\":\"29.1.3\",\"ApiVersion\":\"1.56\",\"Components\":[]}",
-        );
-        let mut client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine
+            .on("GET /version")
+            .ok(r#"{"Version":"29.1.3","ApiVersion":"1.56","Components":[]}"#);
+        let mut client = Client::new(engine.socket());
         let version = client.version().expect("version");
         assert_eq!(version.version, "29.1.3");
         client.adopt_api(&version);
@@ -451,10 +433,11 @@ mod tests {
 
     #[test]
     fn an_engine_error_keeps_the_engine_message() {
-        let path = serve(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 31\r\n\r\n{\"message\":\"no such container\"}",
-        );
-        let client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine
+            .on("GET /containers/missing/json")
+            .error(404, "no such container");
+        let client = Client::new(engine.socket());
         let error = client.inspect("missing").expect_err("must fail");
         match error {
             ClientError::Engine { status, message } => {
@@ -475,13 +458,9 @@ mod tests {
             body.push_str("{}");
         }
         body.push(']');
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        let leaked: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-        let path = serve(leaked);
-        let client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine.on("GET /containers/json").ok(body);
+        let client = Client::new(engine.socket());
         let error = client.containers().expect_err("must refuse");
         assert!(matches!(error, ClientError::Availability(_)));
     }
@@ -489,13 +468,9 @@ mod tests {
     #[test]
     fn a_deep_document_is_refused() {
         let body = format!("{}{}", "[".repeat(65), "]".repeat(65));
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        let leaked: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-        let path = serve(leaked);
-        let client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine.on("GET /containers/json").ok(body);
+        let client = Client::new(engine.socket());
         let error = client.containers().expect_err("must refuse");
         assert!(matches!(error, ClientError::Availability(_)));
     }

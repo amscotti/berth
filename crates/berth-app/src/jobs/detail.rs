@@ -82,44 +82,18 @@ pub fn load_image(socket: String, api: String, id: String, generation: u64) -> I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn frame(text: &str) -> Vec<u8> {
-        let mut out = vec![1, 0, 0, 0];
-        out.extend_from_slice(&(text.len() as u32).to_be_bytes());
-        out.extend_from_slice(text.as_bytes());
-        out
-    }
+    use berth_engine::test_support::{MockEngine, Reply};
 
     #[test]
     fn reads_logs_and_inspect_and_names_the_id() {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("berth-detail-{}-{id}.sock", std::process::id()));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = [0u8; 2048];
-                let n = stream.read(&mut request).unwrap_or(0);
-                let text = String::from_utf8_lossy(&request[..n]);
-                let body: Vec<u8> = if text.contains("/logs") {
-                    frame("hello\n")
-                } else {
-                    br#"{"Id":"abc","Name":"/web","State":{"StartedAt":"2026-11-01T19:55:00Z"}}"#
-                        .to_vec()
-                };
-                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&body);
-            }
-        });
-
+        let engine = MockEngine::start();
+        engine
+            .on("/logs")
+            .reply(Reply::framed("hello\n"))
+            .on("/json")
+            .ok(r#"{"Id":"abc","Name":"/web","State":{"StartedAt":"2026-11-01T19:55:00Z"}}"#);
         let outcome = load(Request {
-            socket: path.to_string_lossy().into_owned(),
+            socket: engine.socket(),
             api: "v1.43".into(),
             id: "abc".into(),
             generation: 7,

@@ -4,7 +4,7 @@
 **Created:** 2026-11-23
 **Baseline:** `ebe5f59`
 **Source:** the code and UX review of 2026-11-23
-**Next:** T1
+**Next:** T3
 **Purpose:** every finding from that review as checkable work, in the order to
 do it. Anyone, or any sub-agent, should be able to take the next unticked row
 and know what "done" means without re-reading the review.
@@ -63,8 +63,8 @@ Phases 2 and 4 touch the views. Phase 5 and most of Phase 1's engine rows
 
 Phase 1's fixes need these to be provable. Small, and every later test benefits.
 
-- [ ] **T1** (S) Give every test socket and temp directory a cleanup guard. The test modules in `berth-engine/src/transport.rs:406`, `client.rs:417`, `discovery.rs:363`; `jobs/refresh.rs:196`; `jobs/detail.rs:83`. One RAII helper that removes its path on drop. Done when (U): the guard removes its own path in a test, and a full `cargo test --workspace` leaves no new `berth-*` entry in the temp dir. On this machine the baseline left 528 sockets and 36 directories behind.
-- [ ] **T2** (M) Build the scripted mock engine that `docs/TESTING.md` §4 describes, in a new `berth-engine/src/mock.rs`, and replace the five hand-written one-shot servers. It answers by method and path from a queue, can chunk, trickle, delay or hang, and records requests. Done when (E): `refresh::load`, `mutation::run` and `detail::load` each run against it end to end and assert on the request log. Feeds B7, B8, B9, E1, E2, E5, E6, T4.
+- [x] **T1** (S) Give every test socket and temp directory a cleanup guard. The test modules in `berth-engine/src/transport.rs:406`, `client.rs:417`, `discovery.rs:363`; `jobs/refresh.rs:196`; `jobs/detail.rs:83`. One RAII helper that removes its path on drop. Done when (U): the guard removes its own path in a test, and a full `cargo test --workspace` leaves no new `berth-*` entry in the temp dir. On this machine the baseline left 528 sockets and 36 directories behind.
+- [x] **T2** (M) Build the scripted mock engine that `docs/TESTING.md` §4 describes, in a new `berth-engine/src/mock.rs`, and replace the five hand-written one-shot servers. It answers by method and path from a queue, can chunk, trickle, delay or hang, and records requests. Done when (E): `refresh::load`, `mutation::run` and `detail::load` each run against it end to end and assert on the request log. Feeds B7, B8, B9, E1, E2, E5, E6, T4.
 - [ ] **T3** (S) Add GPUI helpers for driving the app in tests: open each sheet, select a row, hold a mutation or a pass in flight, wait on a condition (no sleep), read back tab, selection, sheet and toast. Done when (G): the tests for B4 and B5 are written with them. Feeds B4, B5, B19, B20, B23.
 
 ## Phase 1 — Behaviour and honest numbers

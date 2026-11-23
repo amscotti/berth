@@ -405,57 +405,36 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::test_support::{MockEngine, Reply};
 
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn socket_path() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("berth-transport-{}-{id}.sock", std::process::id()))
-    }
-
-    fn serve(
-        response: impl FnOnce(&mut std::os::unix::net::UnixStream) + Send + 'static,
-    ) -> PathBuf {
-        let path = socket_path();
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut request = [0u8; 4096];
-                let _ = stream.read(&mut request);
-                response(&mut stream);
-            }
-        });
-        path
-    }
-
-    fn serve_bytes(response: &'static [u8]) -> PathBuf {
-        serve(move |stream| {
-            let _ = stream.write_all(response);
-        })
+    /// A mock that answers every request with these literal wire bytes.
+    fn serve(bytes: &[u8]) -> MockEngine {
+        let engine = MockEngine::start();
+        engine.on("*").reply(Reply::Raw(bytes.to_vec()));
+        engine
     }
 
     #[test]
     fn reads_a_content_length_response() {
-        let path = serve_bytes(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello",
-        );
-        let response = UnixClient::new(path)
+        let engine =
+            serve(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello");
+        let response = UnixClient::new(engine.socket())
             .request("GET", "/version", b"")
             .expect("request");
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"hello");
         assert_eq!(response.header("content-type"), Some("text/plain"));
         assert!(response.ok_for(false));
+        assert_eq!(engine.paths(), ["GET /version"]);
     }
 
     #[test]
     fn decodes_a_chunked_response() {
-        let path = serve_bytes(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
-        );
-        let response = UnixClient::new(path)
+        let engine = MockEngine::start();
+        engine
+            .on("*")
+            .reply(Reply::Chunked(vec![b"hello".to_vec(), b" world".to_vec()]));
+        let response = UnixClient::new(engine.socket())
             .request("GET", "/", b"")
             .expect("request");
         assert_eq!(response.body, b"hello world");
@@ -463,8 +442,8 @@ mod tests {
 
     #[test]
     fn reads_to_eof_without_a_length() {
-        let path = serve_bytes(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc");
-        let response = UnixClient::new(path)
+        let engine = serve(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc");
+        let response = UnixClient::new(engine.socket())
             .request("GET", "/", b"")
             .expect("request");
         assert_eq!(response.body, b"abc");
@@ -472,8 +451,8 @@ mod tests {
 
     #[test]
     fn a_304_is_ok_only_for_lifecycle_calls() {
-        let path = serve_bytes(b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n");
-        let response = UnixClient::new(path)
+        let engine = serve(b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n");
+        let response = UnixClient::new(engine.socket())
             .request("POST", "/start", b"")
             .expect("request");
         assert!(!response.ok_for(false));
@@ -482,15 +461,15 @@ mod tests {
 
     #[test]
     fn a_trickle_cannot_extend_the_total_deadline() {
-        let path = serve(|stream| {
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n");
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(80));
-                let _ = stream.write_all(b"x");
-            }
+        let mut pieces = vec![b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n".to_vec()];
+        pieces.extend((0..10).map(|_| b"x".to_vec()));
+        let engine = MockEngine::start();
+        engine.on("*").reply(Reply::Trickle {
+            gap: Duration::from_millis(80),
+            pieces,
         });
         let started = Instant::now();
-        let error = UnixClient::new(path)
+        let error = UnixClient::new(engine.socket())
             .with_timeout(Duration::from_millis(300))
             .request("GET", "/", b"")
             .expect_err("must time out");
@@ -500,8 +479,8 @@ mod tests {
 
     #[test]
     fn a_malformed_header_is_named() {
-        let path = serve_bytes(b"not http\r\n\r\n");
-        let error = UnixClient::new(path)
+        let engine = serve(b"not http\r\n\r\n");
+        let error = UnixClient::new(engine.socket())
             .request("GET", "/", b"")
             .expect_err("must fail");
         assert!(matches!(error, TransportError::Malformed(_)));
@@ -509,8 +488,8 @@ mod tests {
 
     #[test]
     fn an_oversized_body_is_refused_before_buffering_it() {
-        let path = serve_bytes(b"HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n");
-        let error = UnixClient::new(path)
+        let engine = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n");
+        let error = UnixClient::new(engine.socket())
             .request("GET", "/", b"")
             .expect_err("must fail");
         assert!(matches!(error, TransportError::BodyTooLarge));

@@ -45,6 +45,7 @@ gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 gpui_platform = { workspace = true }
 
 [dev-dependencies]
+berth-engine = { workspace = true, features = ["test-support"] }
 gpui = { workspace = true, features = ["test-support"] }
 gpui_platform = { workspace = true, features = ["test-support"] }
 image = "0.25"

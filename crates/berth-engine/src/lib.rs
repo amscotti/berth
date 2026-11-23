@@ -16,6 +16,8 @@ pub mod network_counts;
 pub mod projects;
 pub mod prune;
 pub mod stats;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod transport;
 
 /// The largest response body berth will buffer for a list call.
