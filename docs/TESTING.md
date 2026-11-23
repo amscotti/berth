@@ -151,6 +151,11 @@ Use the real text system and renderer factory from the pinned commit's
   correct selected/hover colours, graph wells non-empty.
 - Goldens are a separate serial binary/job, behind a `golden` feature. Do not
   enable golden features in `cargo test --workspace`.
+- The frame budget is `examples/perf.rs`: the frame a change costs (the shell
+  announces one, the window is drawn), the middle of nine frames after three
+  warm-ups, at 100, 500 and 1,000 containers. It fails above 33 ms, one frame
+  at 30 Hz. Run it in release. It is a figure for the machine it runs on, so
+  it belongs to the nightly run and not to the PR gate.
 - Keep reference screenshots in `docs/reference-ui/`; generated ones in
   `docs/ui/`. Read the images; do not only diff them.
 
@@ -241,7 +246,8 @@ developer's main engine. Use a unique name prefix and clean up in a trap.
 - full screenshot matrix (both themes, three sizes)
 - real-window macOS smoke + Linux X11 smoke (xa11y)
 - live-engine smoke
-- 100-container performance/fixture run
+- frame budget (`cargo run -p berth-app --release --example perf --features
+  test-driver`): 100, 500 and 1,000 rows, each under 33 ms a frame
 - kill/restart engine during refresh
 
 ### Release

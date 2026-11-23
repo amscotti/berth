@@ -28,6 +28,7 @@ cargo clippy --workspace --all-targets --locked -- \
     --features berth-app/test-driver -- -D warnings   # the fixture too, so the screenshot pass is linted
 ./tools/lines.py                  # 600-line rule
 cargo run -p berth-app --example screenshots --features test-driver   # headless PNGs in docs/ui/
+cargo run -p berth-app --release --example perf --features test-driver # frame budget: 100, 500 and 1,000 rows
 ./scripts/coverage.sh             # line coverage gate (85%)
 ```
 

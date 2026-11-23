@@ -21,7 +21,8 @@ Last updated: 2026-11-23
 - [x] Container actions, bulk, Compose start/stop, create, pull/run, prune
 - [x] Engine machine commands, settings persistence, tray title/menu
 - [x] Headless screenshots (10 views × 3 sizes light, 10 dark)
-- [x] 100-container perf: 13.9 ms/frame
+- [x] Frame budget with a gate: 1.3 / 5.3 / 10.3 ms a frame at 100 / 500 /
+  1,000 containers in release, against 33 ms (`examples/perf.rs`)
 - [x] Live probe and live action smoke against Docker 29.9.2
 - [x] Unsigned macOS `.app` bundle (`target/Berth.app`)
 
