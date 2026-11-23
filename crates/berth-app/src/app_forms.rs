@@ -2,6 +2,7 @@
 
 use crate::app::*;
 use crate::jobs::mutation::{self, PruneOptions, Request};
+use crate::view::Sheet;
 use berth_core::validation;
 use gpui::Context;
 
@@ -10,6 +11,19 @@ pub(crate) const PRUNE_OPTIONS: usize = 5;
 
 impl BerthApp {
     // --- creation and cleanup forms ----------------------------------------
+
+    /// Open a sheet, in place of any that was open.
+    pub(crate) fn open_sheet(&mut self, sheet: Sheet, cx: &mut Context<Self>) {
+        self.view.sheet = Some(sheet);
+        cx.notify();
+    }
+
+    /// Close whichever sheet is open. Cancel, Escape and the backdrop all
+    /// come here, and the sheet takes what it holds with it.
+    pub(crate) fn close_sheet(&mut self, cx: &mut Context<Self>) {
+        self.view.sheet = None;
+        cx.notify();
+    }
 
     pub(crate) fn set_creation_open(&mut self, open: bool, cx: &mut Context<Self>) {
         self.view.creation_open = open;
@@ -73,34 +87,41 @@ impl BerthApp {
     }
 
     pub(crate) fn open_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {
-        self.view.pending = None;
-        self.view.prune_open = false;
-        self.view.create_kind = Some(kind);
-        self.view.create_attempted = false;
         self.view
             .create_name
             .update(cx, |input, cx| input.clear(cx));
-        cx.notify();
+        self.open_sheet(
+            Sheet::Create {
+                kind,
+                attempted: false,
+            },
+            cx,
+        );
     }
 
+    /// Close the sheet when it is the create one, as Escape in its name
+    /// field asks.
     pub(crate) fn close_create(&mut self, cx: &mut Context<Self>) {
-        self.view.create_kind = None;
-        self.view.create_attempted = false;
-        cx.notify();
+        if matches!(self.view.sheet, Some(Sheet::Create { .. })) {
+            self.close_sheet(cx);
+        }
     }
 
     pub(crate) fn submit_create(&mut self, cx: &mut Context<Self>) {
-        let Some(kind) = self.view.create_kind else {
+        let Some((kind, attempted)) = (match self.view.sheet.as_mut() {
+            Some(Sheet::Create { kind, attempted }) => Some((*kind, attempted)),
+            _ => None,
+        }) else {
             return;
         };
         let name = self.view.create_name.read(cx).text().trim().to_owned();
         // One rule for a name, shared with the sheet that explains it.
         if create_name_error(kind, &name, &self.snapshot.volumes).is_some() {
-            self.view.create_attempted = true;
+            *attempted = true;
             cx.notify();
             return;
         }
-        self.view.create_attempted = false;
+        *attempted = false;
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
@@ -121,15 +142,30 @@ impl BerthApp {
     }
 
     pub(crate) fn open_prune(&mut self, cx: &mut Context<Self>) {
-        self.view.pending = None;
-        self.view.create_kind = None;
-        self.view.prune_open = true;
-        cx.notify();
+        self.open_sheet(Sheet::Prune(PruneOptions::default()), cx);
     }
 
-    pub(crate) fn close_prune(&mut self, cx: &mut Context<Self>) {
-        self.view.prune_open = false;
-        self.view.prune_options = PruneOptions::default();
+    /// What the cleanup sheet has ticked, when it is the one that is open.
+    pub(crate) fn prune_options(&self) -> Option<PruneOptions> {
+        match &self.view.sheet {
+            Some(Sheet::Prune(options)) => Some(*options),
+            _ => None,
+        }
+    }
+
+    /// Tick or untick one kind of data for the cleanup, numbered in the
+    /// order the sheet lists them.
+    pub(crate) fn toggle_prune_option(&mut self, field: usize, cx: &mut Context<Self>) {
+        let Some(Sheet::Prune(options)) = self.view.sheet.as_mut() else {
+            return;
+        };
+        match field {
+            0 => options.containers = !options.containers,
+            1 => options.images = !options.images,
+            2 => options.volumes = !options.volumes,
+            3 => options.networks = !options.networks,
+            _ => options.build_cache = !options.build_cache,
+        }
         cx.notify();
     }
 
@@ -139,8 +175,7 @@ impl BerthApp {
     }
 
     /// What a cleanup option is ticked for, in the order the sheet lists them.
-    pub(crate) fn prune_ticked(&self, field: usize) -> bool {
-        let options = self.view.prune_options;
+    pub(crate) fn prune_ticked(&self, options: &PruneOptions, field: usize) -> bool {
         match field {
             0 => options.containers,
             1 => options.images,
@@ -225,10 +260,10 @@ impl BerthApp {
 
     /// What the ticked cleanup options would free, in bytes. `None` until the
     /// engine reports its disk figures.
-    pub(crate) fn prune_selected_bytes(&self) -> Option<i64> {
+    pub(crate) fn prune_selected_bytes(&self, options: &PruneOptions) -> Option<i64> {
         let mut total: Option<i64> = None;
         for field in 0..PRUNE_OPTIONS {
-            if !self.prune_ticked(field) {
+            if !self.prune_ticked(options, field) {
                 continue;
             }
             // A network has no size, so it adds nothing, and its lack of one
@@ -243,10 +278,10 @@ impl BerthApp {
     /// Whether anything ticked has something left to remove, as far as berth
     /// can tell from what is on screen. `None` when it can't tell: the engine
     /// decides then, rather than the button refusing on a guess.
-    pub(crate) fn prune_has_work(&self) -> Option<bool> {
+    pub(crate) fn prune_has_work(&self, options: &PruneOptions) -> Option<bool> {
         let (mut known, mut work) = (false, false);
         for field in 0..PRUNE_OPTIONS {
-            if !self.prune_ticked(field) {
+            if !self.prune_ticked(options, field) {
                 continue;
             }
             let count = self.prune_count(field);
@@ -260,6 +295,9 @@ impl BerthApp {
     }
 
     pub(crate) fn run_prune(&mut self, cx: &mut Context<Self>) {
+        let Some(options) = self.prune_options() else {
+            return;
+        };
         let Some(client) = self.engine.client.clone() else {
             self.notify("no engine is selected", true, cx);
             return;
@@ -270,7 +308,7 @@ impl BerthApp {
                 socket: client.socket().to_owned(),
                 api: client.api().to_owned(),
                 dialect,
-                options: self.view.prune_options,
+                options,
             },
             cx,
         );
@@ -294,13 +332,15 @@ impl BerthApp {
             );
             return;
         }
-        self.view.pending = Some(Pending {
-            method: "ENGINE".to_owned(),
-            path: socket,
-            verb: verb.to_owned(),
-            name: kind.label().to_owned(),
-        });
-        cx.notify();
+        self.open_sheet(
+            Sheet::Confirm(Pending {
+                method: "ENGINE".to_owned(),
+                path: socket,
+                verb: verb.to_owned(),
+                name: kind.label().to_owned(),
+            }),
+            cx,
+        );
     }
 
     // --- mutations ---------------------------------------------------------
@@ -313,17 +353,19 @@ impl BerthApp {
         name: String,
         cx: &mut Context<Self>,
     ) {
-        self.view.pending = Some(Pending {
-            method,
-            path,
-            verb,
-            name,
-        });
-        cx.notify();
+        self.open_sheet(
+            Sheet::Confirm(Pending {
+                method,
+                path,
+                verb,
+                name,
+            }),
+            cx,
+        );
     }
 
     pub(crate) fn resolve_pending(&mut self, ok: bool, cx: &mut Context<Self>) {
-        let Some(pending) = self.view.pending.take() else {
+        let Some(Sheet::Confirm(pending)) = self.view.sheet.take() else {
             return;
         };
         if !ok {
@@ -403,17 +445,18 @@ impl BerthApp {
         cx: &mut Context<Self>,
     ) {
         self.mutation_task = None;
+        // Each sheet closes when its own request succeeds, and only then:
+        // the sheet that is open by then has to be the one that asked.
         if self.view.create_in_flight {
             self.view.create_in_flight = false;
-            if !outcome.bad {
-                self.view.create_kind = None;
+            if !outcome.bad && matches!(self.view.sheet, Some(Sheet::Create { .. })) {
+                self.view.sheet = None;
             }
         }
         if self.view.prune_in_flight {
             self.view.prune_in_flight = false;
-            if !outcome.bad {
-                self.view.prune_open = false;
-                self.view.prune_options = PruneOptions::default();
+            if !outcome.bad && matches!(self.view.sheet, Some(Sheet::Prune(_))) {
+                self.view.sheet = None;
             }
         }
         if !is_engine_op && generation != self.engine.generation {

@@ -185,17 +185,9 @@ impl BerthApp {
     }
 
     pub(crate) fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view.pending.is_some() {
-            self.view.pending = None;
+        // The sheet first, whichever it is.
+        if self.view.sheet.take().is_some() {
             cx.notify();
-            return;
-        }
-        if self.view.create_kind.is_some() {
-            self.close_create(cx);
-            return;
-        }
-        if self.view.prune_open {
-            self.close_prune(cx);
             return;
         }
         for search in self.view.lists.iter().map(|list| &list.search) {

@@ -10,6 +10,7 @@ use gpui::{App, Context, FocusHandle, Window};
 
 use crate::app::BerthApp;
 use crate::app_forms::PRUNE_OPTIONS;
+use crate::view::Sheet;
 
 /// The controls a sheet is made of, each with a focus handle of its own.
 ///
@@ -44,38 +45,39 @@ impl SheetFocus {
     /// The open sheet's controls, in the order Tab crosses them and only
     /// those that can be used. Empty when no sheet is open.
     pub(crate) fn stops(&self, app: &BerthApp, cx: &App) -> Vec<FocusHandle> {
-        if app.view.pending.is_some() {
+        match app.view.sheet.as_ref() {
             // Confirm waits for a running mutation; while it does, Tab
             // passes it by.
-            let mut stops = vec![self.cancel.clone()];
-            if !app.mutating() {
-                stops.push(self.confirm.clone());
+            Some(Sheet::Confirm(_)) => {
+                let mut stops = vec![self.cancel.clone()];
+                if !app.mutating() {
+                    stops.push(self.confirm.clone());
+                }
+                stops
             }
-            return stops;
-        }
-        if app.view.create_kind.is_some() {
-            return vec![
+            Some(Sheet::Create { .. }) => vec![
                 app.view.create_name.read(cx).focus_handle(),
                 self.cancel.clone(),
                 self.create.clone(),
-            ];
-        }
-        if app.view.prune_open {
-            let offered = if app.prune_build_supported() {
-                PRUNE_OPTIONS
-            } else {
-                PRUNE_OPTIONS - 1
-            };
-            let mut stops: Vec<FocusHandle> = self.options.iter().take(offered).cloned().collect();
-            stops.push(self.cancel.clone());
-            // While berth can see there is nothing to clean up, the button
-            // can't be pressed, and Tab passes it by.
-            if app.prune_has_work() != Some(false) {
-                stops.push(self.clean_up.clone());
+            ],
+            Some(Sheet::Prune(options)) => {
+                let offered = if app.prune_build_supported() {
+                    PRUNE_OPTIONS
+                } else {
+                    PRUNE_OPTIONS - 1
+                };
+                let mut stops: Vec<FocusHandle> =
+                    self.options.iter().take(offered).cloned().collect();
+                stops.push(self.cancel.clone());
+                // While berth can see there is nothing to clean up, the button
+                // can't be pressed, and Tab passes it by.
+                if app.prune_has_work(options) != Some(false) {
+                    stops.push(self.clean_up.clone());
+                }
+                stops
             }
-            return stops;
+            None => Vec::new(),
         }
-        Vec::new()
     }
 
     /// Whether focus is on one of the open sheet's controls.

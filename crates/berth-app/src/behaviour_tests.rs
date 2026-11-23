@@ -6,8 +6,9 @@ use berth_engine::test_support::MockEngine;
 use gpui::{Entity, TestAppContext, VisualTestContext};
 
 use crate::app::{BerthApp, CreateKind, Filter};
-use crate::jobs::mutation::Request;
+use crate::jobs::mutation::{PruneOptions, Request};
 use crate::testkit;
+use crate::view::Sheet;
 
 /// An app wired to a scripted engine.
 fn wired(cx: &mut TestAppContext) -> (Entity<BerthApp>, MockEngine, &mut VisualTestContext) {
@@ -38,7 +39,7 @@ fn a_refused_prune_leaves_its_sheet_open_and_no_unrelated_success_closes_it(
         app.open_prune(cx);
         app.run_prune(cx);
         // Refused, so the sheet is not waiting on anything, and nothing was sent.
-        assert!(app.view.prune_open);
+        assert!(cleanup(app));
         assert!(!app.view.prune_in_flight);
     });
     assert_eq!(engine.count("/prune"), 0);
@@ -46,7 +47,7 @@ fn a_refused_prune_leaves_its_sheet_open_and_no_unrelated_success_closes_it(
     // The stop finishing must not close the sheet as though the prune had run.
     cx.run_until_parked();
     app.read_with(&*cx, |app, _| {
-        assert!(app.view.prune_open);
+        assert!(cleanup(app));
         assert!(!app.view.prune_in_flight);
     });
     assert_eq!(engine.count("/prune"), 0, "a refused prune is never sent");
@@ -60,7 +61,7 @@ fn an_accepted_prune_closes_its_sheet_only_once_it_has_run(cx: &mut TestAppConte
         app.open_prune(cx);
         app.run_prune(cx);
         assert!(app.view.prune_in_flight);
-        assert!(app.view.prune_open);
+        assert!(cleanup(app));
     });
     assert_eq!(
         engine.count("/prune"),
@@ -69,7 +70,7 @@ fn an_accepted_prune_closes_its_sheet_only_once_it_has_run(cx: &mut TestAppConte
     );
     cx.run_until_parked();
     app.read_with(&*cx, |app, _| {
-        assert!(!app.view.prune_open);
+        assert!(!cleanup(app));
         assert!(!app.view.prune_in_flight);
         assert_eq!(app.view.toast.as_ref().map(|toast| toast.bad), Some(false));
     });
@@ -177,19 +178,20 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
         assert_eq!(app.prune_count(2), Some(0));
         assert_eq!(app.prune_count(3), Some(0));
         assert_eq!(app.prune_count(4), None, "build cache isn't things");
-        assert_eq!(app.prune_selected_bytes(), Some(13 * 1024 * 1024));
-        assert_eq!(app.prune_has_work(), Some(true));
+        let options = PruneOptions::default();
+        assert_eq!(app.prune_selected_bytes(&options), Some(13 * 1024 * 1024));
+        assert_eq!(app.prune_has_work(&options), Some(true));
     });
 
     // With only the options that have nothing left ticked, the button knows
     // there is nothing to do, and Tab passes it by.
     app.update(cx, |app, cx| {
-        app.view.prune_options.images = false;
         app.open_prune(cx);
+        app.toggle_prune_option(1, cx);
     });
     let (work, stops) = app.read_with(&*cx, |app, cx| {
         (
-            app.prune_has_work(),
+            app.prune_has_work(&app.prune_options().expect("the cleanup is open")),
             app.view.sheet_focus.stops(app, cx).len(),
         )
     });
@@ -207,7 +209,12 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
         cx.notify();
     });
     assert_eq!(
-        app.read_with(&*cx, |app, _| (app.prune_count(0), app.prune_has_work())),
+        app.read_with(&*cx, |app, _| {
+            (
+                app.prune_count(0),
+                app.prune_has_work(&PruneOptions::default()),
+            )
+        }),
         (Some(1), Some(true))
     );
 
@@ -222,9 +229,15 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
     app.read_with(&*cx, |app, _| {
         assert_eq!(app.prune_count(0), None);
         assert_eq!(app.prune_count(1), None);
-        assert_eq!(app.prune_selected_bytes(), None);
-        assert_eq!(app.prune_has_work(), None);
+        let options = PruneOptions::default();
+        assert_eq!(app.prune_selected_bytes(&options), None);
+        assert_eq!(app.prune_has_work(&options), None);
     });
+}
+
+/// Whether the cleanup sheet is the one that is open.
+fn cleanup(app: &BerthApp) -> bool {
+    matches!(app.view.sheet, Some(Sheet::Prune(_)))
 }
 
 /// A create is refused by the one rule for names, the same the sheet
@@ -240,9 +253,18 @@ fn a_bad_name_is_refused_before_anything_is_sent(cx: &mut TestAppContext) {
                 .create_name
                 .update(cx, |input, cx| input.set_value(name, cx));
             app.submit_create(cx);
-            assert!(app.view.create_attempted, "{name:?} was refused");
             assert!(
-                app.view.create_kind.is_some(),
+                matches!(
+                    app.view.sheet,
+                    Some(Sheet::Create {
+                        attempted: true,
+                        ..
+                    })
+                ),
+                "{name:?} was refused"
+            );
+            assert!(
+                matches!(app.view.sheet, Some(Sheet::Create { .. })),
                 "and the sheet stays to say why"
             );
         });
@@ -256,8 +278,63 @@ fn a_bad_name_is_refused_before_anything_is_sent(cx: &mut TestAppContext) {
             .create_name
             .update(cx, |input, cx| input.set_value("brand-new", cx));
         app.submit_create(cx);
-        assert!(!app.view.create_attempted);
+        assert!(matches!(
+            app.view.sheet,
+            Some(Sheet::Create {
+                attempted: false,
+                ..
+            })
+        ));
     });
     cx.run_until_parked();
     assert_eq!(engine.count("/volumes/create"), 1);
+}
+
+/// There is one slot for a sheet, so a sheet opened over another replaces
+/// it whole: the first is gone, and nothing of it is left to be found when
+/// it opens again.
+#[gpui::test]
+fn a_sheet_opened_over_another_replaces_it_whole(cx: &mut TestAppContext) {
+    let (app, cx) = testkit::fixture(cx);
+    app.update(cx, |app, cx| {
+        app.open_prune(cx);
+        app.toggle_prune_option(1, cx);
+        assert!(cleanup(app));
+
+        app.open_create(CreateKind::Volume, cx);
+        assert!(
+            matches!(
+                app.view.sheet,
+                Some(Sheet::Create {
+                    kind: CreateKind::Volume,
+                    attempted: false
+                })
+            ),
+            "the create sheet takes the slot"
+        );
+
+        app.confirm_action(
+            "DELETE".into(),
+            "/containers/demo-1".into(),
+            "Delete".into(),
+            "demo-1".into(),
+            cx,
+        );
+        assert!(
+            matches!(app.view.sheet, Some(Sheet::Confirm(_))),
+            "and a confirmation takes it in turn"
+        );
+
+        // Cancel closes it, and nothing is open behind it.
+        app.resolve_pending(false, cx);
+        assert!(
+            app.view.sheet.is_none(),
+            "one sheet was open, so one closed"
+        );
+
+        // The cleanup opens as it always does. What was ticked for it before
+        // went with the sheet it was ticked in.
+        app.open_prune(cx);
+        assert_eq!(app.prune_options(), Some(PruneOptions::default()));
+    });
 }

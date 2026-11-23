@@ -5,6 +5,7 @@ use gpui::{Entity, FocusHandle, Focusable, TestAppContext, VisualTestContext};
 
 use crate::app::{BerthApp, Filter, SearchKind, Tab};
 use crate::testkit;
+use crate::view::Sheet;
 
 /// Whether `handle` has focus.
 fn focused(cx: &mut VisualTestContext, handle: &FocusHandle) -> bool {
@@ -178,7 +179,10 @@ fn a_sheet_holds_the_keyboard_until_it_closes(cx: &mut TestAppContext) {
 
     // Escape is the way out, and focus goes back to where it was.
     testkit::press(cx, "escape");
-    assert!(!app.read_with(&*cx, |app, _| app.view.prune_open));
+    assert!(!app.read_with(&*cx, |app, _| matches!(
+        app.view.sheet,
+        Some(Sheet::Prune(_))
+    )));
     testkit::draw(cx);
     assert!(focused(cx, &search), "focus returns to where it was");
 }
@@ -194,7 +198,7 @@ fn a_confirmation_opens_on_the_way_out(cx: &mut TestAppContext) {
     assert!(focused(cx, &cancel), "a confirmation opens on Cancel");
     testkit::press(cx, "enter");
     assert!(
-        app.read_with(&*cx, |app, _| app.view.pending.is_none()),
+        app.read_with(&*cx, |app, _| app.view.sheet.is_none()),
         "Enter there closes the sheet and does nothing else"
     );
     assert_eq!(

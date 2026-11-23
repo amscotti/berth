@@ -2,6 +2,7 @@
 
 use crate::app::*;
 use crate::jobs::mutation::Request;
+use crate::view::Sheet;
 use gpui::Context;
 
 impl BerthApp {
@@ -38,13 +39,15 @@ impl BerthApp {
             return;
         }
         if verb == "Delete" {
-            self.view.pending = Some(Pending {
-                method: "BULK".into(),
-                path: "delete".into(),
-                verb: verb.into(),
-                name: format!("{} selected", self.view.bulk_selected.len()),
-            });
-            cx.notify();
+            self.open_sheet(
+                Sheet::Confirm(Pending {
+                    method: "BULK".into(),
+                    path: "delete".into(),
+                    verb: verb.into(),
+                    name: format!("{} selected", self.view.bulk_selected.len()),
+                }),
+                cx,
+            );
             return;
         }
         self.bulk_execute(verb, cx);

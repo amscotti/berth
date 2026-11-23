@@ -37,6 +37,34 @@ impl ListState {
     }
 }
 
+/// The sheet that is open. There is one slot for it (`ViewState::sheet`), so
+/// two sheets are never open at once, and whatever only a sheet needs lives
+/// in its variant: what a confirmation is asking, whether the create form
+/// has been tried, what a cleanup has ticked. A sheet opened over another
+/// replaces it whole, and nothing of the first is left to find later.
+#[derive(Clone, Debug)]
+pub(crate) enum Sheet {
+    /// "Delete web?": a destructive action, held until it is confirmed.
+    Confirm(Pending),
+    /// A new volume or network. `attempted` is set once Create was pressed,
+    /// so an invalid name gets its sentence, and not before.
+    Create { kind: CreateKind, attempted: bool },
+    /// Clean up unused data, with what is ticked for it.
+    Prune(PruneOptions),
+}
+
+impl Sheet {
+    /// What the dialog is called, which is also its name to assistive
+    /// technology.
+    pub(crate) fn label(&self) -> String {
+        match self {
+            Sheet::Confirm(pending) => format!("{} {}?", pending.verb, pending.name),
+            Sheet::Create { kind, .. } => format!("New {}", kind.noun()),
+            Sheet::Prune(_) => "Clean up unused data".to_owned(),
+        }
+    }
+}
+
 pub(crate) struct ViewState {
     /// The real app opens on Overview once the graphs exist. Until then the
     /// table is the fully drawn surface.
@@ -52,7 +80,9 @@ pub(crate) struct ViewState {
     pub(crate) bulk_selected: BTreeSet<String>,
     pub(crate) toast: Option<Toast>,
     pub(crate) toast_task: Option<Task<()>>,
-    pub(crate) pending: Option<Pending>,
+    /// The sheet that is open, when one is. One slot, so two are never open
+    /// at once.
+    pub(crate) sheet: Option<Sheet>,
 
     // The forms: Runtimes' custom socket, and Images' pull and run.
     pub(crate) socket_input: Entity<InputState>,
@@ -68,13 +98,9 @@ pub(crate) struct ViewState {
     /// How many env values a clone left empty because they were redacted.
     pub(crate) run_env_missing: usize,
 
-    // The sheets: create a volume or network, and clean up.
-    pub(crate) create_kind: Option<CreateKind>,
+    // The sheets' own requests: the sheet closes when its request succeeds.
     pub(crate) create_name: Entity<InputState>,
-    pub(crate) create_attempted: bool,
     pub(crate) create_in_flight: bool,
-    pub(crate) prune_open: bool,
-    pub(crate) prune_options: PruneOptions,
     pub(crate) prune_in_flight: bool,
 
     // Keyboard focus: the page's own handle (rail, table and inspector; focus
@@ -183,7 +209,7 @@ impl ViewState {
             bulk_selected: BTreeSet::new(),
             toast: None,
             toast_task: None,
-            pending: None,
+            sheet: None,
             socket_input,
             creation_open: false,
             pull_input,
@@ -195,12 +221,8 @@ impl ViewState {
             pull_attempted: false,
             run_attempted: false,
             run_env_missing: 0,
-            create_kind: None,
             create_name,
-            create_attempted: false,
             create_in_flight: false,
-            prune_open: false,
-            prune_options: PruneOptions::default(),
             prune_in_flight: false,
             focus_handle: cx.focus_handle(),
             table_focus: cx.focus_handle().tab_stop(true),

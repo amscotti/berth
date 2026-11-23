@@ -84,9 +84,8 @@ impl BerthApp {
     /// The cleanup sheet with only options ticked that have nothing left.
     pub fn show_cleanup_with_nothing_to_do(&mut self, cx: &mut Context<Self>) {
         self.open_prune(cx);
-        self.view.prune_options.images = false;
-        self.view.prune_options.build_cache = false;
-        cx.notify();
+        self.toggle_prune_option(1, cx);
+        self.toggle_prune_option(4, cx);
     }
 
     pub fn show_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {

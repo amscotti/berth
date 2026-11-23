@@ -12,26 +12,16 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, FontWeight, Role, SharedString, div, px};
 
 use crate::app::{BerthApp, CreateKind, Pending};
+use crate::jobs::mutation::PruneOptions;
 use crate::ui::kit::{Button, button, caption, checkbox};
+use crate::view::Sheet;
 
 pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Option<AnyElement> {
-    let (label, panel) = if let Some(pending) = &app.view.pending {
-        (
-            format!("{} {}?", pending.verb, pending.name),
-            confirm_panel(app, pending, tokens, cx),
-        )
-    } else if let Some(kind) = app.view.create_kind {
-        (
-            format!("New {}", kind.noun()),
-            create_panel(app, kind, tokens, cx),
-        )
-    } else if app.view.prune_open {
-        (
-            "Clean up unused data".to_owned(),
-            prune_panel(app, tokens, cx),
-        )
-    } else {
-        return None;
+    let sheet = app.view.sheet.as_ref()?;
+    let panel = match sheet {
+        Sheet::Confirm(pending) => confirm_panel(app, pending, tokens, cx),
+        Sheet::Create { kind, .. } => create_panel(app, *kind, tokens, cx),
+        Sheet::Prune(options) => prune_panel(app, options, tokens, cx),
     };
 
     Some(
@@ -50,7 +40,7 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
                 div()
                     .id("sheet-panel")
                     .role(Role::Dialog)
-                    .aria_label(label)
+                    .aria_label(sheet.label())
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .w(px(SHEET_MAX_WIDTH))
                     .p(px(CARD_PADDING))
@@ -148,16 +138,19 @@ fn create_panel(
     cx: &mut Context<BerthApp>,
 ) -> Div {
     let name = app.view.create_name.read(cx).text().to_owned();
-    let error = app
-        .view
-        .create_attempted
-        .then(|| crate::app_forms::create_name_error(kind, &name, &app.snapshot.volumes))
-        .flatten();
+    // The sentence comes once Create was pressed with a name the rule
+    // refuses, and not before.
+    let error = match &app.view.sheet {
+        Some(Sheet::Create { attempted, .. }) if *attempted => {
+            crate::app_forms::create_name_error(kind, &name, &app.snapshot.volumes)
+        }
+        _ => None,
+    };
 
     let cancel = button("sheet-Cancel", "Cancel", tokens)
         .width(px(DIALOG_BUTTON_WIDTH))
         .focus(app.view.sheet_focus.cancel.clone())
-        .on_click(cx.listener(|this, _, _, cx| this.close_create(cx)));
+        .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)));
     let create = button("sheet-Create", "Create", tokens)
         .primary()
         .width(px(DIALOG_BUTTON_WIDTH))
@@ -191,14 +184,19 @@ const PRUNE_LABELS: [&str; 5] = [
     "Build cache",
 ];
 
-fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
+fn prune_panel(
+    app: &BerthApp,
+    options: &PruneOptions,
+    tokens: Tokens,
+    cx: &mut Context<BerthApp>,
+) -> Div {
     let build_supported = app.prune_build_supported();
-    let selected = app.prune_selected_bytes();
+    let selected = app.prune_selected_bytes(options);
 
     let cancel = button("sheet-Cancel", "Cancel", tokens)
         .width(px(DIALOG_BUTTON_WIDTH))
         .focus(app.view.sheet_focus.cancel.clone())
-        .on_click(cx.listener(|this, _, _, cx| this.close_prune(cx)));
+        .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)));
     // Cleaning up destroys, so it is the destructive button. It waits only
     // while berth can see there is nothing ticked that would go.
     let clean_up = button("sheet-Clean up", "Clean up", tokens)
@@ -206,7 +204,7 @@ fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Di
         .width(px(DIALOG_BUTTON_WIDTH))
         .focus(app.view.sheet_focus.clean_up.clone())
         .description("Tick something there is left to clean up")
-        .disabled(app.prune_has_work() == Some(false))
+        .disabled(app.prune_has_work(options) == Some(false))
         .on_click(cx.listener(|this, _, _, cx| this.run_prune(cx)));
 
     let mut panel = div()
@@ -248,7 +246,7 @@ fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Di
             field,
             label,
             app.prune_bytes(field),
-            app.prune_ticked(field),
+            app.prune_ticked(options, field),
             tokens,
             cx,
         ));
@@ -288,15 +286,5 @@ fn prune_option(
     )
     .figure(amount(app.prune_count(field), bytes))
     .focus(app.view.sheet_focus.options[field].clone())
-    .on_click(cx.listener(move |this, _, _, cx| {
-        let options = &mut this.view.prune_options;
-        match field {
-            0 => options.containers = !options.containers,
-            1 => options.images = !options.images,
-            2 => options.volumes = !options.volumes,
-            3 => options.networks = !options.networks,
-            _ => options.build_cache = !options.build_cache,
-        }
-        cx.notify();
-    }))
+    .on_click(cx.listener(move |this, _, _, cx| this.toggle_prune_option(field, cx)))
 }
