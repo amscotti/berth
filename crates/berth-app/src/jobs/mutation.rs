@@ -250,10 +250,16 @@ fn container_body(
             format!("{container_spec}/tcp")
         };
         exposed.insert(key.clone(), serde_json::json!({}));
-        bindings.insert(
-            key,
-            serde_json::json!([{ "HostIp": host_ip, "HostPort": host }]),
-        );
+        let host_binding = serde_json::json!({ "HostIp": host_ip, "HostPort": host });
+        match bindings
+            .get_mut(&key)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            Some(list) => list.push(host_binding),
+            None => {
+                bindings.insert(key, serde_json::Value::Array(vec![host_binding]));
+            }
+        }
     }
 
     let list = |text: &str| {
@@ -362,6 +368,19 @@ mod tests {
         );
         assert_eq!(value["HostConfig"]["Binds"][0], "data:/data");
         assert_eq!(value["Env"][0], "A=1");
+
+        // Multiple host bindings for the same container port are kept, not overwritten.
+        let multi = container_body("nginx", "", "127.0.0.1:8080:80, 10.0.0.1:8443:80", "", "")
+            .expect("body");
+        let multi: serde_json::Value = serde_json::from_slice(&multi).expect("json");
+        let list = multi["HostConfig"]["PortBindings"]["80/tcp"]
+            .as_array()
+            .expect("bindings array");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["HostIp"], "127.0.0.1");
+        assert_eq!(list[0]["HostPort"], "8080");
+        assert_eq!(list[1]["HostIp"], "10.0.0.1");
+        assert_eq!(list[1]["HostPort"], "8443");
     }
 
     #[test]

@@ -47,6 +47,15 @@ impl EngineOp {
             EngineOp::Restart => "restarting",
         }
     }
+
+    /// What the toast calls it once it has happened: "Stopped".
+    pub(crate) fn past(self) -> &'static str {
+        match self {
+            EngineOp::Start => "Started",
+            EngineOp::Stop => "Stopped",
+            EngineOp::Restart => "Restarted",
+        }
+    }
 }
 
 /// How long a machine command may run before berth stops waiting for it.
@@ -100,7 +109,7 @@ pub(super) fn run(op: EngineOp, kind: Kind, socket: &str) -> Outcome {
         }
     }
     Outcome {
-        message: format!("{verb} engine"),
+        message: format!("{} {}", op.past(), kind.label()),
         bad: false,
     }
 }
@@ -192,8 +201,16 @@ fn run_bounded(mut command: Command, limit: Duration) -> Result<(bool, String), 
             }
         }
     };
-    let stderr = stderr.join().unwrap_or_default();
-    status.map(|status| (status.success(), stderr))
+    match status {
+        // Only join stderr once the child exited cleanly: on a timeout, a
+        // background grandchild may still hold the pipe open, and waiting on
+        // it would wedge the single mutation slot indefinitely.
+        Ok(status) => {
+            let stderr = stderr.join().unwrap_or_default();
+            Ok((status.success(), stderr))
+        }
+        Err(failure) => Err(failure),
+    }
 }
 
 /// Read a pipe to its end on a new thread, and hand back what it held.
@@ -288,6 +305,28 @@ mod tests {
         let failure = run_bounded(command, Duration::from_millis(200)).expect_err("must give up");
         assert_eq!(failure, CommandFailure::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_timed_out_command_with_a_grandchild_holding_stderr_does_not_hang() {
+        let started = Instant::now();
+        let mut command = Command::new("sh");
+        // The background child inherits stderr; killing `sh` leaves that pipe
+        // open until the grandchild exits.
+        command.args(["-c", "sleep 4 & wait"]);
+        let failure = run_bounded(command, Duration::from_millis(150)).expect_err("must give up");
+        assert_eq!(failure, CommandFailure::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "must return promptly without waiting on grandchild stderr"
+        );
+    }
+
+    #[test]
+    fn engine_ops_name_their_past_tense_for_toasts() {
+        assert_eq!(EngineOp::Start.past(), "Started");
+        assert_eq!(EngineOp::Stop.past(), "Stopped");
+        assert_eq!(EngineOp::Restart.past(), "Restarted");
     }
 
     #[test]

@@ -28,12 +28,14 @@ impl BerthApp {
             return;
         };
         let data = self.settings();
+        let ticket = settings::next_save_ticket();
         // Deliberately not held on to: a save must outlive the state that
-        // asked for it, and nothing waits on it.
+        // asked for it, and nothing waits on it. Ordered tickets ensure an
+        // older overlapping save never reverts a newer one.
         cx.spawn(async move |this, cx| {
             let written = cx
                 .background_executor()
-                .spawn(async move { settings::save_to(&path, &data) })
+                .spawn(async move { settings::save_ordered(&path, &data, ticket) })
                 .await;
             if let Err(error) = written {
                 this.update(cx, |app, cx| {
@@ -46,14 +48,19 @@ impl BerthApp {
     }
 
     /// The window moved, or was resized. Remember where, and write it once
-    /// it has been still for a moment.
+    /// it has been still for a moment. Skips scheduling a disk write when
+    /// the bounds match what is already remembered (such as on launch).
     pub(crate) fn remember_window(
         &mut self,
         frame: Bounds<Pixels>,
         content: Size<Pixels>,
         cx: &mut Context<Self>,
     ) {
-        self.window = Some(settings::Window::of(frame, content));
+        let next = settings::Window::of(frame, content);
+        if self.window == Some(next) {
+            return;
+        }
+        self.window = Some(next);
         // Starting the wait again cancels the one before it.
         self.settings_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(SETTLE).await;

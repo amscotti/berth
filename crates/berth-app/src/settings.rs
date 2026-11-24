@@ -6,11 +6,29 @@
 //! itself and renamed over itself, so an interrupted save leaves the old
 //! preferences whole rather than half of the new ones.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use berth_ui::layout;
 use gpui::{App, Bounds, Pixels, Size, point, px, size};
 use serde::{Deserialize, Serialize};
+
+/// Monotonic sequence so concurrent or direct saves never share one `.tmp` name.
+static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// Monotonic ticket assigned on the caller's thread to preserve save order.
+static SAVE_TICKET: AtomicU64 = AtomicU64::new(1);
+
+fn save_lock() -> &'static Mutex<HashMap<PathBuf, u64>> {
+    static LOCK: OnceLock<Mutex<HashMap<PathBuf, u64>>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Reserve an ordered ticket for an upcoming asynchronous save.
+pub fn next_save_ticket() -> u64 {
+    SAVE_TICKET.fetch_add(1, Ordering::SeqCst)
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -61,10 +79,10 @@ impl Window {
     }
 
     /// The rect to open the window with, if that is a window berth can
-    /// open: no smaller than its minimum, and with its middle on a
-    /// display, so it is somewhere a person can find it. A display
-    /// unplugged since, or a size from an older build, puts it back in the
-    /// usual place.
+    /// open: no smaller than its minimum, with its middle on a display, and
+    /// clamped inside that display so its titlebar and edges remain reachable.
+    /// A display unplugged since, or a size from an older build, puts it back
+    /// in the usual place.
     pub fn bounds(
         self,
         minimum: Size<Pixels>,
@@ -78,10 +96,19 @@ impl Window {
             return None;
         }
         let middle = bounds.center();
-        displays
-            .iter()
-            .any(|display| display.contains(&middle))
-            .then_some(bounds)
+        let display = displays.iter().find(|display| display.contains(&middle))?;
+        let width = bounds.size.width.min(display.size.width.max(minimum.width));
+        let height = bounds
+            .size
+            .height
+            .min(display.size.height.max(minimum.height));
+        let min_x = display.origin.x;
+        let max_x = (display.origin.x + display.size.width - width).max(min_x);
+        let min_y = display.origin.y;
+        let max_y = (display.origin.y + display.size.height - height).max(min_y);
+        let x = bounds.origin.x.clamp(min_x, max_x);
+        let y = bounds.origin.y.clamp(min_y, max_y);
+        Some(Bounds::new(point(x, y), size(width, height)))
     }
 }
 
@@ -132,6 +159,22 @@ pub fn opening_bounds(saved: &Data, cx: &App) -> Bounds<Pixels> {
         })
 }
 
+/// Serialize saves to `path` and skip any write superseded by a newer ticket.
+pub fn save_ordered(path: &Path, data: &Data, ticket: u64) -> std::io::Result<()> {
+    let mut guard = save_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard
+        .get(path)
+        .is_some_and(|&last_written| ticket < last_written)
+    {
+        return Ok(());
+    }
+    save_to(path, data)?;
+    guard.insert(path.to_path_buf(), ticket);
+    Ok(())
+}
+
 pub fn save_to(path: &Path, data: &Data) -> std::io::Result<()> {
     use std::io::Write;
 
@@ -139,10 +182,11 @@ pub fn save_to(path: &Path, data: &Data) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let body = serde_json::to_vec_pretty(data)?;
-    // Beside the file, on the same volume, so the rename that follows is one
-    // step and not a copy.
+    // Beside the file, on the same volume, with a unique sequence so concurrent
+    // writes never collide on one temporary file, and the rename is one step.
+    let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let temporary = path.with_file_name(format!(
-        "{}.{}.tmp",
+        "{}.{}.{seq}.tmp",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("settings.json"),
@@ -216,20 +260,54 @@ mod tests {
         };
         save_to(&path, &old).expect("save");
 
-        // A crash part-way through a save leaves berth's temporary file
-        // beside the preferences, holding half of the new ones.
+        // A crash part-way through a save leaves a temporary file beside the
+        // preferences, holding half of the new ones.
         let half_written = path.with_file_name(format!("settings.json.{}.tmp", std::process::id()));
         std::fs::write(&half_written, br#"{"appearance":"light"#).expect("write");
         assert_eq!(load_from(&path), old, "the old preferences are whole");
 
-        // The next save isn't blocked by it, and leaves nothing behind.
+        // The next save isn't blocked by it and leaves no new temporary file.
         let new = Data {
             appearance: Appearance::Light,
             ..Data::default()
         };
         save_to(&path, &new).expect("save");
         assert_eq!(load_from(&path), new);
-        assert!(!half_written.exists(), "the temporary file went with it");
+        let new_litter: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read dir")
+            .map(|entry| entry.expect("entry").file_name())
+            .filter(|name| {
+                let name = name.to_string_lossy();
+                name.ends_with(".tmp")
+                    && name != half_written.file_name().unwrap().to_string_lossy()
+            })
+            .collect();
+        assert!(
+            new_litter.is_empty(),
+            "no new temp files left: {new_litter:?}"
+        );
+    }
+
+    #[test]
+    fn ordered_saves_never_revert_to_an_older_ticket() {
+        let dir = TempDir::new("settings-ordered");
+        let path = dir.path().join("settings.json");
+        let older = next_save_ticket();
+        let newer = next_save_ticket();
+        let newest_data = Data {
+            appearance: Appearance::Dark,
+            socket: "/tmp/new.sock".into(),
+            window: None,
+        };
+        let older_data = Data {
+            appearance: Appearance::Light,
+            socket: "/tmp/old.sock".into(),
+            window: None,
+        };
+        // Even if the newer ticket hits disk first, the older one is skipped.
+        save_ordered(&path, &newest_data, newer).expect("newer");
+        save_ordered(&path, &older_data, older).expect("older skipped");
+        assert_eq!(load_from(&path), newest_data);
     }
 
     #[test]
@@ -337,5 +415,43 @@ mod tests {
         assert_eq!(tiny.bounds(minimum, &[display()]), None);
         // Nowhere shown at all.
         assert_eq!(left.bounds(minimum, &[]), None);
+    }
+
+    #[test]
+    fn restored_bounds_clamp_titlebar_and_oversized_windows_to_the_display() {
+        let minimum = size(px(layout::WINDOW_MIN.0), px(layout::WINDOW_MIN.1));
+        let laptop = Bounds::new(point(px(0.0), px(0.0)), size(px(1440.0), px(900.0)));
+
+        // Titlebar dragged above the top of the display: center is still on screen,
+        // so it reopens clamped down to the display's top edge.
+        let high = Window {
+            x: 100,
+            y: -60,
+            width: 1100,
+            height: 700,
+        };
+        assert_eq!(
+            high.bounds(minimum, &[laptop]),
+            Some(Bounds::new(
+                point(px(100.0), px(0.0)),
+                size(px(1100.0), px(700.0))
+            ))
+        );
+
+        // Saved large on an external display, reopened on a smaller laptop display:
+        // shrinks to fit and stays inside the display.
+        let huge = Window {
+            x: 50,
+            y: 50,
+            width: 2000,
+            height: 1200,
+        };
+        assert_eq!(
+            huge.bounds(minimum, &[laptop]),
+            Some(Bounds::new(
+                point(px(0.0), px(0.0)),
+                size(px(1440.0), px(900.0))
+            ))
+        );
     }
 }

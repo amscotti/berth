@@ -362,13 +362,11 @@ fn run_command(detail: &ContainerDetail, redacted: &mut bool) -> Option<String> 
     Some(out)
 }
 
-/// The words of a list the engine may leave out or leave empty.
+/// The words of a list the engine may leave out or leave empty. Intentional
+/// empty-string arguments (such as `Entrypoint: [""]` or `["--prefix", ""]`)
+/// are preserved so the copied command reproduces them.
 fn words(list: &Option<Vec<String>>) -> Vec<&str> {
-    list.iter()
-        .flatten()
-        .map(String::as_str)
-        .filter(|word| !word.is_empty())
-        .collect()
+    list.iter().flatten().map(String::as_str).collect()
 }
 
 fn append_labels(out: &mut String, labels: Option<&Value>) {
@@ -401,9 +399,6 @@ fn append_ports(out: &mut String, bindings: Option<&Value>) {
                 .get("HostPort")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if host_port.is_empty() {
-                continue;
-            }
             let host_ip = host
                 .get("HostIp")
                 .and_then(Value::as_str)
@@ -411,13 +406,25 @@ fn append_ports(out: &mut String, bindings: Option<&Value>) {
             let container = container_port
                 .strip_suffix("/tcp")
                 .unwrap_or(container_port);
+            let specific_ip = !host_ip.is_empty() && !matches!(host_ip, "0.0.0.0" | "::");
             out.push_str(" -p ");
-            if !host_ip.is_empty() && !matches!(host_ip, "0.0.0.0" | "::") {
-                out.push_str(host_ip);
+            if specific_ip {
+                if host_ip.contains(':') && !host_ip.starts_with('[') {
+                    out.push('[');
+                    out.push_str(host_ip);
+                    out.push(']');
+                } else {
+                    out.push_str(host_ip);
+                }
                 out.push(':');
             }
-            out.push_str(host_port);
-            out.push(':');
+            if !host_port.is_empty() {
+                out.push_str(host_port);
+                out.push(':');
+            } else if specific_ip {
+                // `ip::container` binds an ephemeral host port on that address.
+                out.push(':');
+            }
             out.push_str(container);
         }
     }

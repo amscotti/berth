@@ -101,8 +101,17 @@ impl MutationKind {
         matches!(
             (self, sheet),
             (
-                MutationKind::CreateVolume { .. } | MutationKind::CreateNetwork { .. },
-                Sheet::Create { .. }
+                MutationKind::CreateVolume { .. },
+                Sheet::Create {
+                    kind: crate::app::CreateKind::Volume,
+                    ..
+                }
+            ) | (
+                MutationKind::CreateNetwork { .. },
+                Sheet::Create {
+                    kind: crate::app::CreateKind::Network,
+                    ..
+                }
             ) | (MutationKind::Prune, Sheet::Prune(_))
         )
     }
@@ -268,6 +277,21 @@ mod tests {
             name: "data".into(),
         };
         assert!(create.frees(&Sheet::Create {
+            kind: crate::app::CreateKind::Volume,
+            attempted: true
+        }));
+        assert!(!create.frees(&Sheet::Create {
+            kind: crate::app::CreateKind::Network,
+            attempted: true
+        }));
+        let create_net = MutationKind::CreateNetwork {
+            name: "back".into(),
+        };
+        assert!(create_net.frees(&Sheet::Create {
+            kind: crate::app::CreateKind::Network,
+            attempted: true
+        }));
+        assert!(!create_net.frees(&Sheet::Create {
             kind: crate::app::CreateKind::Volume,
             attempted: true
         }));

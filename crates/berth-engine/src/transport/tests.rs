@@ -164,3 +164,35 @@ fn a_sample_that_completely_arrived_ends_at_once() {
     assert_eq!(response.body, b"onetwo");
     assert!(started.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+fn a_truncated_content_length_response_fails() {
+    let engine = MockEngine::start();
+    engine.on("*").reply(Reply::Truncated {
+        promised: 100,
+        sent: 12,
+    });
+    let error = UnixClient::new(engine.socket())
+        .request("GET", "/", b"")
+        .expect_err("short content-length body must fail");
+    assert!(matches!(error, TransportError::Malformed("short body")));
+}
+
+#[test]
+fn a_sampled_content_length_body_truncates_to_bytes_read() {
+    let engine = serve_then_hang(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nhello");
+    let response = sample(&engine).expect("headers arrived");
+    assert_eq!(response.body, b"hello");
+}
+
+#[test]
+fn an_unsupported_transfer_encoding_is_refused() {
+    let engine = serve(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: gzip\r\n\r\nabc");
+    let error = UnixClient::new(engine.socket())
+        .request("GET", "/", b"")
+        .expect_err("unsupported transfer-encoding must fail");
+    assert!(matches!(
+        error,
+        TransportError::Malformed("unsupported transfer-encoding")
+    ));
+}

@@ -143,8 +143,10 @@ impl History {
         self.mem_known[..self.count].iter().all(|known| *known)
     }
 
+    /// The latest CPU reading, or `None` when the ring is empty or the latest
+    /// pass did not have a complete measurement.
     pub fn latest_cpu(&self) -> Option<f32> {
-        (self.count > 0).then(|| self.cpu[self.count - 1])
+        (self.count > 0 && self.cpu_known[self.count - 1]).then(|| self.cpu[self.count - 1])
     }
 }
 
@@ -214,9 +216,29 @@ mod tests {
     }
 
     #[test]
-    fn the_latest_cpu_is_independent_of_known_flags() {
+    fn the_latest_cpu_is_none_when_the_latest_pass_is_unknown() {
         let mut history = History::default();
+        assert_eq!(history.latest_cpu(), None);
+
+        // First pass unknown: must not report a fabricated 0.0%.
+        history.push(Sample {
+            cpu_known: false,
+            ..sample(0.0, 0.0)
+        });
+        assert_eq!(history.latest_cpu(), None);
+
+        // Known pass reports its reading.
         history.push(sample(4.0, 8.0));
+        assert_eq!(history.latest_cpu(), Some(4.0));
+
+        // Follow-up unknown pass holds the graph value, but latest_cpu stays honest.
+        history.push(Sample {
+            cpu_known: false,
+            ..sample(0.0, 8.0)
+        });
+        assert_eq!(history.values(Which::Cpu), &[0.0, 4.0, 4.0]);
+        assert_eq!(history.latest_cpu(), None);
+
         history.push(sample(2.0, 3.0));
         assert_eq!(history.latest_cpu(), Some(2.0));
     }

@@ -186,3 +186,29 @@ fn a_run_command_carries_what_the_container_runs_as_and_with() {
     );
     assert!(!facts.run_redacted);
 }
+
+#[test]
+fn run_command_brackets_ipv6_keeps_ephemeral_ports_and_empty_args() {
+    let raw = br#"{
+        "Name":"/edge",
+        "Config":{
+            "Image":"app:1",
+            "Entrypoint":[""],
+            "Cmd":["--prefix",""]
+        },
+        "HostConfig":{
+            "PortBindings":{
+                "80/tcp":[{"HostIp":"::1","HostPort":"8080"}],
+                "443/tcp":[{"HostIp":"","HostPort":""}],
+                "53/udp":[{"HostIp":"127.0.0.1","HostPort":""}]
+            }
+        }
+    }"#;
+    let facts = InspectFacts::from_inspect(raw).expect("parse");
+    let cmd = facts.run_cmd.expect("run command");
+    assert!(cmd.contains(" --entrypoint '' "), "{cmd}");
+    assert!(cmd.contains(" -p [::1]:8080:80"), "{cmd}");
+    assert!(cmd.contains(" -p 443"), "{cmd}");
+    assert!(cmd.contains(" -p 127.0.0.1::53/udp"), "{cmd}");
+    assert!(cmd.ends_with(" app:1 --prefix ''"), "{cmd}");
+}

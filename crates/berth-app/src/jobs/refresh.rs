@@ -226,7 +226,10 @@ mod tests {
         let outcome = load(request(engine.socket())).expect("pass");
         assert_eq!(outcome.snapshot.containers.len(), 1);
         assert!(outcome.snapshot.stats_complete());
-        assert_eq!(outcome.snapshot.stat(0).pids, Some(5));
+        let stat = outcome.snapshot.stat(0);
+        assert!(stat.cpu_known, "live stats JSON must decode CPU usage");
+        assert!((stat.cpu - 40.0).abs() < 0.001, "got cpu {}", stat.cpu);
+        assert_eq!(stat.pids, Some(5));
         assert_eq!(outcome.generation, 3);
         let df = outcome.df.expect("df requested").expect("df ok");
         assert_eq!(df.reclaimable(), 40);

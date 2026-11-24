@@ -102,8 +102,9 @@ pub fn describe(failure: &Failure) -> String {
         Kind::LongReference => "That reference is too long.".into(),
         Kind::EmptyImage => "Enter an image to run.".into(),
         Kind::BadImage => format!(
-            "Image {} has characters an engine will reject.",
-            failure.detail
+            "Image {} {}.",
+            failure.detail,
+            image_ref::reference_problem(&failure.detail).unwrap_or("is not a valid reference")
         ),
         Kind::LongImage => "That image reference is too long.".into(),
         Kind::BadName => "Container names are letters, digits, dot, dash and underscore.".into(),
@@ -118,8 +119,20 @@ pub fn describe(failure: &Failure) -> String {
                 )
             }
         }
-        Kind::BadVolume => format!("Volume {} needs source:container.", failure.detail),
-        Kind::BadEnv => format!("Environment {} needs KEY=value.", failure.detail),
+        Kind::BadVolume => {
+            if failure.detail.is_empty() {
+                "A volume needs source:container.".to_owned()
+            } else {
+                format!("Volume {} needs source:container.", failure.detail)
+            }
+        }
+        Kind::BadEnv => {
+            if failure.detail.is_empty() {
+                "An environment entry needs KEY=value.".to_owned()
+            } else {
+                format!("Environment {} needs KEY=value.", failure.detail)
+            }
+        }
         Kind::LongOptions => "That options list is too long.".into(),
     }
 }
@@ -169,12 +182,19 @@ mod tests {
             describe(&failure),
             "Reference nginx:: has an empty or oversized tag."
         );
-        // A trailing comma is an empty entry: say which shape is wanted.
+        let failure = run("NGINX", "", "", "", "").unwrap();
+        assert_eq!(describe(&failure), "Image NGINX needs a lowercase name.");
+        // A trailing comma is an empty entry: say which shape is wanted without
+        // leaving a double space where the offending value would sit.
         let failure = run("nginx", "", "8080:80,", "", "").unwrap();
         assert_eq!(
             describe(&failure),
             "A port needs host:container or ip:host:container."
         );
+        let failure = run("nginx", "", "", "data:/data,", "").unwrap();
+        assert_eq!(describe(&failure), "A volume needs source:container.");
+        let failure = run("nginx", "", "", "", "A=1,").unwrap();
+        assert_eq!(describe(&failure), "An environment entry needs KEY=value.");
         // An empty value is a way to set an empty variable, not an error.
         assert!(run("nginx", "", "", "", "EMPTY=").is_none());
     }

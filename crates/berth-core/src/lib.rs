@@ -1,5 +1,6 @@
-//! Pure berth logic: formatting, history, and (later) stats math, image
-//! references, validation and projects. No GPUI, no sockets, no filesystem.
+//! Pure berth logic: formatting, sample history, image references,
+//! single-line text editing, and form validation. No GPUI, no sockets, no
+//! filesystem.
 
 pub mod format;
 pub mod history;

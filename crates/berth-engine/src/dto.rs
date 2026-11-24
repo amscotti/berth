@@ -473,13 +473,9 @@ pub struct CpuStats {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CpuUsage {
-    #[serde(rename = "TotalUsage")]
     pub total_usage: u64,
-    #[serde(rename = "PercpuUsage")]
     pub percpu_usage: Vec<u64>,
-    #[serde(rename = "UsageInKernelmode")]
     pub usage_in_kernelmode: u64,
-    #[serde(rename = "UsageInUsermode")]
     pub usage_in_usermode: u64,
 }
 

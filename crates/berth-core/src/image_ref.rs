@@ -27,7 +27,7 @@ pub fn reference_problem(reference: &str) -> Option<&'static str> {
 
     // Take off the digest, then the tag. A colon after the last slash starts a
     // tag; anywhere else it is a registry port.
-    let (name, digest) = match reference.split_once('@') {
+    let name = match reference.split_once('@') {
         Some((name, digest)) => {
             if digest.contains('@') {
                 return Some("has more than one digest separator");
@@ -37,9 +37,9 @@ pub fn reference_problem(reference: &str) -> Option<&'static str> {
                 Some(_) => return Some("has an empty digest"),
                 None => return Some("has a digest without an algorithm"),
             }
-            (name, true)
+            name
         }
-        None => (reference, false),
+        None => reference,
     };
     let last_slash = name.rfind('/').map_or(0, |at| at + 1);
     let (path, tag) = match name[last_slash..].rfind(':').map(|at| last_slash + at) {
@@ -49,9 +49,6 @@ pub fn reference_problem(reference: &str) -> Option<&'static str> {
     if tag.is_some_and(|tag| tag.is_empty() || tag.len() > 128) {
         return Some("has an empty or oversized tag");
     }
-    if digest && tag.is_some() {
-        return Some("has both a tag and a digest");
-    }
 
     // The first part may be a registry domain, which may have any case and a
     // port but needs a path after it. Every other part is a repository name.
@@ -59,7 +56,7 @@ pub fn reference_problem(reference: &str) -> Option<&'static str> {
     let first = components.next().unwrap_or("");
     let rest = components.clone().count();
     let is_domain =
-        first.contains('.') || first == "localhost" || (first.contains(':') && rest > 0);
+        rest > 0 && (first.contains('.') || first == "localhost" || first.contains(':'));
     if first.is_empty() {
         return Some("has an empty path part");
     }
@@ -195,6 +192,7 @@ mod tests {
     #[test]
     fn references_the_engine_rejects_name_their_problem() {
         let digest = format!("alpine@sha256:{}", "a".repeat(64));
+        let tagged_digest = format!("nginx:latest@sha256:{}", "b".repeat(64));
         for good in [
             "nginx",
             "nginx:alpine",
@@ -203,16 +201,17 @@ mod tests {
             "Docker.io/library/alpine",
             "a-b.c/d",
             digest.as_str(),
+            tagged_digest.as_str(),
         ] {
             assert_eq!(reference_problem(good), None, "{good}");
         }
         for (bad, problem) in [
             ("nginx::", "has an empty or oversized tag"),
-            ("nginx:latest@sha256:abc", "has both a tag and a digest"),
             ("nginx:alpine:latest", "needs a lowercase name"),
             ("alpine@sha256:", "has an empty digest"),
             ("alpine@abc", "has a digest without an algorithm"),
             ("NGINX", "needs a lowercase name"),
+            ("Docker.io", "needs a lowercase name"),
             ("ghcr.io/Org/app", "needs a lowercase name"),
             (":tag", "has an empty path part"),
             ("ghcr.io//app", "has an empty path part"),

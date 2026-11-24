@@ -280,10 +280,34 @@ fn read_headers(
     }
 }
 
-fn is_chunked(headers: &[(String, String)]) -> bool {
-    headers.iter().any(|(key, value)| {
-        key == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")
-    })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransferEncoding {
+    None,
+    Chunked,
+    Unsupported,
+}
+
+fn transfer_encoding(headers: &[(String, String)]) -> TransferEncoding {
+    let mut tokens = Vec::new();
+    for (key, value) in headers {
+        if key == "transfer-encoding" {
+            for part in value.split(',') {
+                let token = part.trim().to_ascii_lowercase();
+                if !token.is_empty() {
+                    tokens.push(token);
+                }
+            }
+        }
+    }
+    if tokens.is_empty() {
+        TransferEncoding::None
+    } else if tokens.len() == 1 && tokens[0] == "chunked" {
+        TransferEncoding::Chunked
+    } else if tokens.len() == 1 && tokens[0] == "identity" {
+        TransferEncoding::None
+    } else {
+        TransferEncoding::Unsupported
+    }
 }
 
 fn content_length(headers: &[(String, String)]) -> Option<usize> {
@@ -301,8 +325,12 @@ fn read_body(
     if status == 204 || status == 304 || (100..200).contains(&status) {
         return Ok(Vec::new());
     }
-    if is_chunked(headers) {
-        return reader.read_chunked();
+    match transfer_encoding(headers) {
+        TransferEncoding::Chunked => return reader.read_chunked(),
+        TransferEncoding::Unsupported => {
+            return Err(TransportError::Malformed("unsupported transfer-encoding"));
+        }
+        TransferEncoding::None => {}
     }
     match content_length(headers) {
         Some(length) if length > MAX_BODY_BYTES => Err(TransportError::BodyTooLarge),
@@ -389,24 +417,29 @@ impl<'a> DeadlineReader<'a> {
         Ok(n)
     }
 
-    /// Fill `out` completely. False when the stream ended first.
-    fn read_exact_slice(&mut self, out: &mut [u8]) -> Result<bool, TransportError> {
+    /// Read up to `out.len()` bytes, returning how many actually arrived.
+    /// Fewer than `out.len()` means the stream ended first.
+    fn read_exact_slice(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
         let mut read = 0;
         while read < out.len() {
             let n = self.fill(&mut out[read..])?;
             if n == 0 {
-                return Ok(false);
+                return Ok(read);
             }
             read += n;
         }
-        Ok(true)
+        Ok(read)
     }
 
-    /// A body of known length. A sample may be cut short; a request may not.
+    /// A body of known length. A sample may be cut short (keeping only the
+    /// bytes that arrived); a request may not.
     fn read_body_of(&mut self, len: usize) -> Result<Vec<u8>, TransportError> {
         let mut out = vec![0u8; len];
-        let complete = self.read_exact_slice(&mut out)?;
-        if complete || self.sampling() {
+        let read = self.read_exact_slice(&mut out)?;
+        if read == len {
+            Ok(out)
+        } else if self.sampling() {
+            out.truncate(read);
             Ok(out)
         } else {
             Err(TransportError::Malformed("short body"))
@@ -481,12 +514,12 @@ impl<'a> DeadlineReader<'a> {
             }
             let start = out.len();
             out.resize(start + size, 0);
-            if !self.read_exact_slice(&mut out[start..])? {
+            if self.read_exact_slice(&mut out[start..])? < size {
                 out.truncate(start);
                 return self.ended(out, "short body");
             }
             let mut terminator = [0u8; 2];
-            if !self.read_exact_slice(&mut terminator)? {
+            if self.read_exact_slice(&mut terminator)? < 2 {
                 return self.ended(out, "missing chunk terminator");
             }
             if &terminator != b"\r\n" {

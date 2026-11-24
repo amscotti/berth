@@ -178,7 +178,14 @@ impl Client {
 
     pub fn volumes(&self) -> Result<Vec<Volume>, ClientError> {
         let response: crate::dto::ListResponse<Volume> = self.get("/volumes", DEFAULT_TIMEOUT)?;
-        Ok(response.volumes.unwrap_or_default())
+        let volumes = response.volumes.unwrap_or_default();
+        if volumes.len() > guards::MAX_ENTRIES {
+            return Err(ClientError::Availability(format!(
+                "refusing to parse (availability limit — more than {} entries)",
+                guards::MAX_ENTRIES
+            )));
+        }
+        Ok(volumes)
     }
 
     pub fn networks(&self) -> Result<Vec<Network>, ClientError> {
@@ -331,7 +338,7 @@ impl Client {
         if response.body.is_empty() {
             return Ok(0);
         }
-        let value: serde_json::Value = serde_json::from_slice(&response.body)?;
+        let value: serde_json::Value = self.parse(&response.body)?;
         Ok(value
             .get("SpaceReclaimed")
             .and_then(serde_json::Value::as_u64)
@@ -498,6 +505,32 @@ mod tests {
         engine.on("GET /containers/json").ok(body);
         let client = Client::new(engine.socket());
         let error = client.containers().expect_err("must refuse");
+        assert!(matches!(error, ClientError::Availability(_)));
+    }
+
+    #[test]
+    fn volumes_over_the_cap_and_deep_prune_answers_are_refused() {
+        let mut body = String::from(r#"{"Volumes":["#);
+        for i in 0..(guards::MAX_ENTRIES + 1) {
+            if i > 0 {
+                body.push(',');
+            }
+            body.push_str("{}");
+        }
+        body.push_str("]}");
+        let deep = format!("{}{}", "[".repeat(65), "]".repeat(65));
+        let engine = MockEngine::start();
+        engine
+            .on("GET /volumes")
+            .ok(body)
+            .on("POST /containers/prune")
+            .ok(deep);
+        let client = Client::new(engine.socket());
+        let error = client.volumes().expect_err("volumes over cap must refuse");
+        assert!(matches!(error, ClientError::Availability(_)));
+        let error = client
+            .prune("/containers/prune")
+            .expect_err("deep prune body must refuse");
         assert!(matches!(error, ClientError::Availability(_)));
     }
 

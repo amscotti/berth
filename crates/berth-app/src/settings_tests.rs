@@ -96,3 +96,48 @@ fn a_save_that_fails_is_said(cx: &mut TestAppContext) {
         "the failure reached the person: {toast:?}"
     );
 }
+
+#[gpui::test]
+fn unchanged_launch_bounds_do_not_schedule_a_redundant_write(cx: &mut TestAppContext) {
+    let dir = TempDir::new("settings-unchanged");
+    let path = dir.path().join("settings.json");
+    let (app, cx) = testkit::fixture(cx);
+    app.update_in(cx, |app, window, cx| {
+        let initial = settings::Window::of(window.bounds(), window.viewport_size());
+        app.settings_file = Some(path.clone());
+        app.window = Some(initial);
+        app.remember_window(window.bounds(), window.viewport_size(), cx);
+    });
+    settle(cx);
+    assert!(
+        !path.exists(),
+        "matching bounds at launch must not trigger a disk write"
+    );
+}
+
+#[gpui::test]
+fn overlapping_saves_do_not_race_or_lose_the_latest_preference(cx: &mut TestAppContext) {
+    let dir = TempDir::new("settings-concurrent");
+    let path = dir.path().join("settings.json");
+    let (app, cx) = testkit::fixture(cx);
+    app.update(cx, |app, cx| {
+        app.settings_file = Some(path.clone());
+        for i in 0..8 {
+            app.appearance = if i % 2 == 0 {
+                Appearance::Light
+            } else {
+                Appearance::Dark
+            };
+            app.engine.preferred_socket = Some(format!("/tmp/sock-{i}.sock"));
+            app.save_settings(cx);
+        }
+    });
+    cx.run_until_parked();
+    assert!(
+        app.read_with(&*cx, |app, _| app.view.toast.is_none()),
+        "overlapping saves must not produce a failure toast"
+    );
+    let saved = settings::load_from(&path);
+    assert_eq!(saved.appearance, Appearance::Dark);
+    assert_eq!(saved.socket, "/tmp/sock-7.sock");
+}

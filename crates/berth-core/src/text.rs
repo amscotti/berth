@@ -182,11 +182,11 @@ impl TextBuffer {
     }
 
     pub fn backspace(&mut self) {
-        self.begin_step(false);
-        if self.delete_selection() {
+        if self.selection().is_none() && self.cursor == 0 {
             return;
         }
-        if self.cursor == 0 {
+        self.begin_step(false);
+        if self.delete_selection() {
             return;
         }
         let start = self.prev_boundary(self.cursor);
@@ -195,11 +195,11 @@ impl TextBuffer {
     }
 
     pub fn delete(&mut self) {
-        self.begin_step(false);
-        if self.delete_selection() {
+        if self.selection().is_none() && self.cursor >= self.value.len() {
             return;
         }
-        if self.cursor >= self.value.len() {
+        self.begin_step(false);
+        if self.delete_selection() {
             return;
         }
         let end = self.next_boundary(self.cursor);
@@ -518,5 +518,23 @@ mod tests {
             undone += 1;
         }
         assert_eq!(undone, MAX_UNDO);
+    }
+
+    #[test]
+    fn no_op_backspace_and_delete_preserve_undo_and_redo() {
+        let mut b = buffer("");
+        b.insert("hello");
+        assert!(b.undo());
+        assert_eq!(b.text(), "");
+        // Backspace at start of buffer does nothing and must not wipe redo.
+        b.backspace();
+        assert!(!b.undo());
+        assert!(b.redo());
+        assert_eq!(b.text(), "hello");
+        // Delete at end of buffer does nothing and must not add an undo step.
+        b.delete();
+        assert!(b.undo());
+        assert_eq!(b.text(), "");
+        assert!(!b.undo());
     }
 }
