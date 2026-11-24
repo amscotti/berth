@@ -44,6 +44,8 @@ mod testkit;
 mod tray;
 mod ui;
 mod view;
+#[cfg(test)]
+mod views_tests;
 
 use berth_commands::app_actions::Quit;
 use berth_commands::{Platform, install_keymap, menus};

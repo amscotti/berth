@@ -8,7 +8,7 @@
 
 use gpui::{App, Context, FocusHandle, Window};
 
-use crate::app::BerthApp;
+use crate::app::{BerthApp, SearchKind, Tab};
 use crate::app_forms::PRUNE_OPTIONS;
 use crate::view::Sheet;
 
@@ -121,7 +121,23 @@ impl BerthApp {
             // window left with nothing focused.
             before.focus(window, cx);
         }
-        if window.focused(cx).is_none() {
+        let active_search = match self.view.tab {
+            Tab::Containers => Some(SearchKind::Containers),
+            Tab::Images => Some(SearchKind::Images),
+            Tab::Volumes => Some(SearchKind::Volumes),
+            Tab::Networks => Some(SearchKind::Networks),
+            Tab::Events => Some(SearchKind::Events),
+            _ => None,
+        };
+        let stranded_search = SearchKind::ALL.into_iter().any(|kind| {
+            Some(kind) != active_search
+                && self.view.lists[kind as usize]
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+        });
+        if window.focused(cx).is_none() || stranded_search {
             self.view.focus_handle.focus(window, cx);
         }
     }
