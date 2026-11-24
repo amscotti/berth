@@ -8,8 +8,8 @@ use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{Context, Div, FontWeight, IntoElement, SharedString, div, px};
 
+use super::data_table::pill;
 use super::inspect_shared::{fact, inspector_button, inspector_delete, pane_shell, short_id};
-use super::table::pill;
 use super::tabular;
 use crate::actions::{Pending, Removal, Target};
 use crate::app::BerthApp;

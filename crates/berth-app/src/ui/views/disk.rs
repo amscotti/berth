@@ -12,7 +12,7 @@ use gpui::{AnyElement, Context, Div, FontWeight, Hsla, div, px};
 use crate::app::BerthApp;
 use crate::ui::graph;
 use crate::ui::kit::{button, caption, card, card_title};
-use crate::ui::table::{empty_state, page_header};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;

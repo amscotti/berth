@@ -16,10 +16,9 @@
 
 use gpui::prelude::*;
 use gpui::{
-    ClickEvent, Div, ElementId, FocusHandle, Hsla, Role, SharedString, Stateful, Window, div, px,
+    ClickEvent, Div, ElementId, FocusHandle, Hsla, Role, SharedString, Stateful, Window, div,
 };
 
-use berth_ui::layout;
 use berth_ui::theme::Tokens;
 
 mod button;
@@ -47,22 +46,6 @@ pub(crate) fn link(
 ) -> Stateful<Div> {
     focusable(div().id(id), tokens.focus_ring())
         .role(Role::Link)
-        .aria_label(label)
-}
-
-/// A table. It is one tab stop for all of its rows: a hundred rows must not
-/// mean a hundred presses. The arrow keys move inside it, and the selected
-/// row is what assistive technology reads out.
-pub(crate) fn table(id: &'static str, label: &'static str, tokens: Tokens) -> Stateful<Div> {
-    focusable(div().id(id), tokens.focus_ring())
-        .rounded(px(layout::RADIUS_ROW))
-        // The hairline that the focus ring is drawn in.
-        .border_1()
-        .border_color(tokens.invisible())
-        .flex()
-        .flex_col()
-        .w_full()
-        .role(Role::Table)
         .aria_label(label)
 }
 

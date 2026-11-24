@@ -297,6 +297,7 @@ impl BerthApp {
             .map(|row| row.name().to_owned())
             .unwrap_or_default();
         self.view.detail_kind = DetailKind::Container;
+        self.reveal(SearchKind::Containers, ix);
         self.start_detail(cx);
         cx.notify();
     }
@@ -322,6 +323,9 @@ impl BerthApp {
                     .ok();
             }));
         }
+        if let Some(ix) = self.snapshot.images.iter().position(|image| image.id == id) {
+            self.reveal(SearchKind::Images, ix);
+        }
         cx.notify();
     }
 
@@ -330,6 +334,14 @@ impl BerthApp {
         self.view.selected_id = Some(name.to_owned());
         self.view.selected_name = name.to_owned();
         self.view.detail_kind = DetailKind::Volume;
+        if let Some(ix) = self
+            .snapshot
+            .volumes
+            .iter()
+            .position(|volume| volume.name == name)
+        {
+            self.reveal(SearchKind::Volumes, ix);
+        }
         cx.notify();
     }
 
@@ -338,6 +350,17 @@ impl BerthApp {
         self.view.selected_id = Some(id.to_owned());
         self.view.selected_name = name.to_owned();
         self.view.detail_kind = DetailKind::Network;
+        // The inspector knows it by its id, or by its name where the engine gave none.
+        let ix = self.snapshot.networks.iter().position(|network| {
+            if network.id.is_empty() {
+                network.name == id
+            } else {
+                network.id == id
+            }
+        });
+        if let Some(ix) = ix {
+            self.reveal(SearchKind::Networks, ix);
+        }
         cx.notify();
     }
 

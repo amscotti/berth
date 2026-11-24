@@ -1,7 +1,7 @@
 //! The shell frame: dispatch to the current page and the inspector.
 
 use crate::app::*;
-use crate::ui::{inspector, rail, sheets, table, toast, views};
+use crate::ui::{inspector, rail, sheets, toast, views};
 use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
@@ -82,30 +82,9 @@ impl BerthApp {
     pub(crate) fn render_page(&mut self, viewport: f32, cx: &mut Context<Self>) -> AnyElement {
         let widths = layout::for_window(viewport, self.view.selected_id.is_some());
         let tokens = self.tokens;
-        let columns = layout::container_columns(widths.content, self.view.bulk_enabled);
 
         let body = match self.view.tab {
-            Tab::Containers => {
-                let page = table::page_header(
-                    self,
-                    widths,
-                    Some(SearchKind::Containers),
-                    Some("Select"),
-                    cx,
-                );
-                let header = table::table_header(self, columns, cx);
-                let table = table::table(self, columns, cx);
-                div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .child(page)
-                    .child(header)
-                    .child(table)
-                    .into_any_element()
-            }
+            Tab::Containers => views::containers::containers(self, widths, cx),
             Tab::Images => views::images::images(self, widths, cx),
             Tab::Volumes => views::volumes::volumes(self, widths, cx),
             Tab::Networks => views::networks::networks(self, widths, cx),

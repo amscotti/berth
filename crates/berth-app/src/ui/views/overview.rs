@@ -14,7 +14,7 @@ use super::overview_cards::{engine_card, fleet_card, host_card};
 use super::overview_disk::disk_card;
 use crate::app::{BerthApp, Tab};
 use crate::ui::kit::{Card, button, card, card_row};
-use crate::ui::table::page_header;
+use crate::ui::page::page_header;
 
 pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;

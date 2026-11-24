@@ -4,11 +4,11 @@ use berth_core::format;
 use berth_engine::events::Event;
 use berth_ui::layout::{self, Widths};
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Role, div, px};
+use gpui::{AnyElement, Context, SharedString, div, px};
 
 use crate::app::{BerthApp, SearchKind};
-use crate::ui::kit::table;
-use crate::ui::table::{empty_state, header_cell, page_header, pill, text_cell};
+use crate::ui::data_table::{Column, DataTable, RowKey, pill, text_cell};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -74,75 +74,106 @@ pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
     } else {
         0.0
     };
-    let mut header_row = div()
-        .id("events-header")
-        .role(Role::Row)
-        .flex()
-        .flex_row()
-        .w_full()
-        .items_center()
-        .px(px(layout::ROW_PADDING))
-        .gap(px(layout::ROW_GAP))
-        .child(header_cell("TIME", time, false, tokens))
-        .child(header_cell("TYPE", kind, false, tokens))
-        .child(header_cell("ACTION", action, false, tokens))
-        .child(header_cell("ACTOR", actor, false, tokens));
+    let mut table = DataTable::new(
+        "events-table",
+        "Events",
+        "events-header",
+        4,
+        row_key,
+        open_row,
+    )
+    .column(Column::plain("time", "TIME", time, false, time_cell))
+    .column(Column::plain("type", "TYPE", kind, false, kind_cell))
+    .column(Column::plain(
+        "action",
+        "ACTION",
+        action,
+        false,
+        action_cell,
+    ))
+    .column(Column::plain("actor", "ACTOR", actor, false, actor_cell));
     if detail > 0.0 {
-        header_row = header_row.child(header_cell("DETAIL", detail, false, tokens));
+        table = table.column(Column::plain(
+            "detail",
+            "DETAIL",
+            detail,
+            false,
+            detail_cell,
+        ));
     }
-    content = content.child(
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(header_row)
-            .child(div().w_full().h(px(1.0)).bg(tokens.border)),
+    let table = table.hairline();
+    let header = table.header(app, tokens, cx);
+    let body = table.body(
+        shown,
+        layout::ROW_EVENT,
+        &app.view.lists[SearchKind::Events as usize].scroll,
+        tokens,
+        cx,
     );
+    content.child(header).child(body).into_any_element()
+}
 
-    let rows = shown.into_iter().enumerate().map(|(index, at)| {
-        let event = &app.snapshot.events[at];
-        let actor_id = event.actor.id.clone();
-        let can_inspect =
-            event.kind == "container" && app.snapshot.containers.iter().any(|c| c.id == actor_id);
-        let mut row = div()
-            .id(gpui::SharedString::from(format!(
-                "event-{}-{}-{index}",
-                event.time_nano, event.action
-            )))
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .h(px(layout::ROW_EVENT))
-            .px(px(layout::ROW_PADDING))
-            .gap(px(layout::ROW_GAP))
-            .rounded(px(layout::RADIUS_ROW))
-            .bg(if index % 2 == 1 {
-                tokens.alt_row()
-            } else {
-                tokens.surface
-            })
-            .when(can_inspect, |this| {
-                this.hover(move |style| style.bg(tokens.surface_hover))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.select_container_by_id(&actor_id, cx);
-                    }))
-            })
-            .role(Role::Row)
-            .aria_label(event.name())
-            .child(text_cell(format::clock(event.time), time, false, tokens))
-            .child(text_cell(event.kind.clone(), kind, false, tokens))
-            .child(pill(&event.action, tokens))
-            .child(text_cell(event.name().to_owned(), actor, false, tokens));
-        if detail > 0.0 {
-            let text = event_detail_text(event);
-            row = row.child(text_cell(text, detail, false, tokens));
-        }
-        row
-    });
-    content
-        .child(table("events-table", "Events", tokens).children(rows))
-        .into_any_element()
+fn row_key(app: &BerthApp, ix: usize) -> RowKey {
+    let event = &app.snapshot.events[ix];
+    // An event about a container opens that container, while it is still
+    // there to open.
+    let opens = event.kind == "container"
+        && app
+            .snapshot
+            .containers
+            .iter()
+            .any(|c| c.id == event.actor.id);
+    RowKey {
+        id: SharedString::from(format!("event-{}-{}-{ix}", event.time_nano, event.action)),
+        name: event.name().to_owned(),
+        selected: false,
+        opens,
+    }
+}
+
+fn open_row(app: &mut BerthApp, ix: usize, cx: &mut Context<BerthApp>) {
+    let actor_id = app.snapshot.events[ix].actor.id.clone();
+    app.select_container_by_id(&actor_id, cx);
+}
+
+fn time_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let event = &app.snapshot.events[ix];
+    text_cell(format::clock(event.time), width, false, app.tokens).into_any_element()
+}
+
+fn kind_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let event = &app.snapshot.events[ix];
+    text_cell(event.kind.clone(), width, false, app.tokens).into_any_element()
+}
+
+fn action_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    _width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let event = &app.snapshot.events[ix];
+    pill(&event.action, app.tokens).into_any_element()
+}
+
+fn actor_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let event = &app.snapshot.events[ix];
+    text_cell(event.name().to_owned(), width, false, app.tokens).into_any_element()
+}
+
+fn detail_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let event = &app.snapshot.events[ix];
+    text_cell(event_detail_text(event), width, false, app.tokens).into_any_element()
 }
 
 fn event_detail_text(event: &Event) -> String {

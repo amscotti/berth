@@ -28,7 +28,7 @@ cargo clippy --workspace --all-targets --locked -- \
     --features berth-app/test-driver -- -D warnings   # the fixture too, so the screenshot pass is linted
 ./tools/lines.py                  # 600-line rule
 cargo run -p berth-app --example screenshots --features test-driver   # headless PNGs in docs/ui/
-cargo run -p berth-app --release --example perf --features test-driver # frame budget: 100, 500 and 1,000 rows
+cargo run -p berth-app --release --example perf --features test-driver # frame budget: 100 to 5,000 rows
 ./scripts/coverage.sh             # line coverage gate (85%)
 ```
 
@@ -78,6 +78,11 @@ BERTH_SOCKET=/path/to.sock cargo run -p berth-app
   element, and `cx.bind_keys([KeyBinding::new("...", Action, Some("..."))])`.
 - `uniform_list` only for fixed-height rows. Use `list` or a custom element for
   variable heights.
+- A table is `DataTable` (`ui/data_table.rs`). Its columns are one spec
+  (title, width, alignment, sort, cell); header and rows are built from it.
+  Rows are a `uniform_list` that draws only what the window shows, and
+  `ListState::scroll` keeps the table's place. The `select*` methods call
+  `reveal`, so a row chosen from elsewhere is scrolled into view.
 - Store every `Task` and `Subscription` in the owning struct. Dropping one
   silently cancels the work or the observation.
 - A view added with `.child(entity)` is redrawn whenever its parent is. Only

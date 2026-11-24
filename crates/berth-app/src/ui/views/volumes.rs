@@ -3,11 +3,11 @@
 use berth_core::format;
 use berth_ui::layout::{self, Widths};
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Role, SharedString, div, px};
+use gpui::{AnyElement, Context, SharedString, div, px};
 
 use crate::app::{BerthApp, DetailKind, SearchKind};
-use crate::ui::kit::table;
-use crate::ui::table::{empty_state, page_header, sortable_header_cell, text_cell};
+use crate::ui::data_table::{Column, DataTable, RowKey, text_cell};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -86,110 +86,120 @@ pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> An
         (160.0, 70.0, 0.0, 0.0)
     };
     let mount = (widths.content - name - driver - size - in_use - 84.0).max(166.0);
-    let sort = (sort_col, sort_asc);
-    let mut header_row = div()
-        .id("volumes-header")
-        .role(Role::Row)
-        .flex()
-        .flex_row()
-        .w_full()
-        .items_center()
-        .px(px(layout::ROW_PADDING))
-        .gap(px(layout::ROW_GAP))
-        .child(sortable_header_cell(
-            2, 0, "NAME", name, false, sort, tokens, cx,
-        ))
-        .child(sortable_header_cell(
-            2, 1, "DRIVER", driver, false, sort, tokens, cx,
-        ));
+    let mut table = DataTable::new(
+        "volumes-table",
+        "Volumes",
+        "volumes-header",
+        2,
+        row_key,
+        open_row,
+    )
+    .column(Column::sorted("name", "NAME", name, false, 0, name_cell))
+    .column(Column::sorted(
+        "driver",
+        "DRIVER",
+        driver,
+        false,
+        1,
+        driver_cell,
+    ));
     if size > 0.0 {
-        header_row = header_row
-            .child(sortable_header_cell(
-                2, 2, "SIZE", size, true, sort, tokens, cx,
-            ))
-            .child(sortable_header_cell(
-                2, 3, "IN USE", in_use, true, sort, tokens, cx,
+        table = table
+            .column(Column::sorted("size", "SIZE", size, true, 2, size_cell))
+            .column(Column::sorted(
+                "in-use",
+                "IN USE",
+                in_use,
+                true,
+                3,
+                in_use_cell,
             ));
     }
-    header_row = header_row.child(sortable_header_cell(
-        2,
-        4,
-        "MOUNTPOINT",
-        mount,
-        false,
-        sort,
+    let table = table
+        .column(Column::sorted(
+            "mountpoint",
+            "MOUNTPOINT",
+            mount,
+            false,
+            4,
+            mountpoint_cell,
+        ))
+        .hairline();
+    let header = table.header(app, tokens, cx);
+    let body = table.body(
+        shown,
+        layout::ROW_CONTAINER,
+        &app.view.lists[SearchKind::Volumes as usize].scroll,
         tokens,
         cx,
-    ));
-    content = content.child(
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(header_row)
-            .child(div().w_full().h(px(1.0)).bg(tokens.border)),
     );
+    content.child(header).child(body).into_any_element()
+}
 
-    let rows = shown.into_iter().enumerate().map(|(index, at)| {
-        let volume = &app.snapshot.volumes[at];
-        let selected = app.view.detail_kind == DetailKind::Volume
-            && app.view.selected_id.as_deref() == Some(volume.name.as_str());
-        let click_name = volume.name.clone();
-        let mut row = div()
-            .id(SharedString::from(format!("volume-{}", volume.name)))
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .h(px(layout::ROW_CONTAINER))
-            .px(px(layout::ROW_PADDING))
-            .gap(px(layout::ROW_GAP))
-            .rounded(px(layout::RADIUS_ROW))
-            .bg(if selected {
-                tokens.selected_row()
-            } else if index % 2 == 1 {
-                tokens.alt_row()
-            } else {
-                tokens.surface
-            })
-            .when(!selected, |this| {
-                this.hover(move |style| style.bg(tokens.surface_hover))
-            })
-            .role(Role::Row)
-            .aria_label(&volume.name)
-            .aria_selected(selected)
-            // While the table has focus it speaks for its selected row.
-            .when(selected, |this| this.aria_active_descendant())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.select_volume(&click_name, cx);
-            }));
-        row = row
-            .child(text_cell(volume.name.clone(), name, false, tokens))
-            .child(text_cell(volume.driver.clone(), driver, false, tokens));
-        if size > 0.0 {
-            let usage = volume.usage_data.as_ref();
-            row = row
-                .child(text_cell(
-                    usage
-                        .filter(|usage| usage.size >= 0)
-                        .map(|usage| format::bytes(usage.size as u64))
-                        .unwrap_or_else(|| "—".to_owned()),
-                    size,
-                    true,
-                    tokens,
-                ))
-                .child(text_cell(
-                    usage
-                        .map(|usage| usage.ref_count.to_string())
-                        .unwrap_or_else(|| "—".to_owned()),
-                    in_use,
-                    true,
-                    tokens,
-                ));
-        }
-        row.child(text_cell(volume.mountpoint.clone(), mount, false, tokens))
-    });
-    content
-        .child(table("volumes-table", "Volumes", tokens).children(rows))
-        .into_any_element()
+fn row_key(app: &BerthApp, ix: usize) -> RowKey {
+    let volume = &app.snapshot.volumes[ix];
+    RowKey {
+        id: SharedString::from(format!("volume-{}", volume.name)),
+        name: volume.name.clone(),
+        selected: app.view.detail_kind == DetailKind::Volume
+            && app.view.selected_id.as_deref() == Some(volume.name.as_str()),
+        opens: true,
+    }
+}
+
+fn open_row(app: &mut BerthApp, ix: usize, cx: &mut Context<BerthApp>) {
+    let name = app.snapshot.volumes[ix].name.clone();
+    app.select_volume(&name, cx);
+}
+
+fn name_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let volume = &app.snapshot.volumes[ix];
+    text_cell(volume.name.clone(), width, false, app.tokens).into_any_element()
+}
+
+fn driver_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let volume = &app.snapshot.volumes[ix];
+    text_cell(volume.driver.clone(), width, false, app.tokens).into_any_element()
+}
+
+/// The size, where the engine's disk figures gave one: unknown is a dash.
+fn size_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let volume = &app.snapshot.volumes[ix];
+    let text = volume
+        .usage_data
+        .as_ref()
+        .filter(|usage| usage.size >= 0)
+        .map(|usage| format::bytes(usage.size as u64))
+        .unwrap_or_else(|| "—".to_owned());
+    text_cell(text, width, true, app.tokens).into_any_element()
+}
+
+fn in_use_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let volume = &app.snapshot.volumes[ix];
+    let text = volume
+        .usage_data
+        .as_ref()
+        .map(|usage| usage.ref_count.to_string())
+        .unwrap_or_else(|| "—".to_owned());
+    text_cell(text, width, true, app.tokens).into_any_element()
+}
+
+fn mountpoint_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let volume = &app.snapshot.volumes[ix];
+    text_cell(volume.mountpoint.clone(), width, false, app.tokens).into_any_element()
 }

@@ -155,8 +155,8 @@ fn dead_code_is_deleted_not_forgiven() {
 #[test]
 fn each_corner_draws_from_its_own_state() {
     const PAGE: [&str; 6] = [
-        "src/ui/table.rs",
-        "src/ui/table_cells.rs",
+        "src/ui/data_table.rs",
+        "src/ui/page.rs",
         "src/ui/rail.rs",
         "src/ui/row_actions.rs",
         "src/ui/toast.rs",

@@ -1,5 +1,6 @@
 //! One module per page. The shell owns state; these functions only draw.
 
+pub mod containers;
 pub mod disk;
 pub mod events;
 pub mod images;

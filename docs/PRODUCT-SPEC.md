@@ -252,7 +252,9 @@ the row.
   muted text on the row read 4.44:1 in light), alternating rows at 35%
   surface_hover, actions pinned right (Stop/Restart/Delete or Start), 24 pt
   pills. A table is one tab stop for all its rows; a row's own actions are not
-  stops.
+  stops. However many rows it has, a table draws the ones the window shows:
+  the column header stays while the rows scroll, and the list follows the
+  selection.
 - **Status pill**: word first, colour second; 20 pt high, 8 px horizontal,
   radius 10, 14% background wash; health overrides state when present.
 - **Cards**: one element, radius 10, 15 pt title, optional tinted icon chip

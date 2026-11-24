@@ -1,10 +1,10 @@
 //! Headless frame budget. Run:
 //!   cargo run -p berth-app --release --example perf --features test-driver
 //!
-//! Draws the Containers page with 100, 500 and 1,000 containers, and times
-//! the frame a change costs: the shell announces one, and the window is
-//! drawn. A frame over the budget fails the run, with the figure that did
-//! it. `BERTH_PERF_ROWS=100,5000` measures other counts instead.
+//! Draws the Containers page with 100, 500, 1,000 and 5,000 containers,
+//! and times the frame a change costs: the shell announces one, and the
+//! window is drawn. A frame over the budget fails the run, with the figure
+//! that did it. `BERTH_PERF_ROWS=100,20000` measures other counts instead.
 //!
 //! The figure is the middle one of a few frames, after the first ones have
 //! loaded the fonts. It is a figure for the machine it ran on.
@@ -19,8 +19,9 @@ use gpui::{AppContext, Entity, HeadlessAppContext, px, size};
 
 /// One frame at 30 Hz. A change that costs more drops a frame.
 const BUDGET: Duration = Duration::from_millis(33);
-/// The row counts the gate holds.
-const ROWS: [usize; 3] = [100, 500, 1_000];
+/// The row counts the gate holds. The last is the most the engine is asked
+/// to list from a store.
+const ROWS: [usize; 4] = [100, 500, 1_000, 5_000];
 /// Frames drawn before any is measured.
 const WARM_UP: usize = 3;
 /// Frames measured. The middle one is the figure.

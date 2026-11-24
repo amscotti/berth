@@ -37,6 +37,8 @@ mod state;
 mod subviews;
 #[cfg(test)]
 mod subviews_tests;
+#[cfg(test)]
+mod table_tests;
 mod terminal;
 #[cfg(test)]
 mod testkit;

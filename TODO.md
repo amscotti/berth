@@ -31,7 +31,8 @@ Last updated: 2026-11-23
 - [ ] Reopen a closed window from the tray (GPUI window hide/show adapter).
 - [ ] Feature-gated test driver + xa11y real-window E2E.
 - [ ] Linux X11/Wayland runtime smoke.
-- [ ] Virtualized tables (`uniform_list`) if the fleet grows past the tested 100.
+- [x] Virtualised tables (`uniform_list`): a frame costs the same at 5,000
+  containers as at 100, 0.66 ms in release
 - [ ] Version: `0.0.0` until parity; tag `v0.1.0` after the remaining gaps.
 - [ ] Windows remains compile-only.
 - [ ] DMG / Developer ID / notarization are deliberate non-goals.

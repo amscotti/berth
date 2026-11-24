@@ -9,10 +9,11 @@ use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, Role, SharedString, div, px};
 
-use crate::app::{BerthApp, SearchKind};
+use crate::app::{BerthApp, DetailKind, SearchKind};
+use crate::ui::data_table::{Column, DataTable, RowKey, pill, text_cell};
 use crate::ui::inspect_shared::short_id;
-use crate::ui::kit::{button, card, table};
-use crate::ui::table::{empty_state, page_header, pill, sortable_header_cell, text_cell};
+use crate::ui::kit::{button, card};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -78,123 +79,152 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
     };
     let fixed = id + size + age + in_use + status + if full { 74.0 } else { 54.0 };
     let repo = (widths.content - fixed).clamp(170.0, 380.0);
-    let mut header_row = div()
-        .id("images-header")
-        .role(Role::Row)
-        .flex()
-        .flex_row()
-        .w_full()
-        .items_center()
-        .px(px(layout::ROW_PADDING))
-        .gap(px(layout::ROW_GAP));
-    let sort = (sort_col, sort_asc);
-    header_row = header_row
-        .child(sortable_header_cell(
-            1,
-            0,
-            "REPOSITORY",
-            repo,
-            false,
-            sort,
-            tokens,
-            cx,
-        ))
-        .child(sortable_header_cell(
-            1, 1, "IMAGE ID", id, false, sort, tokens, cx,
-        ))
-        .child(sortable_header_cell(
-            1, 2, "SIZE", size, true, sort, tokens, cx,
-        ));
+    let mut table = DataTable::new(
+        "images-table",
+        "Images",
+        "images-header",
+        1,
+        row_key,
+        open_row,
+    )
+    .column(Column::sorted(
+        "repository",
+        "REPOSITORY",
+        repo,
+        false,
+        0,
+        repository_cell,
+    ))
+    .column(Column::sorted("id", "IMAGE ID", id, false, 1, id_cell))
+    .column(Column::sorted("size", "SIZE", size, true, 2, size_cell));
     if age > 0.0 {
-        header_row = header_row.child(sortable_header_cell(
-            1, 3, "CREATED", age, true, sort, tokens, cx,
+        table = table.column(Column::sorted(
+            "created",
+            "CREATED",
+            age,
+            true,
+            3,
+            created_cell,
         ));
     }
     if in_use > 0.0 {
-        header_row = header_row.child(crate::ui::table::header_cell(
-            "IN USE", in_use, true, tokens,
-        ));
+        table = table.column(Column::plain("in-use", "IN USE", in_use, true, in_use_cell));
     }
-    header_row = header_row.child(sortable_header_cell(
-        1, 4, "STATUS", status, false, sort, tokens, cx,
-    ));
-    content = content.child(
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(header_row)
-            .child(div().w_full().h(px(1.0)).bg(tokens.border)),
-    );
-
-    let rows = shown.into_iter().enumerate().map(|(index, at)| {
-        let image = &app.snapshot.images[at];
-        let label = if image.dangling() {
-            "untagged"
-        } else {
-            image.tag()
-        };
-        // Figured out with the lists, once per snapshot.
-        let used_count = app.snapshot.image_use(at);
-        let selected = app.view.detail_kind == crate::app::DetailKind::Image
-            && app.view.selected_id.as_deref() == Some(image.id.as_str());
-        let click_id = image.id.clone();
-        let click_label = label.to_owned();
-        let mut row = div()
-            .id(SharedString::from(format!("image-{}", image.id)))
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .h(px(layout::ROW_CONTAINER))
-            .px(px(layout::ROW_PADDING))
-            .gap(px(layout::ROW_GAP))
-            .rounded(px(layout::RADIUS_ROW))
-            .bg(if selected {
-                tokens.selected_row()
-            } else if index % 2 == 1 {
-                tokens.alt_row()
-            } else {
-                tokens.surface
-            })
-            .when(!selected, |this| {
-                this.hover(move |style| style.bg(tokens.surface_hover))
-            })
-            .role(Role::Row)
-            .aria_label(label)
-            .aria_selected(selected)
-            // While the table has focus it speaks for its selected row.
-            .when(selected, |this| this.aria_active_descendant())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.select_image(&click_id, &click_label, cx);
-            }));
-        row = row
-            .child(text_cell(label.to_owned(), repo, false, tokens))
-            .child(text_cell(short_id(&image.id), id, false, tokens))
-            .child(text_cell(format::bytes(image.size), size, true, tokens));
-        if age > 0.0 {
-            row = row.child(text_cell(
-                format::ago(image.created, format::now()),
-                age,
-                true,
-                tokens,
-            ));
-        }
-        if in_use > 0.0 {
-            row = row.child(text_cell(used_count.to_string(), in_use, true, tokens));
-        }
-        row.child(pill(
-            if image.dangling() {
-                "dangling"
-            } else {
-                "ready"
-            },
-            tokens,
+    let table = table
+        .column(Column::sorted(
+            "status",
+            "STATUS",
+            status,
+            false,
+            4,
+            status_cell,
         ))
-    });
-    content
-        .child(table("images-table", "Images", tokens).children(rows))
-        .into_any_element()
+        .hairline();
+    let header = table.header(app, tokens, cx);
+    let body = table.body(
+        shown,
+        layout::ROW_CONTAINER,
+        &app.view.lists[SearchKind::Images as usize].scroll,
+        tokens,
+        cx,
+    );
+    content.child(header).child(body).into_any_element()
+}
+
+fn row_key(app: &BerthApp, ix: usize) -> RowKey {
+    let image = &app.snapshot.images[ix];
+    RowKey {
+        id: SharedString::from(format!("image-{}", image.id)),
+        name: label_of(image).to_owned(),
+        selected: app.view.detail_kind == DetailKind::Image
+            && app.view.selected_id.as_deref() == Some(image.id.as_str()),
+        opens: true,
+    }
+}
+
+fn open_row(app: &mut BerthApp, ix: usize, cx: &mut Context<BerthApp>) {
+    let image = &app.snapshot.images[ix];
+    let (id, label) = (image.id.clone(), label_of(image).to_owned());
+    app.select_image(&id, &label, cx);
+}
+
+/// What an image is called: its first tag, or "untagged".
+fn label_of(image: &Image) -> &str {
+    if image.dangling() {
+        "untagged"
+    } else {
+        image.tag()
+    }
+}
+
+fn repository_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let image = &app.snapshot.images[ix];
+    text_cell(label_of(image).to_owned(), width, false, app.tokens).into_any_element()
+}
+
+fn id_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let image = &app.snapshot.images[ix];
+    text_cell(short_id(&image.id), width, false, app.tokens).into_any_element()
+}
+
+fn size_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let image = &app.snapshot.images[ix];
+    text_cell(format::bytes(image.size), width, true, app.tokens).into_any_element()
+}
+
+fn created_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let image = &app.snapshot.images[ix];
+    text_cell(
+        format::ago(image.created, format::now()),
+        width,
+        true,
+        app.tokens,
+    )
+    .into_any_element()
+}
+
+/// How many containers run it, figured out with the lists.
+fn in_use_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    text_cell(
+        app.snapshot.image_use(ix).to_string(),
+        width,
+        true,
+        app.tokens,
+    )
+    .into_any_element()
+}
+
+fn status_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    _width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let image = &app.snapshot.images[ix];
+    pill(
+        if image.dangling() {
+            "dangling"
+        } else {
+            "ready"
+        },
+        app.tokens,
+    )
+    .into_any_element()
 }
 
 fn image_matches(image: &Image, query: &str) -> bool {

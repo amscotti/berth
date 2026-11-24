@@ -1,12 +1,13 @@
 //! Networks and how many containers are attached to each.
 
+use berth_engine::dto::Network;
 use berth_ui::layout::{self, Widths};
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Role, SharedString, div, px};
+use gpui::{AnyElement, Context, SharedString, div, px};
 
 use crate::app::{BerthApp, DetailKind, SearchKind};
-use crate::ui::kit::table;
-use crate::ui::table::{empty_state, page_header, sortable_header_cell, text_cell};
+use crate::ui::data_table::{Column, DataTable, RowKey, text_cell};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -84,99 +85,111 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         (70.0, 60.0, 60.0)
     };
     let name = (widths.content - driver - scope - attached - 84.0).clamp(180.0, 360.0);
-    let sort = (sort_col, sort_asc);
-    content = content.child(
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(
-                div()
-                    .id("networks-header")
-                    .role(Role::Row)
-                    .flex()
-                    .flex_row()
-                    .w_full()
-                    .items_center()
-                    .px(px(layout::ROW_PADDING))
-                    .gap(px(layout::ROW_GAP))
-                    .child(sortable_header_cell(
-                        3, 0, "NAME", name, false, sort, tokens, cx,
-                    ))
-                    .child(sortable_header_cell(
-                        3, 1, "DRIVER", driver, false, sort, tokens, cx,
-                    ))
-                    .child(sortable_header_cell(
-                        3, 2, "SCOPE", scope, false, sort, tokens, cx,
-                    ))
-                    .child(sortable_header_cell(
-                        3, 3, "ATTACHED", attached, true, sort, tokens, cx,
-                    )),
-            )
-            .child(div().w_full().h(px(1.0)).bg(tokens.border)),
+    let table = DataTable::new(
+        "networks-table",
+        "Networks",
+        "networks-header",
+        3,
+        row_key,
+        open_row,
+    )
+    .column(Column::sorted("name", "NAME", name, false, 0, name_cell))
+    .column(Column::sorted(
+        "driver",
+        "DRIVER",
+        driver,
+        false,
+        1,
+        driver_cell,
+    ))
+    .column(Column::sorted(
+        "scope", "SCOPE", scope, false, 2, scope_cell,
+    ))
+    .column(Column::sorted(
+        "attached",
+        "ATTACHED",
+        attached,
+        true,
+        3,
+        attached_cell,
+    ))
+    .hairline();
+    let header = table.header(app, tokens, cx);
+    let body = table.body(
+        shown,
+        layout::ROW_CONTAINER,
+        &app.view.lists[SearchKind::Networks as usize].scroll,
+        tokens,
+        cx,
     );
+    content.child(header).child(body).into_any_element()
+}
 
-    let rows = shown.into_iter().enumerate().map(|(index, at)| {
-        let network = &app.snapshot.networks[at];
-        let attached_count = app.snapshot.network_counts.get(&network.name);
-        let click_id = if network.id.is_empty() {
-            network.name.clone()
-        } else {
-            network.id.clone()
-        };
-        let selected = app.view.detail_kind == DetailKind::Network
-            && app.view.selected_id.as_deref() == Some(click_id.as_str());
-        let click_name = network.name.clone();
-        let mut row = div()
-            .id(SharedString::from(format!("network-{click_id}")))
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .h(px(layout::ROW_CONTAINER))
-            .px(px(layout::ROW_PADDING))
-            .gap(px(layout::ROW_GAP))
-            .rounded(px(layout::RADIUS_ROW))
-            .bg(if selected {
-                tokens.selected_row()
-            } else if index % 2 == 1 {
-                tokens.alt_row()
-            } else {
-                tokens.surface
-            })
-            .when(!selected, |this| {
-                this.hover(move |style| style.bg(tokens.surface_hover))
-            })
-            .role(Role::Row)
-            .aria_label(&network.name)
-            .aria_selected(selected)
-            // While the table has focus it speaks for its selected row.
-            .when(selected, |this| this.aria_active_descendant())
-            .on_click(cx.listener(move |this, _, _, cx| {
-                this.select_network(&click_id, &click_name, cx);
-            }));
-        row = row
-            .child(text_cell(network.name.clone(), name, false, tokens))
-            .child(text_cell(
-                if network.driver.is_empty() {
-                    "—".to_owned()
-                } else {
-                    network.driver.clone()
-                },
-                driver,
-                false,
-                tokens,
-            ))
-            .child(text_cell(network.scope.clone(), scope, false, tokens))
-            .child(text_cell(
-                attached_count.to_string(),
-                attached,
-                true,
-                tokens,
-            ));
-        row
-    });
-    content
-        .child(table("networks-table", "Networks", tokens).children(rows))
-        .into_any_element()
+/// What the inspector knows a network by: its id, or its name where the
+/// engine gave none.
+fn known_as(network: &Network) -> String {
+    if network.id.is_empty() {
+        network.name.clone()
+    } else {
+        network.id.clone()
+    }
+}
+
+fn row_key(app: &BerthApp, ix: usize) -> RowKey {
+    let network = &app.snapshot.networks[ix];
+    let known_as = known_as(network);
+    RowKey {
+        id: SharedString::from(format!("network-{known_as}")),
+        name: network.name.clone(),
+        selected: app.view.detail_kind == DetailKind::Network
+            && app.view.selected_id.as_deref() == Some(known_as.as_str()),
+        opens: true,
+    }
+}
+
+fn open_row(app: &mut BerthApp, ix: usize, cx: &mut Context<BerthApp>) {
+    let network = &app.snapshot.networks[ix];
+    let (known_as, name) = (known_as(network), network.name.clone());
+    app.select_network(&known_as, &name, cx);
+}
+
+fn name_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
+    let network = &app.snapshot.networks[ix];
+    text_cell(network.name.clone(), width, false, app.tokens).into_any_element()
+}
+
+fn driver_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let network = &app.snapshot.networks[ix];
+    let text = if network.driver.is_empty() {
+        "—".to_owned()
+    } else {
+        network.driver.clone()
+    };
+    text_cell(text, width, false, app.tokens).into_any_element()
+}
+
+fn scope_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let network = &app.snapshot.networks[ix];
+    text_cell(network.scope.clone(), width, false, app.tokens).into_any_element()
+}
+
+fn attached_cell(
+    app: &mut BerthApp,
+    ix: usize,
+    width: f32,
+    _cx: &mut Context<BerthApp>,
+) -> AnyElement {
+    let network = &app.snapshot.networks[ix];
+    let attached = app.snapshot.network_counts.get(&network.name);
+    text_cell(attached.to_string(), width, true, app.tokens).into_any_element()
 }

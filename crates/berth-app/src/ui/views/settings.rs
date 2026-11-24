@@ -9,7 +9,7 @@ use gpui::{AnyElement, Context, FontWeight, Role, div, px};
 use crate::app::BerthApp;
 use crate::settings::Appearance;
 use crate::ui::kit::{button, caption, card, card_row, card_title, chip};
-use crate::ui::table::page_header;
+use crate::ui::page::page_header;
 
 /// The page doesn't stretch past this, however wide the window.
 const PAGE_MAX: f32 = 920.0;

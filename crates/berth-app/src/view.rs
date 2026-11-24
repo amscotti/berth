@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{Entity, FocusHandle, Subscription, Task};
+use gpui::{Entity, FocusHandle, Subscription, Task, UniformListScrollHandle};
 
 use crate::actions::Pending;
 use crate::app::{BerthApp, CreateKind, DetailKind, Filter, SearchKind, Tab, Toast};
@@ -30,6 +30,9 @@ pub(crate) struct ListState {
     /// The rows on screen, kept from one frame to the next while what they
     /// were worked out from holds.
     pub(crate) kept: Kept,
+    /// Where the table is scrolled to, kept from one frame to the next, and
+    /// the way to bring a row into view.
+    pub(crate) scroll: UniformListScrollHandle,
 }
 
 /// A table's rows, worked out from the snapshot and the table's own query,
@@ -82,6 +85,13 @@ impl Kept {
             rows: rows.clone(),
         });
         rows
+    }
+}
+
+impl Kept {
+    /// The rows as they were last worked out, if they were.
+    pub(crate) fn peek(&self) -> Option<Vec<usize>> {
+        self.0.borrow().as_ref().map(|worked| worked.rows.clone())
     }
 }
 
@@ -143,6 +153,10 @@ pub(crate) struct ViewState {
     /// The sheet that is open, when one is. One slot, so two are never open
     /// at once.
     pub(crate) sheet: Option<Sheet>,
+    /// How many table rows have been drawn. Tests read it, to hold a table to
+    /// drawing no more than the window shows.
+    #[cfg(test)]
+    pub(crate) rows_drawn: usize,
 
     // The forms: Runtimes' custom socket, and Images' pull and run.
     pub(crate) socket_input: Entity<InputState>,
@@ -259,6 +273,7 @@ impl ViewState {
                 query: String::new(),
                 sort: (0, true),
                 kept: Kept::default(),
+                scroll: UniformListScrollHandle::new(),
             }),
             selected_id: None,
             selected_name: String::new(),
@@ -268,6 +283,8 @@ impl ViewState {
             toast: None,
             toast_task: None,
             sheet: None,
+            #[cfg(test)]
+            rows_drawn: 0,
             socket_input,
             creation_open: false,
             pull_input,

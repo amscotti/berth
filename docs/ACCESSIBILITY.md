@@ -45,7 +45,8 @@ Keyboard paths:
   Cmd/Ctrl+Z steps back a word at a time, Cmd+Shift+Z (Ctrl+Y) steps forward
   again. Tab from a field with text reaches its clear button; pressing it
   empties the field and gives it focus back.
-- Up and Down move the table's selection.
+- Up and Down move the table's selection, and the list scrolls to keep the
+  selected row on screen.
 - Esc closes a sheet, empties a focused field, or clears the inspector.
 - Enter submits a focused form.
 - While a sheet is open focus is inside it, Tab and Shift+Tab cross only its

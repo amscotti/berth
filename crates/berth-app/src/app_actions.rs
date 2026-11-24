@@ -324,6 +324,20 @@ impl BerthApp {
         )
     }
 
+    /// Bring the row at `ix` of `table`'s list into view: where the table has
+    /// scrolled past it, scroll back to it. A row that is on screen stays put.
+    pub(crate) fn reveal(&self, table: SearchKind, ix: usize) {
+        let list = &self.view.lists[table as usize];
+        let position = list
+            .kept
+            .peek()
+            .and_then(|rows| rows.iter().position(|&row| row == ix));
+        if let Some(position) = position {
+            list.scroll
+                .scroll_to_item(position, gpui::ScrollStrategy::Nearest);
+        }
+    }
+
     /// The containers on screen, in the order the table shows them.
     pub(crate) fn visible_rows(&self) -> Vec<usize> {
         self.rows_of(SearchKind::Containers, || {

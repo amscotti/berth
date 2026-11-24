@@ -10,7 +10,7 @@ use gpui::{AnyElement, Context, FontWeight, SharedString, div, px};
 use crate::app::BerthApp;
 use crate::jobs::engine_ops::EngineOp;
 use crate::ui::kit::{Button, button, caption, card, card_header, icon_chip};
-use crate::ui::table::{empty_state, page_header};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn runtimes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;

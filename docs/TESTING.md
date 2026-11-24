@@ -126,6 +126,9 @@ Cover:
 - action slot: second mutation refused; completion refreshes; queued switch
   resumes.
 - appearance: System/Light/Dark resolves the right tokens; observer updates.
+- a table draws only the rows the window shows, however many it has; the
+  arrows reach past the window and the list follows; a click where the list
+  has scrolled opens the row that is there (`table_tests`).
 - what redraws: a search edit redraws the page and a log read the inspector,
   a steady screen draws nothing, and each corner draws from its own state
   (`subviews_tests`, `contract_tests`).
@@ -153,7 +156,7 @@ Use the real text system and renderer factory from the pinned commit's
   enable golden features in `cargo test --workspace`.
 - The frame budget is `examples/perf.rs`: the frame a change costs (the shell
   announces one, the window is drawn), the middle of nine frames after three
-  warm-ups, at 100, 500 and 1,000 containers. It fails above 33 ms, one frame
+  warm-ups, at 100, 500, 1,000 and 5,000 containers. It fails above 33 ms, one frame
   at 30 Hz. Run it in release. It is a figure for the machine it runs on, so
   it belongs to the nightly run and not to the PR gate.
 - Keep reference screenshots in `docs/reference-ui/`; generated ones in
@@ -247,7 +250,7 @@ developer's main engine. Use a unique name prefix and clean up in a trap.
 - real-window macOS smoke + Linux X11 smoke (xa11y)
 - live-engine smoke
 - frame budget (`cargo run -p berth-app --release --example perf --features
-  test-driver`): 100, 500 and 1,000 rows, each under 33 ms a frame
+  test-driver`): 100, 500, 1,000 and 5,000 rows, each under 33 ms a frame
 - kill/restart engine during refresh
 
 ### Release
