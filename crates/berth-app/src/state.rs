@@ -15,7 +15,8 @@ use berth_engine::events::Event;
 use berth_engine::network_counts::Counts;
 use berth_engine::projects::Summary;
 use berth_engine::stats::{
-    Sample, aggregate_cpu_percent, all_memory_known, all_sampled, memory_used,
+    Coverage, Sample, aggregate_cpu_percent, all_memory_known, all_sampled, coverage,
+    measured_cpu_percent, memory_used,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -66,6 +67,18 @@ impl Snapshot {
 
     pub fn container_cpu(&self, cores: f32) -> Option<f32> {
         aggregate_cpu_percent(&self.containers, &self.stats, cores)
+    }
+
+    /// How many of the up containers have a whole sample, and how many there
+    /// are: what a partial figure has to say about itself.
+    pub fn coverage(&self) -> Coverage {
+        coverage(&self.containers, &self.stats)
+    }
+
+    /// Container CPU over the containers that were measured, where some were
+    /// not: a lower bound, which `coverage` says how much of.
+    pub fn measured_cpu(&self, cores: f32) -> Option<f32> {
+        measured_cpu_percent(&self.containers, &self.stats, cores)
     }
 
     /// True only when every up container answered, and with a working set.

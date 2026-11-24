@@ -5,6 +5,8 @@
 //! `test-driver`, the feature the screenshot and performance examples are
 //! built with.
 
+use std::sync::Arc;
+
 use berth_core::format;
 use berth_engine::df::{Df, Usage};
 use berth_engine::discovery::{Dialect, Kind, Runtime};
@@ -87,6 +89,15 @@ impl BerthApp {
         self.open_prune(cx);
         self.toggle_prune_option(1, cx);
         self.toggle_prune_option(4, cx);
+    }
+
+    /// The Overview when one container's stats never came: a partial sample.
+    pub fn show_partial_sample(&mut self) {
+        self.show_tab(Tab::Overview);
+        let snapshot = Arc::make_mut(&mut self.snapshot);
+        if let Some(second) = snapshot.stats.get_mut(1) {
+            *second = Sample::default();
+        }
     }
 
     pub fn show_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {

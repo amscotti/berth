@@ -73,6 +73,7 @@ fn main() -> anyhow::Result<()> {
         ("containers-bulk", 8),
         ("sheet-cleanup-nothing", 9),
         ("search-filled", 10),
+        ("overview-partial", 11),
     ] {
         let handle = cx.open_window(size(px(1280.0), px(760.0)), |_window, cx| {
             cx.new(|cx| {
@@ -92,6 +93,10 @@ fn main() -> anyhow::Result<()> {
                     }
                     8 => app.show_bulk(cx),
                     9 => app.show_cleanup_with_nothing_to_do(cx),
+                    11 => {
+                        app.show_tab(Tab::Overview);
+                        app.show_partial_sample();
+                    }
                     _ => app.show_search_text("web", cx),
                 }
                 app

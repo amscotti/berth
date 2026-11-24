@@ -14,9 +14,10 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, div, px};
 
 use super::overview_cards::{
-    Reading, Series, engine_card, host_card, io_strip, memory_ceiling, store_well,
+    Reading, Series, engine_card, io_strip, memory_ceiling, sample, store_well,
 };
 use super::overview_disk::disk_card as stores_card;
+use super::overview_host::host_card;
 use crate::app::{BerthApp, Tab};
 use crate::ui::kit::{Card, button, card, card_row};
 use crate::ui::page::page_header_with;
@@ -33,24 +34,16 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
     let ready = app.engine.last_update > 0;
     let reading = !ready && app.engine.error.is_empty();
     let complete = snapshot.stats_complete();
-    let cpu = snapshot.container_cpu(cores as f32);
     let memory_used = snapshot.container_memory();
     let total = snapshot.containers.len();
 
-    // A figure is shown only for a complete sample of an engine that is
-    // answering; anything else is unknown, and says so.
-    let measured = ready && connected && complete;
-    let cpu_value = if measured {
-        cpu.map(|value| format::percent(value as f64))
-            .unwrap_or_else(|| "—".to_owned())
-    } else {
-        "—".to_owned()
-    };
-    let mem_value = if measured {
-        format::bytes(memory_used)
-    } else {
-        "—".to_owned()
-    };
+    // What the CPU and memory cards say: a complete sample plainly, a
+    // partial one with how partial, and nothing as unknown.
+    let mem_total = runtime
+        .filter(|runtime| runtime.info_read)
+        .map(|runtime| runtime.info.mem_total)
+        .filter(|total| *total > 0);
+    let sample = sample(snapshot, ready && connected, cores, mem_total);
     let running_value = if ready && connected {
         snapshot.running().to_string()
     } else {
@@ -94,22 +87,14 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
     let history = &app.engine.history;
     let mem_ceiling = memory_ceiling(runtime);
     let cpu = Series::cpu(tokens).card(
-        Reading {
-            figure: cpu_value,
-            note: format!("of {}", format::count(cores as usize, "core", "cores")),
-        },
+        sample.cpu.clone(),
         history.values(Which::Cpu).to_vec(),
         Some(100.0),
         half,
         tokens,
     );
     let memory = Series::memory(tokens).card(
-        Reading {
-            figure: mem_value,
-            note: mem_ceiling
-                .map(|_| format!("of {}", format::bytes(info.mem_total)))
-                .unwrap_or_else(|| "engine total unknown".to_owned()),
-        },
+        sample.memory.clone(),
         history.values(Which::Mem).to_vec(),
         mem_ceiling,
         half,
@@ -119,6 +104,7 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         Reading {
             figure: running_value,
             note: format!("of {}", format::count(total, "container", "containers")),
+            partial: false,
         },
         history.values(Which::Running).to_vec(),
         (total > 0).then_some(total as f32),
@@ -132,6 +118,7 @@ pub fn overview(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         Reading {
             figure: disk_value.clone(),
             note: format!("{reclaimable} reclaimable"),
+            partial: false,
         },
         store_well(snapshot, tokens),
         half,

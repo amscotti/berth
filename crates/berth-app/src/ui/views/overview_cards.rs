@@ -5,8 +5,7 @@
 //! label, a figure with a note beside it, and the well the series is drawn in.
 
 use berth_core::format;
-use berth_core::history::Which;
-use berth_ui::layout::{self};
+use berth_ui::layout;
 use berth_ui::theme::{TintKind, Tokens, tint};
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
@@ -17,10 +16,77 @@ use crate::ui::graph;
 use crate::ui::kit::{Card, button, caption, card, card_title, icon_chip};
 use crate::ui::tabular;
 
-/// What a series card says about one series: its figure and the note beside it.
+/// What a series card says about one series: its figure and the note beside
+/// it. `partial` colours the note as a warning: the figure is a lower bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Reading {
     pub(crate) figure: String,
     pub(crate) note: String,
+    pub(crate) partial: bool,
+}
+
+/// What the CPU and memory cards say about the engine's sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Sample {
+    pub(crate) cpu: Reading,
+    pub(crate) memory: Reading,
+}
+
+/// The CPU and memory readings. A complete sample is stated plainly. A
+/// partial one is stated with how partial: the figure is what was measured,
+/// and the note says "partial sample · 49 of 50". An engine that is not
+/// answering, or has not answered yet, or measured nothing, is unknown.
+pub(crate) fn sample(
+    snapshot: &crate::state::Snapshot,
+    answering: bool,
+    cores: u32,
+    memory_ceiling: Option<u64>,
+) -> Sample {
+    let unknown = |note: String| Reading {
+        figure: "—".to_owned(),
+        note,
+        partial: false,
+    };
+    if !answering {
+        return Sample {
+            cpu: unknown(String::new()),
+            memory: unknown(String::new()),
+        };
+    }
+    let coverage = snapshot.coverage();
+    if coverage.measured == 0 {
+        return Sample {
+            cpu: unknown(String::new()),
+            memory: unknown(String::new()),
+        };
+    }
+    let (cpu_note, memory_note, partial) = if coverage.measured < coverage.up {
+        let note = format!("partial sample · {}", coverage.said());
+        (note.clone(), note, true)
+    } else {
+        (
+            format!("of {}", format::count(cores as usize, "core", "cores")),
+            memory_ceiling
+                .map(|total| format!("of {}", format::bytes(total)))
+                .unwrap_or_else(|| "engine total unknown".to_owned()),
+            false,
+        )
+    };
+    Sample {
+        cpu: Reading {
+            figure: snapshot
+                .measured_cpu(cores.max(1) as f32)
+                .map(|value| format::percent(value as f64))
+                .unwrap_or_else(|| "—".to_owned()),
+            note: cpu_note,
+            partial,
+        },
+        memory: Reading {
+            figure: format::bytes(snapshot.container_memory()),
+            note: memory_note,
+            partial,
+        },
+    }
 }
 
 /// What a card is drawn in: its icon, its name, and three colours, each the
@@ -46,7 +112,7 @@ pub(crate) enum Unit {
 
 impl Unit {
     /// The ceiling's name, on the top edge of the well.
-    fn ceiling(self, ceiling: Option<f32>) -> Option<String> {
+    pub(crate) fn ceiling(self, ceiling: Option<f32>) -> Option<String> {
         ceiling.map(|ceiling| match self {
             Unit::Percent => "100%".to_owned(),
             Unit::Bytes => format::bytes(ceiling as u64),
@@ -131,6 +197,7 @@ impl Series {
         width: f32,
         tokens: Tokens,
     ) -> Card {
+        let partial = reading.partial;
         let Self {
             icon,
             label,
@@ -184,7 +251,11 @@ impl Series {
                     .child(
                         div()
                             .text_size(px(type_scale::SECONDARY))
-                            .text_color(tokens.muted)
+                            .text_color(if partial {
+                                tokens.warning_text()
+                            } else {
+                                tokens.muted
+                            })
                             .pb(px(3.0))
                             .child(reading.note),
                     ),
@@ -228,184 +299,6 @@ pub(crate) fn store_well(snapshot: &crate::state::Snapshot, tokens: Tokens) -> A
         .justify_center()
         .child(bar)
         .into_any_element()
-}
-
-/// The host: its memory split three ways, and its own CPU and memory over
-/// time, from the series the history records.
-pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u64>) -> Card {
-    let sample = &app.host;
-    let history = &app.engine.history;
-    let cpu = if sample.cpu_known {
-        format::percent(sample.cpu_percent as f64)
-    } else {
-        "—".to_owned()
-    };
-    let mut card = card(tokens).gap(px(8.0)).child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .w_full()
-            .gap(px(8.0))
-            .child(icon_chip(
-                "host",
-                12.0,
-                tokens.elsewhere(),
-                tokens,
-                layout::CHIP,
-            ))
-            .child(card_title("Host", tokens))
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(type_scale::LABEL))
-                    .font_features(tabular())
-                    .text_color(tokens.muted)
-                    .child(format!("CPU {cpu}")),
-            ),
-    );
-    if sample.mem_total == 0 {
-        return card
-            .child(caption(
-                "Host memory is unavailable on this platform.",
-                tokens,
-            ))
-            .child(graph::cell_graph(
-                history.values(Which::HostCpu).to_vec(),
-                tokens.elsewhere(),
-                tokens,
-                Some(100.0),
-                44.0,
-                Unit::Percent.ceiling(Some(100.0)),
-            ));
-    }
-    card = card.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_end()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .text_size(px(type_scale::METRIC))
-                    .font_weight(FontWeight::BOLD)
-                    .font_features(tabular())
-                    .text_color(tokens.text)
-                    .child(format::bytes(sample.mem_used)),
-            )
-            .child(
-                div()
-                    .text_size(px(type_scale::SECONDARY))
-                    .text_color(tokens.muted)
-                    .pb(px(3.0))
-                    .child(format!("of {} in use", format::bytes(sample.mem_total))),
-            ),
-    );
-    let used = sample.mem_used;
-    let total = sample.mem_total.max(1) as f32;
-    let free = sample.mem_total.saturating_sub(used);
-    // What the containers hold is known only from a complete sample. Until
-    // then the split says so, and the bar shows what is used and what is free.
-    let split = containers_mem.map(|containers_mem| {
-        let in_containers = containers_mem.min(used);
-        let engine = sample.engine_rss.min(used.saturating_sub(in_containers));
-        let elsewhere = used.saturating_sub(in_containers).saturating_sub(engine);
-        (in_containers, engine, elsewhere)
-    });
-    let (segments, legend) = match split {
-        Some((in_containers, engine, elsewhere)) => (
-            vec![
-                (in_containers as f32 / total, tokens.accent_fill()),
-                (engine as f32 / total, tokens.warning_fill),
-                (elsewhere as f32 / total, tokens.elsewhere()),
-                (free as f32 / total, tokens.track),
-            ],
-            format!(
-                "containers {} · engine helpers {} · elsewhere {}",
-                format::bytes(in_containers),
-                format::bytes(engine),
-                format::bytes(elsewhere)
-            ),
-        ),
-        None => (
-            vec![
-                (used as f32 / total, tokens.elsewhere()),
-                (free as f32 / total, tokens.track),
-            ],
-            "Containers — · per-container stats incomplete".to_owned(),
-        ),
-    };
-    card.child(graph::stacked_bar(segments, tokens.track))
-        .child(caption(legend, tokens))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .w_full()
-                .gap(px(layout::CARD_GAP))
-                .child(host_spark(
-                    "Host CPU",
-                    cpu,
-                    history.values(Which::HostCpu).to_vec(),
-                    tokens.elsewhere(),
-                    Some(100.0),
-                    Unit::Percent,
-                    tokens,
-                ))
-                .child(host_spark(
-                    "Host memory",
-                    format::bytes(sample.mem_used),
-                    history.values(Which::HostMem).to_vec(),
-                    tokens.muted,
-                    Some(total),
-                    Unit::Bytes,
-                    tokens,
-                )),
-        )
-}
-
-/// One of the host's own series, small, under its split.
-fn host_spark(
-    label: &'static str,
-    value: String,
-    values: Vec<f32>,
-    color: Hsla,
-    ceiling: Option<f32>,
-    unit: Unit,
-    tokens: Tokens,
-) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .flex_1()
-        .min_w(px(0.0))
-        .gap(px(4.0))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_end()
-                .w_full()
-                .gap(px(6.0))
-                .child(caption(label, tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(type_scale::SECONDARY))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .font_features(tabular())
-                        .text_color(tokens.text)
-                        .child(value),
-                ),
-        )
-        .child(graph::cell_graph(
-            values,
-            color,
-            tokens,
-            ceiling,
-            44.0,
-            unit.ceiling(ceiling),
-        ))
 }
 
 /// Network, disk and PIDs across the fleet, as totals since each container
@@ -558,30 +451,5 @@ pub(crate) fn engine_card(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn runtime(info_read: bool, mem_total: u64) -> berth_engine::discovery::Runtime {
-        berth_engine::discovery::Runtime {
-            info_read,
-            info: berth_engine::dto::Info {
-                mem_total,
-                ..Default::default()
-            },
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn the_memory_ceiling_is_the_engine_total_and_nothing_else() {
-        assert_eq!(
-            memory_ceiling(Some(&runtime(true, 4_000_000_000))),
-            Some(4.0e9)
-        );
-        // No engine, an engine that didn't answer /info, or one that reported
-        // no total: the ceiling is unknown, not one.
-        assert_eq!(memory_ceiling(None), None);
-        assert_eq!(memory_ceiling(Some(&runtime(false, 4_000_000_000))), None);
-        assert_eq!(memory_ceiling(Some(&runtime(true, 0))), None);
-    }
-}
+#[path = "overview_cards_tests.rs"]
+mod tests;
