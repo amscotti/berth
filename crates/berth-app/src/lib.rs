@@ -29,6 +29,8 @@ mod focus_tests;
 mod host;
 mod inspector;
 mod jobs;
+#[cfg(test)]
+mod overview_tests;
 mod settings;
 #[cfg(test)]
 mod settings_tests;

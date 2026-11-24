@@ -116,6 +116,7 @@ impl BerthApp {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
+                    .track_scroll(&self.view.page_scroll)
                     .child(body),
             );
 

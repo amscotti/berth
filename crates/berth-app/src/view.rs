@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use gpui::prelude::*;
-use gpui::{Entity, FocusHandle, Subscription, Task, UniformListScrollHandle};
+use gpui::{Entity, FocusHandle, ScrollHandle, Subscription, Task, UniformListScrollHandle};
 
 use crate::actions::Pending;
 use crate::app::{BerthApp, CreateKind, DetailKind, Filter, SearchKind, Tab, Toast};
@@ -177,6 +177,9 @@ pub(crate) struct ViewState {
     // Keyboard focus: the page's own handle (rail, table and inspector; focus
     // lives here unless a sheet is open), the container table's, and the
     // sheets'.
+    /// Where the page is scrolled to, so that a test can say whether a page
+    /// fits its window.
+    pub(crate) page_scroll: ScrollHandle,
     pub(crate) focus_handle: FocusHandle,
     /// One stop for all the table's rows.
     pub(crate) table_focus: FocusHandle,
@@ -297,6 +300,7 @@ impl ViewState {
             run_attempted: false,
             run_env_missing: 0,
             create_name,
+            page_scroll: ScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             table_focus: cx.focus_handle().tab_stop(true),
             sheet_focus: SheetFocus::new(cx),

@@ -29,7 +29,7 @@ pub(crate) fn disk_card(
                 .flex_row()
                 .items_center()
                 .w_full()
-                .child(card_title("Disk", tokens))
+                .child(card_title("Disk by store", tokens))
                 .child(div().flex_1())
                 .child(
                     div()

@@ -6,7 +6,7 @@ use berth_ui::layout::Widths;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, div, px};
+use gpui::{Context, Div, FontWeight, div, px};
 
 use crate::app::{BerthApp, Filter, SearchKind, Tab};
 use crate::ui::kit::{button, chip};
@@ -17,7 +17,21 @@ pub(crate) fn page_header(
     search_kind: Option<SearchKind>,
     action_label: Option<&'static str>,
     cx: &mut Context<BerthApp>,
-) -> AnyElement {
+) -> Div {
+    page_header_with(app, widths, search_kind, action_label, None, cx)
+}
+
+/// `page_header`, with `beside` on the title row after the subtitle: where
+/// a page keeps what it would otherwise need a band to say.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn page_header_with(
+    app: &BerthApp,
+    widths: Widths,
+    search_kind: Option<SearchKind>,
+    action_label: Option<&'static str>,
+    beside: Option<gpui::AnyElement>,
+    cx: &mut Context<BerthApp>,
+) -> Div {
     let tokens = app.tokens;
     let running = app.snapshot.running();
     let total = app.snapshot.containers.len();
@@ -62,6 +76,7 @@ pub(crate) fn page_header(
                 .text_color(tokens.muted)
                 .child(subtitle),
         )
+        .children(beside)
         .child(div().flex_1());
 
     if let Some(kind) = search_kind {
@@ -100,20 +115,9 @@ pub(crate) fn page_header(
         }));
 
     if app.view.tab == Tab::Containers {
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(header)
-            .child(chips)
-            .into_any_element()
+        div().flex().flex_col().w_full().child(header).child(chips)
     } else {
-        div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .child(header)
-            .into_any_element()
+        div().flex().flex_col().w_full().child(header)
     }
 }
 
