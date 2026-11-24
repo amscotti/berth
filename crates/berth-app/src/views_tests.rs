@@ -12,7 +12,6 @@ use crate::app::{CreateKind, DetailKind, InspectorTab, SearchKind, Tab};
 use crate::jobs::engine_ops::EngineOp;
 use crate::settings::Appearance;
 use crate::testkit;
-use crate::view::Sheet;
 
 fn shortcut(key: &str) -> String {
     if cfg!(target_os = "macos") {
@@ -345,6 +344,6 @@ fn sheets_toasts_and_shortcuts_render_and_dispatch(cx: &mut TestAppContext) {
             app.toggle_sort(0, col, cx);
             assert_eq!(app.visible_rows().len(), 2);
         }
-        assert!(matches!(app.view.sheet, None::<Sheet>));
+        assert!(app.view.sheet.is_none());
     });
 }
