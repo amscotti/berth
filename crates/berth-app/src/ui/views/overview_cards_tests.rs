@@ -92,3 +92,44 @@ fn the_memory_ceiling_is_the_engine_total_and_nothing_else() {
     assert_eq!(memory_ceiling(Some(&runtime(false, 4_000_000_000))), None);
     assert_eq!(memory_ceiling(Some(&runtime(true, 0))), None);
 }
+
+#[test]
+fn an_engine_fact_the_engine_left_empty_is_a_dash() {
+    assert_eq!(fact(""), "—");
+    assert_eq!(fact("overlayfs"), "overlayfs");
+}
+
+#[test]
+fn an_engine_that_said_nothing_about_itself_gets_one_line_not_three_empty_ones() {
+    let mut runtime = runtime(false, 0);
+    runtime.kind = berth_engine::discovery::Kind::Lima;
+    runtime.version.version = "29.9.2".into();
+    runtime.version.api_version = "1.56".into();
+    let snapshot = crate::state::Snapshot::default();
+    let lines = engine_facts(&runtime, &berth_engine::dto::Info::default(), &snapshot);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert_eq!(lines[0], "Lima 29.9.2 · API 1.56 · storage —");
+    assert_eq!(lines[1], "The engine's own facts were not read.");
+    assert!(lines[2].starts_with("0 containers"), "{}", lines[2]);
+
+    // Read, with fields the engine left out: those are dashes, and the
+    // lines still say the rest.
+    let mut info = berth_engine::dto::Info {
+        driver: "overlayfs".into(),
+        operating_system: "Ubuntu 26.04 LTS".into(),
+        os_type: "linux".into(),
+        architecture: "aarch64".into(),
+        ..Default::default()
+    };
+    runtime.info_read = true;
+    let lines = engine_facts(&runtime, &info, &snapshot);
+    assert_eq!(lines.len(), 4, "{lines:?}");
+    assert_eq!(lines[0], "Lima 29.9.2 · API 1.56 · storage overlayfs");
+    assert_eq!(lines[1], "root —");
+    assert_eq!(lines[2], "Ubuntu 26.04 LTS · linux/aarch64 · cgroups —");
+    info.docker_root_dir = "/var/lib/docker".into();
+    assert_eq!(
+        engine_facts(&runtime, &info, &snapshot)[1],
+        "root /var/lib/docker"
+    );
+}

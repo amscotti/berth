@@ -74,6 +74,7 @@ fn main() -> anyhow::Result<()> {
         ("sheet-cleanup-nothing", 9),
         ("search-filled", 10),
         ("overview-partial", 11),
+        ("overview-facts-missing", 12),
     ] {
         let handle = cx.open_window(size(px(1280.0), px(760.0)), |_window, cx| {
             cx.new(|cx| {
@@ -97,6 +98,7 @@ fn main() -> anyhow::Result<()> {
                         app.show_tab(Tab::Overview);
                         app.show_partial_sample();
                     }
+                    12 => app.show_engine_facts_missing(),
                     _ => app.show_search_text("web", cx),
                 }
                 app

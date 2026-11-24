@@ -100,6 +100,17 @@ impl BerthApp {
         }
     }
 
+    /// The Overview when the engine answered `/info` and left parts of it
+    /// out, as some do.
+    pub fn show_engine_facts_missing(&mut self) {
+        self.show_tab(Tab::Overview);
+        if let Some(runtime) = self.engine.runtimes.first_mut() {
+            runtime.info.driver = String::new();
+            runtime.info.docker_root_dir = String::new();
+            runtime.info.cgroup_version = String::new();
+        }
+    }
+
     pub fn show_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {
         self.open_create(kind, cx);
     }

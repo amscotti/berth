@@ -395,38 +395,23 @@ pub(crate) fn engine_card(
             ),
     );
     card = match runtime {
-        Some(runtime) if runtime.reachable => card
-            .child(
+        Some(runtime) if runtime.reachable => {
+            let lines = engine_facts(runtime, info, snapshot);
+            let (first, rest) = lines.split_first().expect("the first line");
+            let (last, middle) = rest.split_last().expect("the last line");
+            let mut with_facts = card.child(
                 div()
                     .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.text)
-                    .child(format!(
-                        "{} {} · API {} · storage {}",
-                        runtime.kind.label(),
-                        runtime.version.version,
-                        runtime.version.api_version,
-                        info.driver
-                    )),
-            )
-            .child(caption(format!("root {}", info.docker_root_dir), tokens))
-            .child(caption(
-                format!(
-                    "{} · {}/{} · cgroups {}",
-                    info.operating_system, info.os_type, info.architecture, info.cgroup_version
-                ),
-                tokens,
-            ))
-            .child(div().w_full().h(px(1.0)).my(px(2.0)).bg(tokens.border))
-            .child(caption(
-                format!(
-                    "{} · {} · {} · {}",
-                    format::count(snapshot.containers.len(), "container", "containers"),
-                    format::count(snapshot.images.len(), "image", "images"),
-                    format::count(snapshot.volumes.len(), "volume", "volumes"),
-                    format::count(snapshot.networks.len(), "network", "networks"),
-                ),
-                tokens,
-            )),
+                    .child(first.clone()),
+            );
+            for line in middle {
+                with_facts = with_facts.child(caption(line.clone(), tokens));
+            }
+            with_facts
+                .child(div().w_full().h(px(1.0)).my(px(2.0)).bg(tokens.border))
+                .child(caption(last.clone(), tokens))
+        }
         Some(_) => card.child(caption(
             "Nothing is answering on the sockets berth knows. Open Runtimes to see what was tried.",
             tokens,
@@ -448,6 +433,48 @@ pub(crate) fn engine_card(
                     .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx))),
             ),
     )
+}
+
+/// An engine fact the engine did not give: unknown, and not blank.
+pub(crate) fn fact(value: &str) -> &str {
+    if value.is_empty() { "—" } else { value }
+}
+
+/// What the Engine card says about the engine: its kind, version and storage
+/// first; then what `/info` said, or that it said nothing; then what it holds.
+/// A fact the engine left empty is a dash, so no line is half empty.
+pub(crate) fn engine_facts(
+    runtime: &berth_engine::discovery::Runtime,
+    info: &berth_engine::dto::Info,
+    snapshot: &crate::state::Snapshot,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} {} · API {} · storage {}",
+        runtime.kind.label(),
+        runtime.version.version,
+        runtime.version.api_version,
+        fact(&info.driver)
+    )];
+    if runtime.info_read {
+        lines.push(format!("root {}", fact(&info.docker_root_dir)));
+        lines.push(format!(
+            "{} · {}/{} · cgroups {}",
+            fact(&info.operating_system),
+            fact(&info.os_type),
+            fact(&info.architecture),
+            fact(&info.cgroup_version)
+        ));
+    } else {
+        lines.push("The engine's own facts were not read.".to_owned());
+    }
+    lines.push(format!(
+        "{} · {} · {} · {}",
+        format::count(snapshot.containers.len(), "container", "containers"),
+        format::count(snapshot.images.len(), "image", "images"),
+        format::count(snapshot.volumes.len(), "volume", "volumes"),
+        format::count(snapshot.networks.len(), "network", "networks"),
+    ));
+    lines
 }
 
 #[cfg(test)]
