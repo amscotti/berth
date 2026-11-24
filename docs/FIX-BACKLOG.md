@@ -4,7 +4,7 @@
 **Created:** 2026-11-23
 **Baseline:** `ebe5f59`
 **Source:** the code and UX review of 2026-11-23
-**Next:** U10
+**Next:** U11
 **Purpose:** every finding from that review as checkable work, in the order to
 do it. Anyone, or any sub-agent, should be able to take the next unticked row
 and know what "done" means without re-reading the review.
@@ -137,7 +137,7 @@ lands on shared parts instead of adding more one-offs.
 Depends on Phases 2 and 3. Take U10 first: it settles what the spec should say
 before the views change.
 
-- [ ] **U10** (S) Write the UI decisions into the spec before building them. `docs/PRODUCT-SPEC.md` §2.1, §2.2, §3.4. Four graph cards (recommended) or the merged card; toasts as a floating stack (recommended) or in the rail; confirmations as modal sheets or as the reference's banner. Done when (M): the spec describes the intended end state, and `docs/PARITY-CHECKLIST.md` stops claiming Overview parity early. Feeds U11, U24, D1.
+- [x] **U10** (S) Write the UI decisions into the spec before building them. `docs/PRODUCT-SPEC.md` §2.1, §2.2, §3.4. Four graph cards (recommended) or the merged card; toasts as a floating stack (recommended) or in the rail; confirmations as modal sheets or as the reference's banner. Done when (M): the spec describes the intended end state, and `docs/PARITY-CHECKLIST.md` stops claiming Overview parity early. Feeds U11, U24, D1. *(decided and written into `docs/PRODUCT-SPEC.md`: four graph cards and not one merged card (§2.1, with the host card, the strip and the folded status); toasts as a floating stack at the foot of the main column and never over the inspector (§2.2, which said they were in the rail, and they never were); confirmations as modal sheets and not the reference's banner (§3.4). Also in §3.4, where U11 and U13 will need it: a graph draws the reference lattice and names its ceiling, and a partial sample says how partial. The parity checklist's Overview row now says what is there and names the rows for what is not.)*
 - [ ] **U11** (M) Overview: four graph cards and a host sparkline. `ui/views/overview.rs:74–128`, `ui/views/overview_cards.rs:14–119`, `ui/views/overview_disk.rs`. CPU, Memory, Running and Disk cards from the series `History` already records and nothing draws; a Host card with `HostCpu` and `HostMem`; the spec's card anatomy (tinted chip, coloured label, figure, context note, well); network, disk and PIDs as a strip. Done when (H): `overview-light.png` and `overview-dark.png` match `docs/reference-ui/overview.png` in structure. Depends U6.
 - [ ] **U12** (S) Fold the healthy status band into the header. `ui/views/overview.rs:131–250`. When healthy, a dot and "updated HH:MM:SS" beside the subtitle; the full band only for warning, not answering and reading, with a button ("Open Runtimes", "Retry now"). Done when (H): the Overview fits 760 pt without scrolling. Depends U6.
 - [ ] **U13** (M) Make a low reading look low, not empty. `ui/graph.rs:30–86`. Draw the reference lattice the Zig app had, label the ceiling ("100%", "of 3.8 GiB") and mark the peak; keep the fixed ceiling. Done when (H): a 5 MiB series on a 3.8 GiB ceiling is legible as near the floor.

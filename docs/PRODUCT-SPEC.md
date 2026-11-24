@@ -9,7 +9,7 @@ Reference screenshots: `docs/reference-ui/`.
 
 | View | What it does today | Port priority |
 |---|---|---|
-| **Overview** | Four live graph cards (container CPU, memory, running count, disk), HOST card with three-way memory split (containers / engine helpers / elsewhere) + CPU%, engine facts, disk breakdown with legend | P0 |
+| **Overview** | Four graph cards, one per series: container CPU, memory, running count, disk; a HOST card with host CPU and memory and the three-way memory split (containers / engine helpers / elsewhere); network, disk and PIDs as a strip; the engine facts card. When all is well the status is a dot and the update time in the page header; the full status band is for a warning, an engine not answering, and the first read. Decided: four cards, not one merged card (`FIX-BACKLOG.md` U11, U12) | P0 |
 | **Containers** | 44 pt rows, All/Running/Stopped chips, search, sortable columns, per-row Start/Stop/Restart/Delete, checkbox bulk mode, inspector | P0 |
 | **Images** | Search/sort table, dangling/ready pills, collapsed "Get and run images" creation card (pull; run with image/name/ports/volumes/env), inspector | P0 |
 | **Volumes** | Search/sort table with size/in-use from `/system/df`, New volume sheet, inspector/remove | P0 |
@@ -124,7 +124,11 @@ These are not implementation details; they are what the app promises.
   window at the last size. No tray: last window quits.
 - Keyboard: Cmd/Ctrl+1…9 switch the first nine views; Cmd/Ctrl+F focuses the
   current table's search; Esc closes a sheet or inspector; Enter submits.
-- Toasts appear in the rail for ~4 s; errors are text, not colour alone.
+- Notices are toasts: a floating stack of up to three at the foot of the main
+  column, never over the inspector, each for about 4 s, repeats coalesced.
+  Decided: a floating stack, not the rail, whose status is a monitor reading
+  and not a message channel. Errors are text, not colour alone
+  (`FIX-BACKLOG.md` U24).
 
 ### 2.3 Deliberate non-goals (carry over from the Zig app)
 
@@ -260,7 +264,10 @@ the row.
 - **Cards**: one element, radius 10, 15 pt title, optional tinted icon chip
   and right-hand slot; tinted chip, coloured label, one large tabular figure,
   a context note ("of 4 cores", "partial sample", "reclaimable 12.8 MiB"),
-  graph in a recessed well.
+  graph in a recessed well. A graph draws the reference lattice, names its
+  ceiling ("100%", "of 3.8 GiB") and marks its peak, so a low reading looks
+  low and not empty; a sample that is partly known says how partial it is
+  ("partial sample · 49 of 50"), never a dash.
 - **Buttons**: one element (`ui/kit`), 24 or 28 high. Primary = accent fill +
   accent_text, hover `accent_hover`; secondary = surface_hover with a
   hairline, so it stays a button on a tinted card; ghost = no fill, label
@@ -282,7 +289,9 @@ the row.
   scope/mountpoint/size/in use + Remove. Network: name/ID/driver/scope/
   attached + Remove (not built-ins). Inspect: monospace JSON, Copy/Refresh.
 - **Sheets**: one modal slot only. Confirm stop/delete, engine stop/restart,
-  prune options, create volume/network, bulk confirm. A sheet owns the keyboard:
+  prune options, create volume/network, bulk confirm. Decided: a confirmation
+  is a modal sheet, not the reference's banner, because a destructive action
+  should stop the page until it is answered. A sheet owns the keyboard:
   focus moves into it when it opens (Cancel for a confirmation, the name field
   for a create, the first option for a cleanup), Tab and Shift+Tab cross only
   its controls, the page behind gets none of its shortcuts, and focus returns

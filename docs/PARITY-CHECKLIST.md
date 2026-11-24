@@ -13,7 +13,7 @@ The Zig app remains the behavior oracle in `../code/berth`.
 | Images, volumes, networks, `/system/df` | ✅ | engine tests + live probe |
 | Events interval, merge, dedupe, notices | ✅ | event tests + feed merge |
 | Compose grouping, Start all / Stop all | ✅ | projects tests + stacks UI |
-| Overview cards, cell graphs, host split, engine facts, disk bar | ✅ | screenshots |
+| Overview cards, cell graphs, host split, engine facts, disk bar | in progress | the page is there, with engine facts and the disk bar; the four graph cards, the host split and the graph lattice are `FIX-BACKLOG.md` U11–U15, and the claim was early |
 | Disk page, stores, reclaimable, legend | ✅ | screenshots + df tests |
 | Runtimes page, custom socket, rescan, machine commands | ✅ | UI + command planning |
 | Settings, appearance, engine chooser, maintenance | ✅ | UI + settings round-trip test |
