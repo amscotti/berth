@@ -1,150 +1,25 @@
 //! The shell frame: dispatch to the current page and the inspector.
 
 use crate::app::*;
-use crate::ui::{inspector, rail, sheets, table, toast, views};
+use crate::ui::{inspector, rail, sheets, toast, views};
 use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FocusHandle, Focusable, IntoElement, Render, Role, Window, div, px,
+    AnyElement, Context, FocusHandle, Focusable, IntoElement, Render, Role, StyleRefinement,
+    Window, div, px,
 };
 
 impl BerthApp {
-    // --- drawing -----------------------------------------------------------
-
-    /// Headless review hooks: open a sheet without a pointer.
-    pub fn show_prune(&mut self, cx: &mut Context<Self>) {
-        self.open_prune(cx);
-    }
-
-    pub fn show_create(&mut self, kind: CreateKind, cx: &mut Context<Self>) {
-        self.open_create(kind, cx);
-    }
-
-    pub fn show_toast_for_screenshot(&mut self, cx: &mut Context<Self>) {
-        self.notify("Deleted berth-demo-web", false, cx);
-    }
-
-    pub fn confirm_first_delete(&mut self, cx: &mut Context<Self>) {
-        if let Some(container) = self.snapshot.containers.first() {
-            self.confirm_action(
-                "DELETE".into(),
-                format!("/containers/{}?force=1", container.id),
-                "Delete".into(),
-                container.name().to_owned(),
-                cx,
-            );
-        }
-    }
-
-    pub fn select_fixture_container(&mut self, tab: InspectorTab, cx: &mut Context<Self>) {
-        self.select(0, cx);
-        self.inspector_tab = tab;
-        self.logs_loading = false;
-        self.inspect_loading = false;
-        self.logs_text =
-            "2026-11-07 15:20:01 [notice] 1#1: nginx/1.27.2\n2026-11-07 15:20:01 [notice] 1#1: start worker processes\n172.18.0.1 - - [07/Nov/2026:15:21:10 +0000] \"GET / HTTP/1.1\" 200 615".into();
-        self.detail_lifetime = Some(berth_engine::detail::Lifetime {
-            started_at: Some(berth_core::format::now() - 18 * 3600),
-            restarts: 0,
-            exit_code: None,
-            oom_killed: false,
-            restart_policy: Some("unless-stopped".into()),
-            health_log: None,
-            command: Some("nginx -g 'daemon off;'".into()),
-            workdir: Some("/usr/share/nginx/html".into()),
-            env: vec![
-                ("NGINX_HOST".into(), "localhost".into(), false),
-                ("NGINX_PORT".into(), "80".into(), false),
-                ("API_SECRET_TOKEN".into(), "<redacted>".into(), true),
-            ],
-            mounts: vec![berth_engine::detail::MountSummary {
-                kind: "volume".into(),
-                source: "shop-data".into(),
-                destination: "/var/www/html".into(),
-                rw: true,
-            }],
-            ips: vec![("shop_default".into(), "172.18.0.2".into())],
-            run_cmd: Some(
-                "docker run -d --name berth-demo-web -p 8080:80 -v shop-data:/var/www/html nginx:alpine".into(),
-            ),
-            run_redacted: true,
-        });
-        self.detail_top = Some(berth_engine::dto::ContainerTop {
-            titles: vec!["PID".into(), "USER".into(), "TIME".into(), "COMMAND".into()],
-            processes: vec![
-                vec![
-                    "1042".into(),
-                    "root".into(),
-                    "0:00".into(),
-                    "nginx: master process nginx -g daemon off;".into(),
-                ],
-                vec![
-                    "1089".into(),
-                    "nginx".into(),
-                    "0:02".into(),
-                    "nginx: worker process".into(),
-                ],
-            ],
-        });
-        self.detail_changes = vec![
-            berth_engine::dto::FsChange {
-                path: "/var/cache/nginx/client_temp".into(),
-                kind: 1,
-            },
-            berth_engine::dto::FsChange {
-                path: "/etc/nginx/conf.d/default.conf".into(),
-                kind: 0,
-            },
-            berth_engine::dto::FsChange {
-                path: "/run/nginx.pid".into(),
-                kind: 1,
-            },
-        ];
-        cx.notify();
-    }
-
-    pub fn select_fixture_image(&mut self, cx: &mut Context<Self>) {
-        if let Some(image) = self.snapshot.images.first().cloned() {
-            self.select_image(&image.id, image.label(), cx);
-            self.image_layers_loading = false;
-            self.image_layers = vec![
-                berth_engine::dto::ImageLayer {
-                    id: "sha256:a1".into(),
-                    created: berth_core::format::now() - 86_400 * 12,
-                    created_by: "/bin/sh -c #(nop) CMD [\"nginx\" \"-g\" \"daemon off;\"]".into(),
-                    size: 0,
-                    comment: String::new(),
-                },
-                berth_engine::dto::ImageLayer {
-                    id: "sha256:a2".into(),
-                    created: berth_core::format::now() - 86_400 * 12,
-                    created_by: "/bin/sh -c apk add --no-cache nginx-mod-http-js".into(),
-                    size: 40 * 1024 * 1024,
-                    comment: String::new(),
-                },
-                berth_engine::dto::ImageLayer {
-                    id: "sha256:a3".into(),
-                    created: berth_core::format::now() - 86_400 * 30,
-                    created_by: "/bin/sh -c #(nop) ADD file:alpine-minirootfs-3.22.tar.gz in /"
-                        .into(),
-                    size: 8 * 1024 * 1024,
-                    comment: String::new(),
-                },
-            ];
-            cx.notify();
-        }
-    }
-
     fn detail_pane(
         &self,
         pane_width: f32,
         tokens: Tokens,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
-        let id = self.selected_id.as_deref()?;
-        let element = match self.detail_kind {
+        let id = self.view.selected_id.as_deref()?;
+        let element = match self.view.detail_kind {
             DetailKind::Container => {
                 let index = self
                     .snapshot
@@ -196,39 +71,20 @@ impl BerthApp {
 
 impl Focusable for BerthApp {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
-        self.focus_handle.clone()
+        self.view.focus_handle.clone()
     }
 }
 
-impl Render for BerthApp {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let window_width: f32 = window.viewport_size().width.into();
-        let widths = layout::for_window(window_width, self.selected_id.is_some());
+impl BerthApp {
+    /// The page: the rail, and the main column with whatever page is showing.
+    /// Drawn by the page's own view ([`Subview`]), which asks the shell, so
+    /// that everything which draws a page still has the shell in hand.
+    pub(crate) fn render_page(&mut self, viewport: f32, cx: &mut Context<Self>) -> AnyElement {
+        let widths = layout::for_window(viewport, self.view.selected_id.is_some());
         let tokens = self.tokens;
-        let columns = layout::container_columns(widths.content, self.bulk_enabled);
 
-        let body = match self.tab {
-            Tab::Containers => {
-                let page = table::page_header(
-                    self,
-                    widths,
-                    Some(SearchKind::Containers),
-                    Some("Select"),
-                    cx,
-                );
-                let header = table::table_header(self, columns, cx);
-                let table = table::table(self, columns, cx);
-                div()
-                    .flex()
-                    .flex_col()
-                    .w_full()
-                    .flex_1()
-                    .min_h(px(0.0))
-                    .child(page)
-                    .child(header)
-                    .child(table)
-                    .into_any_element()
-            }
+        let body = match self.view.tab {
+            Tab::Containers => views::containers::containers(self, widths, cx),
             Tab::Images => views::images::images(self, widths, cx),
             Tab::Volumes => views::volumes::volumes(self, widths, cx),
             Tab::Networks => views::networks::networks(self, widths, cx),
@@ -260,14 +116,15 @@ impl Render for BerthApp {
                     .flex_1()
                     .min_h(px(0.0))
                     .overflow_y_scroll()
+                    .track_scroll(&self.view.page_scroll)
                     .child(body),
             );
 
+        // Its shortcuts are bound here and not on the root, so that a sheet,
+        // which is not inside it, owns the keyboard while it is open.
         div()
-            .id("berth-root")
-            .role(Role::Application)
-            .aria_label("berth")
-            .track_focus(&self.focus_handle)
+            .id("berth-page")
+            .track_focus(&self.view.focus_handle)
             .key_context("Berth")
             .on_action(cx.listener(Self::on_show_overview))
             .on_action(cx.listener(Self::on_show_containers))
@@ -281,9 +138,80 @@ impl Render for BerthApp {
             .on_action(cx.listener(Self::on_show_settings))
             .on_action(cx.listener(Self::on_focus_search))
             .on_action(cx.listener(Self::on_refresh))
-            .on_action(cx.listener(Self::on_dismiss))
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_select_prev))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() || this.view.sheet.is_some() {
+                    return;
+                }
+                if event.keystroke.key == "space"
+                    && this.view.tab == Tab::Containers
+                    && this.view.bulk_enabled
+                    && (this.view.table_focus.is_focused(window)
+                        || this.view.focus_handle.is_focused(window))
+                {
+                    if let Some(id) = this.view.selected_id.clone() {
+                        this.bulk_toggle(&id, cx);
+                        cx.stop_propagation();
+                    }
+                } else if event.keystroke.key == "enter"
+                    && this.view.tab == Tab::Events
+                    && this.view.focus_handle.is_focused(window)
+                    && let Some(ix) = this.view.event_cursor
+                    && let Some(ev) = this.snapshot.events.get(ix)
+                    && ev.kind == "container"
+                {
+                    let id = ev.actor.id.clone();
+                    this.select_container_by_id(&id, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .flex()
+            .flex_row()
+            .w_full()
+            .h_full()
+            .min_w(px(0.0))
+            .child(rail::rail(self, widths, cx))
+            .child(main)
+            .into_any_element()
+    }
+
+    /// The inspector, when something is selected. Drawn by the inspector's
+    /// own view ([`Subview`]).
+    pub(crate) fn render_inspector(
+        &mut self,
+        viewport: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let widths = layout::for_window(viewport, true);
+        self.detail_pane(widths.pane, self.tokens, cx)
+    }
+}
+
+impl Render for BerthApp {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.place_focus(window, cx);
+        #[cfg(test)]
+        {
+            self.draws += 1;
+        }
+        let tokens = self.tokens;
+        let viewport = f32::from(window.viewport_size().width);
+        let pane_open = self.view.selected_id.is_some();
+        let widths = layout::for_window(viewport, pane_open);
+        // The page and the inspector are views of their own (`subviews`),
+        // each kept from one frame to the next until it changes. A view kept
+        // that way takes its size from here, not from what it draws: the
+        // page has what the row leaves, the inspector its own width.
+        div()
+            .id("berth-root")
+            .role(Role::Application)
+            .aria_label("berth")
+            // What the shell answers with a sheet open as well: the way out
+            // of it, and moving within it.
+            .on_action(cx.listener(Self::on_dismiss))
+            .on_action(cx.listener(Self::on_focus_next))
+            .on_action(cx.listener(Self::on_focus_prev))
             .flex()
             .flex_row()
             .size_full()
@@ -291,16 +219,19 @@ impl Render for BerthApp {
             .text_color(tokens.text)
             .text_size(px(type_scale::BODY))
             .relative()
-            .child(rail::rail(self, widths, cx))
-            .child(main)
-            .children(self.detail_pane(widths.pane, tokens, cx))
+            .child(
+                self.page
+                    .clone()
+                    .cached(StyleRefinement::default().flex_1().min_w(px(0.0)).h_full()),
+            )
+            .children(pane_open.then(|| {
+                self.pane
+                    .clone()
+                    .cached(StyleRefinement::default().w(px(widths.pane)).h_full())
+            }))
             .children(toast::overlay(self, tokens, cx))
             .children(sheets::overlay(self, tokens, cx))
     }
-}
-
-pub(crate) fn pretty_inspect(detail: &berth_engine::detail::ContainerDetail) -> String {
-    serde_json::to_string_pretty(detail).unwrap_or_else(|_| "{}".to_owned())
 }
 
 #[cfg(test)]
@@ -313,10 +244,11 @@ mod tests {
         let (app, cx) = cx.add_window_view(|_, cx| BerthApp::new_fixture(theme::light(), cx));
         app.update(cx, |app, cx| {
             app.select(0, cx);
-            assert!(app.selected_id.is_some());
+            assert!(app.view.selected_id.is_some());
             app.switch_to(Tab::Images, cx);
         });
-        let (tab, selected) = app.read_with(&*cx, |app, _| (app.tab, app.selected_id.clone()));
+        let (tab, selected) =
+            app.read_with(&*cx, |app, _| (app.view.tab, app.view.selected_id.clone()));
         assert_eq!(tab, Tab::Images);
         assert!(selected.is_none());
     }
@@ -328,7 +260,7 @@ mod tests {
             app.select(1, cx);
             app.clear_selection(cx);
         });
-        let selected = app.read_with(&*cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(&*cx, |app, _| app.view.selected_id.clone());
         assert!(selected.is_none());
     }
 }

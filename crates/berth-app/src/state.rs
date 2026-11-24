@@ -9,23 +9,28 @@ use berth_core::format;
 use berth_core::history::History;
 use berth_engine::client::Client;
 use berth_engine::df::Df;
-use berth_engine::discovery::{Dialect, Kind, Runtime};
-use berth_engine::dto::{Container, Image, Info, Network, Port, UsageData, Version, Volume};
-use berth_engine::events::{Actor, Event};
+use berth_engine::discovery::{Dialect, Runtime};
+use berth_engine::dto::{Container, Image, Network, Volume};
+use berth_engine::events::Event;
 use berth_engine::network_counts::Counts;
 use berth_engine::projects::Summary;
-use berth_engine::stats::{Sample, aggregate_cpu_percent, all_sampled, memory_used};
+use berth_engine::stats::{
+    Coverage, Sample, aggregate_cpu_percent, all_memory_known, all_sampled, coverage,
+    measured_cpu_percent, memory_used,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     pub containers: Vec<Container>,
     pub stats: Vec<Sample>,
-    pub stats_complete: bool,
     pub images: Vec<Image>,
     pub volumes: Vec<Volume>,
     pub networks: Vec<Network>,
     pub projects: Vec<Summary>,
     pub network_counts: Counts,
+    /// For each image, in the list's order, how many containers run it.
+    /// Figured out with the lists, so there is one for every image.
+    pub image_use: Vec<usize>,
     pub events: Vec<Event>,
     pub events_error: bool,
     pub error: String,
@@ -33,7 +38,6 @@ pub struct Snapshot {
     pub df: Option<Df>,
     pub df_at: i64,
     pub df_error: String,
-    pub host: HostSample,
 }
 
 impl Snapshot {
@@ -43,6 +47,11 @@ impl Snapshot {
 
     pub fn stat(&self, index: usize) -> Sample {
         self.stats.get(index).copied().unwrap_or_default()
+    }
+
+    /// How many containers run the image at `index` of the list.
+    pub fn image_use(&self, index: usize) -> usize {
+        self.image_use.get(index).copied().unwrap_or(0)
     }
 
     pub fn running(&self) -> usize {
@@ -60,14 +69,29 @@ impl Snapshot {
         aggregate_cpu_percent(&self.containers, &self.stats, cores)
     }
 
-    pub fn stats_complete(&self) -> bool {
-        all_sampled(&self.containers, &self.stats)
+    /// How many of the up containers have a whole sample, and how many there
+    /// are: what a partial figure has to say about itself.
+    pub fn coverage(&self) -> Coverage {
+        coverage(&self.containers, &self.stats)
     }
 
+    /// Container CPU over the containers that were measured, where some were
+    /// not: a lower bound, which `coverage` says how much of.
+    pub fn measured_cpu(&self, cores: f32) -> Option<f32> {
+        measured_cpu_percent(&self.containers, &self.stats, cores)
+    }
+
+    /// True only when every up container answered, and with a working set.
+    pub fn stats_complete(&self) -> bool {
+        all_sampled(&self.containers, &self.stats)
+            && all_memory_known(&self.containers, &self.stats)
+    }
+
+    /// What the engine's stores hold, or `None` when no store has been
+    /// measured. A measured empty engine is `Some(0)`, not unknown.
     pub fn store_bytes(&self) -> Option<i64> {
-        let df = self.df.as_ref()?;
-        let total = df.stores().total();
-        (total > 0).then_some(total)
+        let stores = self.df.as_ref()?.stores();
+        (!stores.is_unmeasured()).then_some(stores.total())
     }
 
     pub fn df_reclaimable(&self) -> Option<i64> {
@@ -93,7 +117,9 @@ impl Snapshot {
     }
 }
 
-/// The machine's own figures, sampled alongside the engine.
+/// The machine's own figures, sampled alongside the engine. They aren't the
+/// engine's, so they are kept beside the snapshot rather than inside it: a
+/// new sample must not rebuild the snapshot, which is the engine's answer.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct HostSample {
     pub mem_total: u64,
@@ -106,14 +132,21 @@ pub struct HostSample {
 #[derive(Clone, Debug, Default)]
 pub struct EngineState {
     pub runtimes: Vec<Runtime>,
-    pub active: usize,
     pub socket: Option<String>,
     pub api: Option<String>,
     pub dialect: Dialect,
     pub client: Option<Client>,
     pub generation: u64,
+    /// The engine being read, by identity rather than by place in the list:
+    /// it is looked up in `runtimes` whenever it is asked for, so a rescan
+    /// that reorders the list, or drops the engine, can't point berth at
+    /// another one.
     pub identity: Option<String>,
     pub preferred_socket: Option<String>,
+    /// A custom socket explicitly requested via `use_socket`, consumed by the
+    /// next discovery pass so it takes precedence over both `BERTH_SOCKET` and
+    /// any currently connected engine.
+    pub requested_socket: Option<String>,
     pub loading: bool,
     pub error: String,
     pub last_update: i64,
@@ -125,8 +158,17 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    /// Where the engine being read is in the list, if it is still there.
+    pub fn active_index(&self) -> Option<usize> {
+        let identity = self.identity.as_ref()?;
+        self.runtimes
+            .iter()
+            .position(|runtime| berth_engine::discovery::identity(runtime) == *identity)
+    }
+
     pub fn active_runtime(&self) -> Option<&Runtime> {
-        self.runtimes.get(self.active)
+        let index = self.active_index()?;
+        self.runtimes.get(index)
     }
 
     pub fn reachable(&self) -> usize {
@@ -167,298 +209,44 @@ impl EngineState {
     }
 }
 
-/// A snapshot for headless screenshots and layout tests. It is never used by
-/// the running app; `BERTH_FIXTURE`/the example opts in explicitly.
-pub fn fixture_snapshot() -> Snapshot {
-    use berth_engine::stats::Sample;
-
-    let containers = vec![
-        Container {
-            id: "demo-1".into(),
-            names: vec!["/berth-demo-web".into()],
-            image: "nginx:alpine".into(),
-            image_id: "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-                .into(),
-            command: "nginx -g 'daemon off;'".into(),
-            state: "running".into(),
-            status: "Up 18 hours".into(),
-            labels: [
-                ("com.docker.compose.project".to_owned(), "shop".to_owned()),
-                ("com.docker.compose.service".to_owned(), "web".to_owned()),
-            ]
-            .into_iter()
-            .collect(),
-            ports: vec![
-                Port {
-                    ip: "0.0.0.0".into(),
-                    private_port: 80,
-                    public_port: Some(8080),
-                    port_type: "tcp".into(),
-                },
-                Port {
-                    ip: "::".into(),
-                    private_port: 80,
-                    public_port: Some(8080),
-                    port_type: "tcp".into(),
-                },
-            ],
-            mounts: vec![berth_engine::dto::Mount {
-                mount_type: "volume".into(),
-                name: Some("shop-data".into()),
-                source: "shop-data".into(),
-                destination: "/var/www/html".into(),
-                mode: "rw".into(),
-                rw: true,
-            }],
-            network_settings: berth_engine::dto::NetworkSettings {
-                networks: [(
-                    "shop_default".to_owned(),
-                    berth_engine::dto::EndpointSettings {
-                        network_id: "net-shop_default".into(),
-                        ip_address: "172.18.0.2".into(),
-                    },
-                )]
-                .into_iter()
-                .collect(),
-            },
-            ..Default::default()
-        },
-        Container {
-            id: "demo-2".into(),
-            names: vec!["/burner".into()],
-            image: "alpine:3.22".into(),
-            image_id: "sha256:2222222222222222222222222222222222222222222222222222222222222222"
-                .into(),
-            command: "/bin/sh -c 'while true; do :; done'".into(),
-            state: "running".into(),
-            status: "Up 1 hour".into(),
-            labels: [
-                ("com.docker.compose.project".to_owned(), "shop".to_owned()),
-                ("com.docker.compose.service".to_owned(), "api".to_owned()),
-            ]
-            .into_iter()
-            .collect(),
-            network_settings: berth_engine::dto::NetworkSettings {
-                networks: [(
-                    "shop_default".to_owned(),
-                    berth_engine::dto::EndpointSettings {
-                        network_id: "net-shop_default".into(),
-                        ip_address: "172.18.0.3".into(),
-                    },
-                )]
-                .into_iter()
-                .collect(),
-            },
-            ..Default::default()
-        },
-    ];
-    let stats = vec![
-        Sample {
-            cpu: 0.0,
-            cpu_known: true,
-            mem: 4_928_307,
-            mem_known: true,
-            limit: 4_080_218_112,
-            net_rx: 21_708,
-            net_tx: 3_584,
-            blk_read: 4_096,
-            blk_write: 12_288,
-            blk_known: true,
-            pids: Some(5),
-            sampled: true,
-        },
-        Sample {
-            cpu: 99.7,
-            cpu_known: true,
-            mem: 364_544,
-            mem_known: true,
-            limit: 4_080_218_112,
-            net_rx: 2_765,
-            net_tx: 126,
-            blk_read: 0,
-            blk_write: 0,
-            blk_known: true,
-            pids: Some(1),
-            sampled: true,
-        },
-    ];
-    let df = Df {
-        image_usage: Some(berth_engine::df::Usage {
-            total_size: 103 * 1024 * 1024,
-            reclaimable: 13 * 1024 * 1024,
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let images = vec![
-        Image {
-            id: "sha256:1111111111111111111111111111111111111111111111111111111111111111".into(),
-            repo_tags: Some(vec!["nginx:alpine".into()]),
-            created: format::now() - 86_400 * 12,
-            size: 48 * 1024 * 1024,
-            ..Default::default()
-        },
-        Image {
-            id: "sha256:2222222222222222222222222222222222222222222222222222222222222222".into(),
-            repo_tags: Some(vec!["alpine:3.22".into()]),
-            created: format::now() - 86_400 * 30,
-            size: 8 * 1024 * 1024,
-            ..Default::default()
-        },
-    ];
-    let volumes = vec![Volume {
-        name: "shop-data".into(),
-        driver: "local".into(),
-        mountpoint: "/var/lib/docker/volumes/shop-data/_data".into(),
-        scope: "local".into(),
-        usage_data: Some(UsageData {
-            size: 32 * 1024 * 1024,
-            ref_count: 1,
-        }),
-        ..Default::default()
-    }];
-    let networks = ["bridge", "host", "none", "shop_default"]
-        .into_iter()
-        .map(|name| Network {
-            name: name.into(),
-            id: format!("net-{name}"),
-            driver: if name == "shop_default" {
-                "bridge"
-            } else {
-                name
-            }
-            .into(),
-            scope: "local".into(),
-            ..Default::default()
-        })
-        .collect::<Vec<_>>();
-    let events = vec![
-        Event {
-            kind: "container".into(),
-            action: "start".into(),
-            time: format::now() - 40,
-            time_nano: (format::now() - 40) * 1_000_000_000,
-            actor: Actor {
-                id: "demo-1".into(),
-                attributes: [
-                    ("name".to_owned(), "berth-demo-web".to_owned()),
-                    ("image".to_owned(), "nginx:alpine".to_owned()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-            ..Default::default()
-        },
-        Event {
-            kind: "container".into(),
-            action: "die".into(),
-            time: format::now() - 80,
-            time_nano: (format::now() - 80) * 1_000_000_000,
-            actor: Actor {
-                id: "demo-1".into(),
-                attributes: [
-                    ("name".to_owned(), "berth-demo-web".to_owned()),
-                    ("image".to_owned(), "nginx:alpine".to_owned()),
-                    ("exitCode".to_owned(), "0".to_owned()),
-                ]
-                .into_iter()
-                .collect(),
-            },
-            ..Default::default()
-        },
-    ];
-    let projects = berth_engine::projects::summaries(&containers);
-    let network_counts = Counts::from_containers(&containers);
-    Snapshot {
-        containers,
-        stats,
-        stats_complete: true,
-        images,
-        volumes,
-        networks,
-        projects,
-        network_counts,
-        events,
-        events_error: false,
-        error: String::new(),
-        last_update: format::now(),
-        df: Some(df),
-        df_at: format::now(),
-        df_error: String::new(),
-        host: HostSample {
-            mem_total: 64 * 1024 * 1024 * 1024,
-            mem_used: 43 * 1024 * 1024 * 1024 + 400 * 1024 * 1024,
-            cpu_percent: 48.9,
-            cpu_known: true,
-            engine_rss: 44 * 1024 * 1024,
-        },
-    }
-}
-
-/// A larger fixture for the performance pass: the same two shapes repeated.
-pub fn fixture_snapshot_with(count: usize) -> Snapshot {
-    let base = fixture_snapshot();
-    let mut snapshot = base.clone();
-    snapshot.containers.clear();
-    snapshot.stats.clear();
-    for index in 0..count {
-        let mut container = base.containers[index % base.containers.len()].clone();
-        container.id = format!("perf-{index}");
-        container.names = vec![format!("/perf-{index}")];
-        container.labels.remove("com.docker.compose.project");
-        snapshot.containers.push(container);
-        snapshot.stats.push(base.stats[index % base.stats.len()]);
-    }
-    snapshot.stats_complete = true;
-    snapshot.projects.clear();
-    snapshot
-}
-
-pub fn fixture_runtime() -> Runtime {
-    Runtime {
-        name: "Lima · lima-berth-docker".into(),
-        kind: Kind::Lima,
-        dialect: Dialect::Docker,
-        socket: "/Users/ascotti/.lima/berth-docker/sock/docker.sock".into(),
-        api: "v1.56".into(),
-        reachable: true,
-        error_text: String::new(),
-        version: Version {
-            version: "29.9.2".into(),
-            api_version: "1.56".into(),
-            ..Default::default()
-        },
-        info: Info {
-            id: "fixture-daemon".into(),
-            ncpu: 4,
-            mem_total: 3 * 1024 * 1024 * 1024 + 800 * 1024 * 1024,
-            containers: 2,
-            containers_running: 2,
-            driver: "overlayfs".into(),
-            operating_system: "Ubuntu 26.04 LTS".into(),
-            os_type: "linux".into(),
-            architecture: "aarch64".into(),
-            docker_root_dir: "/var/lib/docker".into(),
-            cgroup_version: "2".into(),
-            ..Default::default()
-        },
-        info_read: true,
-    }
-}
-
 pub type SharedSnapshot = Arc<Snapshot>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Tab;
 
     #[test]
     fn a_hundred_container_fixture_is_complete() {
-        let snapshot = fixture_snapshot_with(100);
+        let snapshot = crate::fixture::fixture_snapshot_with(100);
         assert_eq!(snapshot.containers.len(), 100);
         assert_eq!(snapshot.stats.len(), 100);
         assert_eq!(snapshot.running(), 100);
         assert!(snapshot.stats_complete());
         assert_eq!(snapshot.containers[99].name(), "perf-99");
+    }
+
+    #[test]
+    fn store_figures_tell_an_unmeasured_engine_from_an_empty_one() {
+        let mut snapshot = crate::fixture::fixture_snapshot();
+        let total = 103 * 1024 * 1024 + 32 * 1024 * 1024;
+        assert_eq!(snapshot.store_bytes(), Some(total));
+        assert_eq!(Tab::Disk.figure(&snapshot, 1), "135 MiB");
+
+        // Nothing measured: unknown, not zero.
+        snapshot.df = Some(Df::default());
+        assert_eq!(snapshot.store_bytes(), None);
+        assert_eq!(Tab::Disk.figure(&snapshot, 1), "—");
+
+        // Measured, and empty: that is a real zero.
+        snapshot.df = Some(Df {
+            image_usage: Some(berth_engine::df::Usage::default()),
+            ..Default::default()
+        });
+        assert_eq!(snapshot.store_bytes(), Some(0));
+        assert_eq!(Tab::Disk.figure(&snapshot, 1), "0 B");
+
+        snapshot.df = None;
+        assert_eq!(snapshot.store_bytes(), None);
     }
 }

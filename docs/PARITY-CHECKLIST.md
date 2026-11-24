@@ -13,7 +13,7 @@ The Zig app remains the behavior oracle in `../code/berth`.
 | Images, volumes, networks, `/system/df` | ✅ | engine tests + live probe |
 | Events interval, merge, dedupe, notices | ✅ | event tests + feed merge |
 | Compose grouping, Start all / Stop all | ✅ | projects tests + stacks UI |
-| Overview cards, cell graphs, host split, engine facts, disk bar | ✅ | screenshots |
+| Overview cards, cell graphs, host split, engine facts, disk bar | ✅ | four series cards, host split, graph lattice/ceiling/peak, partial-sample notes, folded healthy header, and missing facts as `—` (`FIX-BACKLOG.md` U11–U15); live rates remain U16 |
 | Disk page, stores, reclaimable, legend | ✅ | screenshots + df tests |
 | Runtimes page, custom socket, rescan, machine commands | ✅ | UI + command planning |
 | Settings, appearance, engine chooser, maintenance | ✅ | UI + settings round-trip test |
@@ -38,7 +38,7 @@ The Zig app remains the behavior oracle in `../code/berth`.
 | Keyboard Cmd/Ctrl+1…9, Cmd/Ctrl+F | ✅ | keymap test |
 | Tray title, Open/Quit menu | ✅ | app runs with tray |
 | Icons, bundled SVG set | ✅ | screenshots |
-| 100-container render | ✅ | `examples/perf.rs`: 13.9 ms/frame |
+| Virtualized tables (100–5,000 rows) | ✅ | `DataTable` + `uniform_list` (`d00df11`); `examples/perf.rs`: ~0.6 ms/frame in release (33 ms budget) |
 | macOS unsigned `.app` | ✅ | `macos/build.sh` produced `target/Berth.app` |
 
 ## Known gaps (honest)
@@ -52,21 +52,18 @@ The Zig app remains the behavior oracle in `../code/berth`.
    xa11y suite in this checkout. Accessibility roles/labels are present, but
    the screen-reader tree is not asserted. `tests/e2e/README.md` records the
    intended contract.
-3. **Virtualized tables.** Tables render visible rows directly. A 100-container
-   frame is 13.9 ms, so this is not a problem at the tested scale, but
-   `uniform_list` is not used yet.
-4. **Linux was not run here.** It compiles through the platform split and has a
+3. **Linux was not run here.** It compiles through the platform split and has a
    `.desktop` file; CI installs the GPUI deps. X11/Wayland behavior is unverified
    on this machine.
-5. **DMG, Developer ID signing, notarization** are deliberately out of scope.
-6. **Compose `up`/`down`, streaming logs, embedded terminal, Notification Centre**
+4. **DMG, Developer ID signing, notarization** are deliberately out of scope.
+5. **Compose `up`/`down`, streaming logs, embedded terminal, Notification Centre**
    are the same deliberate non-goals as the Zig app.
 
 ## Live verification commands
 
 ```sh
-cargo run -p berth-app --example live_probe   # discovery + containers + stats + logs
-cargo run -p berth-app --example live_actions # create/start/restart/pause/stop/delete a disposable container
-cargo run -p berth-app --example perf         # 100-container frame budget
-cargo run -p berth-app --example screenshots  # full view/theme/size matrix
+cargo run -p berth-app --example live_probe                            # discovery + containers + stats + logs
+cargo run -p berth-app --example live_actions                          # create/start/restart/pause/stop/delete a disposable container
+cargo run -p berth-app --release --example perf --features test-driver # 100 to 5,000-container frame budget
+cargo run -p berth-app --example screenshots --features test-driver    # full view/theme/size matrix
 ```

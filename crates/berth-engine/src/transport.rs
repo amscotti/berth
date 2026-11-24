@@ -4,6 +4,11 @@
 //! of pulling an async HTTP stack into the GPUI process. The rules that matter:
 //! one total deadline per request (a peer that trickles bytes must not extend
 //! it), chunked and content-length bodies, and a hard cap on what is buffered.
+//!
+//! One kind of request is read differently. `/events` is held open by the
+//! engine until *its* clock reaches `until`, which can be a long way off when a
+//! VM's clock has drifted. [`UnixClient::request_quiet`] samples such a stream:
+//! it returns what has arrived instead of waiting for an end that may not come.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -21,6 +26,10 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 /// `/system/df` walks every store.
 pub const DF_TIMEOUT: Duration = Duration::from_secs(15);
+/// A prune walks whole stores too, and deletes as it goes.
+pub const PRUNE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long to sample a stream the engine may hold open, such as `/events`.
+pub const EVENTS_WINDOW: Duration = Duration::from_millis(300);
 
 #[derive(Debug, Error)]
 pub enum TransportError {
@@ -117,6 +126,57 @@ impl UnixClient {
         path: &str,
         body: &[u8],
     ) -> Result<Response, TransportError> {
+        let deadline = Instant::now() + self.timeout;
+        let mut stream = self.send(method, path, body)?;
+        let (status, headers, leftover) = read_headers(&mut stream, deadline, self.timeout, false)?
+            .ok_or(TransportError::Timeout(self.timeout))?;
+        let mut reader = DeadlineReader::new(&mut stream, leftover, deadline, self.timeout);
+        let body = read_body(&mut reader, status, &headers)?;
+        Ok(Response {
+            status,
+            headers,
+            body,
+        })
+    }
+
+    /// For a stream berth only samples. Reading stops once `quiet_after` has
+    /// passed since the request was sent, and whatever arrived is returned:
+    /// a chunk cut off in the middle is dropped, whole ones are kept. `Ok(None)`
+    /// means not even headers had arrived, which is not an error either. A
+    /// malformed answer still fails.
+    pub fn request_quiet(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+        quiet_after: Duration,
+    ) -> Result<Option<Response>, TransportError> {
+        let started = Instant::now();
+        let deadline = started + self.timeout;
+        let mut stream = self.send(method, path, body)?;
+        let quiet_by = (started + quiet_after).min(deadline);
+        let Some((status, headers, leftover)) =
+            read_headers(&mut stream, quiet_by, self.timeout, true)?
+        else {
+            return Ok(None);
+        };
+        let mut reader = DeadlineReader::new(&mut stream, leftover, deadline, self.timeout);
+        reader.quiet_until = Some(quiet_by);
+        let body = read_body(&mut reader, status, &headers)?;
+        Ok(Some(Response {
+            status,
+            headers,
+            body,
+        }))
+    }
+
+    /// Connect and write the request. The caller reads the answer.
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        body: &[u8],
+    ) -> Result<std::os::unix::net::UnixStream, TransportError> {
         let mut stream =
             std::os::unix::net::UnixStream::connect(&self.socket).map_err(|source| {
                 TransportError::Connect {
@@ -124,7 +184,6 @@ impl UnixClient {
                     source,
                 }
             })?;
-        let deadline = Instant::now() + self.timeout;
         stream.set_write_timeout(Some(self.timeout))?;
         stream.set_read_timeout(Some(self.timeout))?;
 
@@ -142,35 +201,7 @@ impl UnixClient {
 
         stream.write_all(&request)?;
         stream.flush()?;
-
-        let (status, headers, leftover) = read_headers(&mut stream, deadline, self.timeout)?;
-        let chunked = headers.iter().any(|(key, value)| {
-            key == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")
-        });
-        let content_length = headers
-            .iter()
-            .find(|(key, _)| key == "content-length")
-            .and_then(|(_, value)| value.trim().parse::<usize>().ok());
-
-        let mut reader = DeadlineReader::new(&mut stream, leftover, deadline, self.timeout);
-        let body = if status == 204 || status == 304 || (100..200).contains(&status) {
-            Vec::new()
-        } else if chunked {
-            reader.read_chunked()?
-        } else if let Some(length) = content_length {
-            if length > MAX_BODY_BYTES {
-                return Err(TransportError::BodyTooLarge);
-            }
-            reader.read_exact_vec(length)?
-        } else {
-            reader.read_to_end()?
-        };
-
-        Ok(Response {
-            status,
-            headers,
-            body,
-        })
+        Ok(stream)
     }
 }
 
@@ -184,11 +215,14 @@ fn remaining(deadline: Instant, timeout: Duration) -> Result<Duration, Transport
 
 type HeaderBlock = (u16, Vec<(String, String)>, Vec<u8>);
 
+/// Read the header block. `None`, only while sampling, when nothing had
+/// arrived by the deadline.
 fn read_headers(
     stream: &mut std::os::unix::net::UnixStream,
     deadline: Instant,
     timeout: Duration,
-) -> Result<HeaderBlock, TransportError> {
+    sampling: bool,
+) -> Result<Option<HeaderBlock>, TransportError> {
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
 
@@ -217,14 +251,22 @@ fn read_headers(
                     .ok_or(TransportError::Malformed("bad header"))?;
                 headers.push((key.trim().to_ascii_lowercase(), value.trim().to_owned()));
             }
-            return Ok((status, headers, leftover));
+            return Ok(Some((status, headers, leftover)));
         }
 
+        if sampling && Instant::now() >= deadline {
+            return Ok(None);
+        }
         let left = remaining(deadline, timeout)?;
         stream.set_read_timeout(Some(left)).ok();
-        let n = stream
-            .read(&mut chunk)
-            .map_err(|error| map_read_error(error, timeout))?;
+        let n = match stream.read(&mut chunk) {
+            Ok(n) => n,
+            Err(error) => match map_read_error(error, timeout) {
+                // A quiet peer is how a sample ends early; it isn't a failure.
+                TransportError::Timeout(_) if sampling => return Ok(None),
+                error => return Err(error),
+            },
+        };
         if n == 0 {
             return Err(TransportError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -238,14 +280,77 @@ fn read_headers(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransferEncoding {
+    None,
+    Chunked,
+    Unsupported,
+}
+
+fn transfer_encoding(headers: &[(String, String)]) -> TransferEncoding {
+    let mut tokens = Vec::new();
+    for (key, value) in headers {
+        if key == "transfer-encoding" {
+            for part in value.split(',') {
+                let token = part.trim().to_ascii_lowercase();
+                if !token.is_empty() {
+                    tokens.push(token);
+                }
+            }
+        }
+    }
+    if tokens.is_empty() {
+        TransferEncoding::None
+    } else if tokens.len() == 1 && tokens[0] == "chunked" {
+        TransferEncoding::Chunked
+    } else if tokens.len() == 1 && tokens[0] == "identity" {
+        TransferEncoding::None
+    } else {
+        TransferEncoding::Unsupported
+    }
+}
+
+fn content_length(headers: &[(String, String)]) -> Option<usize> {
+    headers
+        .iter()
+        .find(|(key, _)| key == "content-length")
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+}
+
+fn read_body(
+    reader: &mut DeadlineReader,
+    status: u16,
+    headers: &[(String, String)],
+) -> Result<Vec<u8>, TransportError> {
+    if status == 204 || status == 304 || (100..200).contains(&status) {
+        return Ok(Vec::new());
+    }
+    match transfer_encoding(headers) {
+        TransferEncoding::Chunked => return reader.read_chunked(),
+        TransferEncoding::Unsupported => {
+            return Err(TransportError::Malformed("unsupported transfer-encoding"));
+        }
+        TransferEncoding::None => {}
+    }
+    match content_length(headers) {
+        Some(length) if length > MAX_BODY_BYTES => Err(TransportError::BodyTooLarge),
+        Some(length) => reader.read_body_of(length),
+        None => reader.read_to_end(),
+    }
+}
+
 /// Reads the body after the header block, first draining bytes that arrived in
 /// the same socket read as the headers.
 struct DeadlineReader<'a> {
     stream: &'a mut std::os::unix::net::UnixStream,
+    /// Bytes read from the socket and not yet consumed.
     buffer: Vec<u8>,
     pos: usize,
     deadline: Instant,
     timeout: Duration,
+    /// Set while sampling: once this instant passes, a read that would wait
+    /// returns nothing instead.
+    quiet_until: Option<Instant>,
 }
 
 impl<'a> DeadlineReader<'a> {
@@ -261,9 +366,16 @@ impl<'a> DeadlineReader<'a> {
             pos: 0,
             deadline,
             timeout,
+            quiet_until: None,
         }
     }
 
+    fn sampling(&self) -> bool {
+        self.quiet_until.is_some()
+    }
+
+    /// Read into `out`, from the leftover buffer first. Zero means the peer
+    /// closed the connection or, while sampling, that it is time to stop.
     fn fill(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
         if self.pos < self.buffer.len() {
             let available = &self.buffer[self.pos..];
@@ -272,35 +384,66 @@ impl<'a> DeadlineReader<'a> {
             self.pos += n;
             return Ok(n);
         }
-        let left = remaining(self.deadline, self.timeout)?;
-        self.stream.set_read_timeout(Some(left)).ok();
+        if let Some(quiet_until) = self.quiet_until
+            && Instant::now() >= quiet_until
+        {
+            return Ok(0);
+        }
+        // Never wait past the quiet point: a read that begins before it must
+        // still end at it, or a held stream would block until the deadline.
+        let mut left = remaining(self.deadline, self.timeout)?;
+        if let Some(quiet_until) = self.quiet_until {
+            left = left.min(quiet_until.saturating_duration_since(Instant::now()));
+        }
         self.stream
-            .read(out)
-            .map_err(|error| map_read_error(error, self.timeout))
+            .set_read_timeout(Some(left.max(Duration::from_millis(1))))
+            .ok();
+        match self.stream.read(out) {
+            Ok(n) => Ok(n),
+            Err(error) => match map_read_error(error, self.timeout) {
+                TransportError::Timeout(_) if self.sampling() => Ok(0),
+                error => Err(error),
+            },
+        }
     }
 
-    fn read_exact_slice(&mut self, out: &mut [u8]) -> Result<(), TransportError> {
+    /// Pull more bytes into the leftover buffer. Zero means the stream ended.
+    fn pull(&mut self) -> Result<usize, TransportError> {
+        self.buffer.clear();
+        self.pos = 0;
+        let mut chunk = [0u8; 4096];
+        let n = self.fill(&mut chunk)?;
+        self.buffer.extend_from_slice(&chunk[..n]);
+        Ok(n)
+    }
+
+    /// Read up to `out.len()` bytes, returning how many actually arrived.
+    /// Fewer than `out.len()` means the stream ended first.
+    fn read_exact_slice(&mut self, out: &mut [u8]) -> Result<usize, TransportError> {
         let mut read = 0;
         while read < out.len() {
             let n = self.fill(&mut out[read..])?;
             if n == 0 {
-                return Err(TransportError::Malformed("short body"));
+                return Ok(read);
             }
             read += n;
         }
-        Ok(())
+        Ok(read)
     }
 
-    fn read_exact_vec(&mut self, len: usize) -> Result<Vec<u8>, TransportError> {
+    /// A body of known length. A sample may be cut short (keeping only the
+    /// bytes that arrived); a request may not.
+    fn read_body_of(&mut self, len: usize) -> Result<Vec<u8>, TransportError> {
         let mut out = vec![0u8; len];
-        self.read_exact_slice(&mut out)?;
-        Ok(out)
-    }
-
-    fn read_exact_into(&mut self, out: &mut Vec<u8>, len: usize) -> Result<(), TransportError> {
-        let start = out.len();
-        out.resize(start + len, 0);
-        self.read_exact_slice(&mut out[start..])
+        let read = self.read_exact_slice(&mut out)?;
+        if read == len {
+            Ok(out)
+        } else if self.sampling() {
+            out.truncate(read);
+            Ok(out)
+        } else {
+            Err(TransportError::Malformed("short body"))
+        }
     }
 
     fn read_to_end(&mut self) -> Result<Vec<u8>, TransportError> {
@@ -319,48 +462,43 @@ impl<'a> DeadlineReader<'a> {
         Ok(out)
     }
 
-    fn read_line(&mut self) -> Result<Vec<u8>, TransportError> {
+    /// One CRLF-terminated line, without its terminator. `None` when the
+    /// stream ended first.
+    fn read_line(&mut self) -> Result<Option<Vec<u8>>, TransportError> {
         let mut line = Vec::new();
-        let mut chunk = [0u8; 4096];
         loop {
             while self.pos < self.buffer.len() {
-                let b = self.buffer[self.pos];
+                let byte = self.buffer[self.pos];
                 self.pos += 1;
-                line.push(b);
+                line.push(byte);
                 if line.ends_with(b"\r\n") {
                     line.truncate(line.len() - 2);
-                    return Ok(line);
+                    return Ok(Some(line));
                 }
                 if line.len() > 1024 {
                     return Err(TransportError::Malformed("chunk line too long"));
                 }
             }
-            self.buffer.clear();
-            self.pos = 0;
-            let left = remaining(self.deadline, self.timeout)?;
-            self.stream.set_read_timeout(Some(left)).ok();
-            let n = self
-                .stream
-                .read(&mut chunk)
-                .map_err(|error| map_read_error(error, self.timeout))?;
-            if n == 0 {
-                return Err(TransportError::Malformed("connection closed in chunk"));
+            if self.pull()? == 0 {
+                return Ok(None);
             }
-            self.buffer.extend_from_slice(&chunk[..n]);
         }
     }
 
     fn read_chunked(&mut self) -> Result<Vec<u8>, TransportError> {
         let mut out = Vec::new();
         loop {
-            let line = self.read_line()?;
+            let Some(line) = self.read_line()? else {
+                return self.ended(out, "connection closed in chunk");
+            };
             let size_text = String::from_utf8_lossy(&line);
             let size_hex = size_text.split(';').next().unwrap_or("").trim();
             let size = usize::from_str_radix(size_hex, 16)
                 .map_err(|_| TransportError::Malformed("bad chunk size"))?;
             if size == 0 {
-                loop {
-                    let trailer = self.read_line()?;
+                // Trailers end at an empty line; a stream that ends first is
+                // done too.
+                while let Some(trailer) = self.read_line()? {
                     if trailer.is_empty() {
                         break;
                     }
@@ -374,14 +512,31 @@ impl<'a> DeadlineReader<'a> {
             {
                 return Err(TransportError::BodyTooLarge);
             }
-            self.read_exact_into(&mut out, size)?;
+            let start = out.len();
+            out.resize(start + size, 0);
+            if self.read_exact_slice(&mut out[start..])? < size {
+                out.truncate(start);
+                return self.ended(out, "short body");
+            }
             let mut terminator = [0u8; 2];
-            self.read_exact_slice(&mut terminator)?;
+            if self.read_exact_slice(&mut terminator)? < 2 {
+                return self.ended(out, "missing chunk terminator");
+            }
             if &terminator != b"\r\n" {
                 return Err(TransportError::Malformed("missing chunk terminator"));
             }
         }
         Ok(out)
+    }
+
+    /// The stream ended early. That is how a sample ends; for a request it is
+    /// a malformed answer.
+    fn ended(&self, out: Vec<u8>, how: &'static str) -> Result<Vec<u8>, TransportError> {
+        if self.sampling() {
+            Ok(out)
+        } else {
+            Err(TransportError::Malformed(how))
+        }
     }
 }
 
@@ -403,116 +558,4 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn socket_path() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("berth-transport-{}-{id}.sock", std::process::id()))
-    }
-
-    fn serve(
-        response: impl FnOnce(&mut std::os::unix::net::UnixStream) + Send + 'static,
-    ) -> PathBuf {
-        let path = socket_path();
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut request = [0u8; 4096];
-                let _ = stream.read(&mut request);
-                response(&mut stream);
-            }
-        });
-        path
-    }
-
-    fn serve_bytes(response: &'static [u8]) -> PathBuf {
-        serve(move |stream| {
-            let _ = stream.write_all(response);
-        })
-    }
-
-    #[test]
-    fn reads_a_content_length_response() {
-        let path = serve_bytes(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nContent-Type: text/plain\r\n\r\nhello",
-        );
-        let response = UnixClient::new(path)
-            .request("GET", "/version", b"")
-            .expect("request");
-        assert_eq!(response.status, 200);
-        assert_eq!(response.body, b"hello");
-        assert_eq!(response.header("content-type"), Some("text/plain"));
-        assert!(response.ok_for(false));
-    }
-
-    #[test]
-    fn decodes_a_chunked_response() {
-        let path = serve_bytes(
-            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
-        );
-        let response = UnixClient::new(path)
-            .request("GET", "/", b"")
-            .expect("request");
-        assert_eq!(response.body, b"hello world");
-    }
-
-    #[test]
-    fn reads_to_eof_without_a_length() {
-        let path = serve_bytes(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc");
-        let response = UnixClient::new(path)
-            .request("GET", "/", b"")
-            .expect("request");
-        assert_eq!(response.body, b"abc");
-    }
-
-    #[test]
-    fn a_304_is_ok_only_for_lifecycle_calls() {
-        let path = serve_bytes(b"HTTP/1.1 304 Not Modified\r\nContent-Length: 0\r\n\r\n");
-        let response = UnixClient::new(path)
-            .request("POST", "/start", b"")
-            .expect("request");
-        assert!(!response.ok_for(false));
-        assert!(response.ok_for(true));
-    }
-
-    #[test]
-    fn a_trickle_cannot_extend_the_total_deadline() {
-        let path = serve(|stream| {
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\n");
-            for _ in 0..10 {
-                std::thread::sleep(Duration::from_millis(80));
-                let _ = stream.write_all(b"x");
-            }
-        });
-        let started = Instant::now();
-        let error = UnixClient::new(path)
-            .with_timeout(Duration::from_millis(300))
-            .request("GET", "/", b"")
-            .expect_err("must time out");
-        assert!(matches!(error, TransportError::Timeout(_)));
-        assert!(started.elapsed() < Duration::from_secs(2));
-    }
-
-    #[test]
-    fn a_malformed_header_is_named() {
-        let path = serve_bytes(b"not http\r\n\r\n");
-        let error = UnixClient::new(path)
-            .request("GET", "/", b"")
-            .expect_err("must fail");
-        assert!(matches!(error, TransportError::Malformed(_)));
-    }
-
-    #[test]
-    fn an_oversized_body_is_refused_before_buffering_it() {
-        let path = serve_bytes(b"HTTP/1.1 200 OK\r\nContent-Length: 999999999\r\n\r\n");
-        let error = UnixClient::new(path)
-            .request("GET", "/", b"")
-            .expect_err("must fail");
-        assert!(matches!(error, TransportError::BodyTooLarge));
-    }
-}
+mod tests;

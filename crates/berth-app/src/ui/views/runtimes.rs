@@ -1,13 +1,17 @@
 //! Runtimes: the sockets berth found, and the one it is reading.
 
+use berth_core::format;
 use berth_engine::discovery::{Kind, Runtime};
 use berth_ui::layout::{self, Widths};
-use berth_ui::theme::Tokens;
+use berth_ui::theme::{TintKind, Tokens, tint};
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, Role, div, px};
+use gpui::{AnyElement, Context, FontWeight, SharedString, div, px};
 
 use crate::app::BerthApp;
-use crate::ui::table::{empty_state, page_header};
+use crate::jobs::engine_ops::EngineOp;
+use crate::ui::kit::{Button, button, caption, card, card_header, icon_chip};
+use crate::ui::page::{empty_state, page_header};
 
 pub fn runtimes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -20,7 +24,7 @@ pub fn runtimes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         .gap(px(10.0))
         .child(header);
 
-    content = content.child(custom_socket(app, tokens, cx));
+    content = content.child(custom_socket(app, widths, tokens, cx));
     if app.engine.runtimes.is_empty() {
         content = content.child(empty_state(
             if app.engine.loading {
@@ -34,44 +38,29 @@ pub fn runtimes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         return content.into_any_element();
     }
 
-    for (index, runtime) in app.engine.runtimes.iter().enumerate() {
-        content = content.child(runtime_card(app, index, runtime, tokens, cx));
+    for (runtime_idx, runtime) in app.engine.runtimes.iter().enumerate() {
+        content = content.child(runtime_card(app, runtime_idx, runtime, tokens, cx));
     }
     content.into_any_element()
 }
 
-fn custom_socket(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w_full()
-        .gap(px(8.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(tokens.text)
-                        .child("Custom socket"),
-                )
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(tokens.muted)
-                        .child("unix:// is optional"),
-                ),
-        )
+fn custom_socket(
+    app: &BerthApp,
+    widths: Widths,
+    tokens: Tokens,
+    cx: &mut Context<BerthApp>,
+) -> impl IntoElement {
+    let socket_w = (widths.content - 2.0 * layout::CARD_PADDING - 104.0).clamp(180.0, 420.0);
+    app.view
+        .socket_input
+        .update(cx, |input, _| input.set_width(socket_w));
+    let empty = app.view.socket_input.read(cx).text().trim().is_empty();
+    card(tokens)
+        .child(card_header(
+            "Custom socket",
+            Some(caption("unix:// is optional", tokens).into_any_element()),
+            tokens,
+        ))
         .child(
             div()
                 .flex()
@@ -79,110 +68,96 @@ fn custom_socket(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
                 .items_center()
                 .w_full()
                 .gap(px(8.0))
-                .child(app.socket_input.clone())
+                .child(app.view.socket_input.clone())
                 .child(
-                    div()
-                        .id("connect-socket")
-                        .flex()
-                        .items_center()
-                        .h(px(28.0))
-                        .px(px(14.0))
-                        .rounded(px(14.0))
-                        .bg(tokens.accent)
-                        .role(Role::Button)
-                        .aria_label("Connect")
+                    button("connect-socket", "Connect", tokens)
+                        .primary()
+                        .disabled(empty)
+                        .description("Enter a socket path first")
                         .on_click(cx.listener(|this, _, _, cx| {
-                            let path = this.socket_input.read(cx).text().trim().to_owned();
+                            let path = this.view.socket_input.read(cx).text().trim().to_owned();
                             if !path.is_empty() {
                                 this.use_socket(&path, cx);
                             }
-                        }))
-                        .child(
-                            div()
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(tokens.accent_text)
-                                .child("Connect"),
-                        ),
+                        })),
                 ),
-        );
-    card = card.child(
-        div().flex().flex_row().w_full().justify_end().child(
-            div()
-                .id("rescan")
-                .flex()
-                .items_center()
-                .h(px(26.0))
-                .px(px(10.0))
-                .rounded(px(13.0))
-                .bg(tokens.surface_hover)
-                .role(Role::Button)
-                .aria_label("Rescan sockets")
-                .on_click(cx.listener(|this, _, _, cx| this.rescan(cx)))
-                .child(
-                    div()
-                        .text_size(px(11.5))
-                        .text_color(tokens.text)
-                        .child("Rescan sockets"),
-                ),
-        ),
-    );
-    card
+        )
+        .child(
+            div().flex().flex_row().w_full().justify_end().child(
+                button("rescan", "Rescan sockets", tokens)
+                    .on_click(cx.listener(|this, _, _, cx| this.rescan(cx))),
+            ),
+        )
 }
 
+/// One engine. The card itself isn't a control: it holds one, so that the
+/// buttons inside it aren't buttons inside a button.
 fn runtime_card(
     app: &BerthApp,
-    index: usize,
+    runtime_idx: usize,
     runtime: &Runtime,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> impl IntoElement {
-    let active = index == app.engine.active;
-    let mut card = div()
-        .id(("runtime", index))
-        .flex()
-        .flex_col()
-        .w_full()
+    let active = app.engine.active_index() == Some(runtime_idx);
+    let tint = tint(tokens, TintKind::Runtimes);
+    // The active engine's card is tinted, and its buttons are drawn for that.
+    let ground = if active {
+        tokens.active_wash()
+    } else {
+        tokens.surface
+    };
+
+    let choose: AnyElement = if active {
+        div()
+            .flex()
+            .items_center()
+            .h(px(layout::CONTROL_SMALL))
+            .px(px(9.0))
+            .rounded(px(layout::CONTROL_SMALL / 2.0))
+            .bg(tokens.accent_wash())
+            .text_size(px(type_scale::LABEL))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(tokens.accent_text_pill())
+            .child("active")
+            .into_any_element()
+    } else if runtime.reachable {
+        button(
+            SharedString::from(format!("runtime-use-{runtime_idx}")),
+            "Use this engine",
+            tokens,
+        )
+        .small()
+        .on_click(cx.listener(move |this, _, _, cx| this.select_runtime(runtime_idx, cx)))
+        .into_any_element()
+    } else {
+        div().into_any_element()
+    };
+
+    let mut card = card(tokens)
         .gap(px(6.0))
         .p(px(14.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(if active {
-            tokens.accent.alpha(0.08)
-        } else {
-            tokens.surface
-        })
-        .border_1()
+        .bg(ground)
         .border_color(if active { tokens.accent } else { tokens.border })
-        .role(Role::Button)
-        .aria_label(runtime.name.clone())
-        .on_click(cx.listener(move |this, _, _, cx| this.select_runtime(index, cx)))
         .child(
             div()
                 .flex()
                 .flex_row()
                 .items_center()
                 .gap(px(8.0))
-                .child(chip(tokens.muted))
+                .child(icon_chip("runtimes", 12.0, tint, tokens, layout::CHIP))
                 .child(
                     div()
-                        .text_size(px(13.0))
+                        .text_size(px(type_scale::BODY))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(tokens.text)
                         .child(runtime.name.clone()),
                 )
-                .when(active, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(tokens.accent_text_pill())
-                            .child("active"),
-                    )
-                })
                 .child(div().flex_1())
+                .child(choose)
                 .child(
                     div()
-                        .text_size(px(11.0))
+                        .text_size(px(type_scale::LABEL))
                         .text_color(if runtime.reachable {
                             tokens.success_text()
                         } else {
@@ -197,42 +172,38 @@ fn runtime_card(
         )
         .child(
             div()
-                .text_size(px(11.0))
-                .font_family("Menlo")
+                .text_size(px(type_scale::MONO))
+                .font_family(type_scale::MONO_FAMILY)
                 .text_color(tokens.muted)
                 .child(runtime.socket.clone()),
         );
     if runtime.reachable {
-        card = card.child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.muted)
-                .child(format!(
-                    "v{} · API {} · {} containers",
-                    runtime.version.version,
-                    runtime.version.api_version,
-                    runtime.info.containers_running
-                )),
-        );
+        let containers = if runtime.info_read {
+            format::count(runtime.info.containers_running, "container", "containers")
+        } else {
+            "containers —".to_owned()
+        };
+        card = card.child(caption(
+            format!(
+                "v{} · API {} · {containers}",
+                runtime.version.version, runtime.version.api_version
+            ),
+            tokens,
+        ));
     } else if !runtime.error_text.is_empty() {
         card = card.child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .text_color(tokens.danger_text())
                 .child(runtime.error_text.clone()),
         );
     }
     if ops_supported(runtime.kind) {
-        card = card.child(
-            div()
-                .flex()
-                .flex_row()
-                .gap(px(6.0))
-                .pt(px(2.0))
-                .child(small_button("Start", index, runtime, tokens, cx))
-                .child(small_button("Stop", index, runtime, tokens, cx))
-                .child(small_button("Restart", index, runtime, tokens, cx)),
-        );
+        let mut row = div().flex().flex_row().gap(px(6.0)).pt(px(2.0));
+        for &op in machine_ops(runtime) {
+            row = row.child(machine_button(op, runtime_idx, runtime, ground, tokens, cx));
+        }
+        card = card.child(row);
     }
     card
 }
@@ -241,47 +212,79 @@ fn ops_supported(kind: Kind) -> bool {
     matches!(kind, Kind::Lima | Kind::Colima | Kind::PodmanMachine)
 }
 
-fn chip(color: gpui::Hsla) -> Div {
-    div()
-        .w(px(20.0))
-        .h(px(20.0))
-        .rounded(px(5.0))
-        .bg(color.alpha(0.14))
-        .flex()
-        .items_center()
-        .justify_center()
-        .child(div().w(px(8.0)).h(px(8.0)).rounded(px(2.0)).bg(color))
+/// What can be done to a machine. One that is answering can be stopped or
+/// restarted; one that isn't can only be started. Offering the others is
+/// offering a refusal.
+pub(crate) fn machine_ops(runtime: &Runtime) -> &'static [EngineOp] {
+    if !ops_supported(runtime.kind) {
+        return &[];
+    }
+    if runtime.reachable {
+        &[EngineOp::Stop, EngineOp::Restart]
+    } else {
+        &[EngineOp::Start]
+    }
 }
 
-fn small_button(
-    label: &'static str,
-    index: usize,
+/// Unique element id for one machine button, scoped by runtime index so two
+/// VM cards never collide.
+pub(crate) fn machine_button_id(runtime_idx: usize, op: EngineOp) -> SharedString {
+    SharedString::from(format!("runtime-{runtime_idx}-op-{}", op.word()))
+}
+
+/// A machine command. Stopping a machine takes every container on it down,
+/// so it is drawn as the destructive action it is.
+fn machine_button(
+    op: EngineOp,
+    runtime_idx: usize,
     runtime: &Runtime,
+    on: gpui::Hsla,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
-) -> impl IntoElement {
-    let verb = label.to_ascii_lowercase();
+) -> Button {
     let kind = runtime.kind;
     let socket = runtime.socket.clone();
-    let id = gpui::SharedString::from(format!("runtime-op-{index}-{verb}"));
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .h(px(24.0))
-        .px(px(9.0))
-        .rounded(px(12.0))
-        .bg(tokens.surface_hover)
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(cx.listener(move |this, _, _, cx| {
-            cx.stop_propagation();
-            this.open_engine_op(&verb, kind, socket.clone(), cx);
-        }))
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.text)
-                .child(label),
-        )
+    let button = button(machine_button_id(runtime_idx, op), op.label(), tokens).small();
+    let button = if op == EngineOp::Stop {
+        // A wash is a tint of what it is on, and on the active engine's card
+        // that isn't a plain card.
+        button.danger_wash().on_surface(on)
+    } else {
+        button
+    };
+    button.on_click(
+        cx.listener(move |this, _, _, cx| this.open_engine_op(op, kind, socket.clone(), cx)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_machine_offers_only_what_its_state_allows() {
+        let mut runtime = Runtime {
+            kind: Kind::Lima,
+            reachable: true,
+            ..Default::default()
+        };
+        assert_eq!(machine_ops(&runtime), [EngineOp::Stop, EngineOp::Restart]);
+        runtime.reachable = false;
+        assert_eq!(machine_ops(&runtime), [EngineOp::Start]);
+        // Not a machine at all.
+        runtime.kind = Kind::Dockerd;
+        assert!(machine_ops(&runtime).is_empty());
+    }
+
+    #[test]
+    fn two_vm_cards_get_distinct_machine_button_ids() {
+        assert_ne!(
+            machine_button_id(0, EngineOp::Stop),
+            machine_button_id(1, EngineOp::Stop)
+        );
+        assert_ne!(
+            machine_button_id(0, EngineOp::Stop),
+            machine_button_id(0, EngineOp::Restart)
+        );
+    }
 }

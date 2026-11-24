@@ -14,7 +14,9 @@ use crate::dto::{
 };
 use crate::events::{Event, parse_events};
 use crate::guards;
-use crate::transport::{DEFAULT_TIMEOUT, DF_TIMEOUT, Response, TransportError, UnixClient};
+use crate::transport::{
+    DEFAULT_TIMEOUT, DF_TIMEOUT, EVENTS_WINDOW, PRUNE_TIMEOUT, Response, TransportError, UnixClient,
+};
 
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -176,16 +178,38 @@ impl Client {
 
     pub fn volumes(&self) -> Result<Vec<Volume>, ClientError> {
         let response: crate::dto::ListResponse<Volume> = self.get("/volumes", DEFAULT_TIMEOUT)?;
-        Ok(response.volumes.unwrap_or_default())
+        let volumes = response.volumes.unwrap_or_default();
+        if volumes.len() > guards::MAX_ENTRIES {
+            return Err(ClientError::Availability(format!(
+                "refusing to parse (availability limit — more than {} entries)",
+                guards::MAX_ENTRIES
+            )));
+        }
+        Ok(volumes)
     }
 
     pub fn networks(&self) -> Result<Vec<Network>, ClientError> {
         self.get_list("/networks", DEFAULT_TIMEOUT)
     }
 
+    /// The events between `since` and `until`, in Unix seconds on the engine's
+    /// clock. The engine holds this stream open until its own clock reaches
+    /// `until`, so the answer is sampled: what has arrived within
+    /// [`EVENTS_WINDOW`] is taken, and a stream still open is not an error.
     pub fn events(&self, since: i64, until: i64) -> Result<Vec<Event>, ClientError> {
         let path = format!("/events?since={since}&until={until}");
-        let response = self.call("GET", &path, b"", false, DEFAULT_TIMEOUT)?;
+        let response = UnixClient::new(self.socket.as_str())
+            .with_timeout(DEFAULT_TIMEOUT)
+            .request_quiet("GET", &self.prefixed(&path), b"", EVENTS_WINDOW)?;
+        let Some(response) = response else {
+            return Ok(Vec::new());
+        };
+        if !response.ok_for(false) {
+            return Err(ClientError::Engine {
+                status: response.status,
+                message: engine_message(&response),
+            });
+        }
         Ok(parse_events(&response.body))
     }
 
@@ -213,6 +237,13 @@ impl Client {
     }
 
     pub fn inspect(&self, id: &str) -> Result<ContainerDetail, ClientError> {
+        self.get(&format!("/containers/{}/json", encode(id)), DEFAULT_TIMEOUT)
+    }
+
+    /// The engine's inspect document for a container, whole. The typed
+    /// [`ContainerDetail`] keeps only what berth reads; an Inspect tab should
+    /// show what the engine said, not what berth modelled.
+    pub fn inspect_document(&self, id: &str) -> Result<serde_json::Value, ClientError> {
         self.get(&format!("/containers/{}/json", encode(id)), DEFAULT_TIMEOUT)
     }
 
@@ -299,13 +330,15 @@ impl Client {
         Ok(parsed.id)
     }
 
-    /// POST a prune route and return the bytes it reclaimed.
+    /// POST a prune route and return the bytes it reclaimed. A prune deletes
+    /// as it goes, so it gets a long budget: giving up early would report a
+    /// failure while the engine is still freeing space.
     pub fn prune(&self, path: &str) -> Result<u64, ClientError> {
-        let response = self.call("POST", path, b"", false, DEFAULT_TIMEOUT)?;
+        let response = self.call("POST", path, b"", false, PRUNE_TIMEOUT)?;
         if response.body.is_empty() {
             return Ok(0);
         }
-        let value: serde_json::Value = serde_json::from_slice(&response.body)?;
+        let value: serde_json::Value = self.parse(&response.body)?;
         Ok(value
             .get("SpaceReclaimed")
             .and_then(serde_json::Value::as_u64)
@@ -416,33 +449,15 @@ pub fn encode(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn serve(response: &'static [u8]) -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("berth-client-{}-{id}.sock", std::process::id()));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut request = [0u8; 4096];
-                let _ = stream.read(&mut request);
-                let _ = stream.write_all(response);
-            }
-        });
-        path
-    }
+    use crate::test_support::MockEngine;
 
     #[test]
     fn version_parses_and_adopts_the_prefix() {
-        let path = serve(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 56\r\n\r\n{\"Version\":\"29.1.3\",\"ApiVersion\":\"1.56\",\"Components\":[]}",
-        );
-        let mut client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine
+            .on("GET /version")
+            .ok(r#"{"Version":"29.1.3","ApiVersion":"1.56","Components":[]}"#);
+        let mut client = Client::new(engine.socket());
         let version = client.version().expect("version");
         assert_eq!(version.version, "29.1.3");
         client.adopt_api(&version);
@@ -451,10 +466,11 @@ mod tests {
 
     #[test]
     fn an_engine_error_keeps_the_engine_message() {
-        let path = serve(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 31\r\n\r\n{\"message\":\"no such container\"}",
-        );
-        let client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine
+            .on("GET /containers/missing/json")
+            .error(404, "no such container");
+        let client = Client::new(engine.socket());
         let error = client.inspect("missing").expect_err("must fail");
         match error {
             ClientError::Engine { status, message } => {
@@ -475,13 +491,9 @@ mod tests {
             body.push_str("{}");
         }
         body.push(']');
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        let leaked: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-        let path = serve(leaked);
-        let client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine.on("GET /containers/json").ok(body);
+        let client = Client::new(engine.socket());
         let error = client.containers().expect_err("must refuse");
         assert!(matches!(error, ClientError::Availability(_)));
     }
@@ -489,14 +501,36 @@ mod tests {
     #[test]
     fn a_deep_document_is_refused() {
         let body = format!("{}{}", "[".repeat(65), "]".repeat(65));
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        );
-        let leaked: &'static [u8] = Box::leak(response.into_bytes().into_boxed_slice());
-        let path = serve(leaked);
-        let client = Client::new(path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine.on("GET /containers/json").ok(body);
+        let client = Client::new(engine.socket());
         let error = client.containers().expect_err("must refuse");
+        assert!(matches!(error, ClientError::Availability(_)));
+    }
+
+    #[test]
+    fn volumes_over_the_cap_and_deep_prune_answers_are_refused() {
+        let mut body = String::from(r#"{"Volumes":["#);
+        for i in 0..(guards::MAX_ENTRIES + 1) {
+            if i > 0 {
+                body.push(',');
+            }
+            body.push_str("{}");
+        }
+        body.push_str("]}");
+        let deep = format!("{}{}", "[".repeat(65), "]".repeat(65));
+        let engine = MockEngine::start();
+        engine
+            .on("GET /volumes")
+            .ok(body)
+            .on("POST /containers/prune")
+            .ok(deep);
+        let client = Client::new(engine.socket());
+        let error = client.volumes().expect_err("volumes over cap must refuse");
+        assert!(matches!(error, ClientError::Availability(_)));
+        let error = client
+            .prune("/containers/prune")
+            .expect_err("deep prune body must refuse");
         assert!(matches!(error, ClientError::Availability(_)));
     }
 

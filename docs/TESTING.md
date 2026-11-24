@@ -126,8 +126,18 @@ Cover:
 - action slot: second mutation refused; completion refreshes; queued switch
   resumes.
 - appearance: System/Light/Dark resolves the right tokens; observer updates.
+- a table draws only the rows the window shows, however many it has; the
+  arrows reach past the window and the list follows; a click where the list
+  has scrolled opens the row that is there (`table_tests`).
+- what redraws: a search edit redraws the page and a log read the inspector,
+  a steady screen draws nothing, and each corner draws from its own state
+  (`subviews_tests`, `contract_tests`).
 
 Store every `Task` and `Subscription` in the view; dropping silently cancels.
+
+A test that counts draws uses `testkit::redraw`. `testkit::draw` moves the
+mouse, and the switch from keyboard to mouse makes GPUI redraw the whole
+window once, views it was keeping included.
 
 ---
 
@@ -144,6 +154,11 @@ Use the real text system and renderer factory from the pinned commit's
   correct selected/hover colours, graph wells non-empty.
 - Goldens are a separate serial binary/job, behind a `golden` feature. Do not
   enable golden features in `cargo test --workspace`.
+- The frame budget is `examples/perf.rs`: the frame a change costs (the shell
+  announces one, the window is drawn), the middle of nine frames after three
+  warm-ups, at 100, 500, 1,000 and 5,000 containers. It fails above 33 ms, one frame
+  at 30 Hz. Run it in release. It is a figure for the machine it runs on, so
+  it belongs to the nightly run and not to the PR gate.
 - Keep reference screenshots in `docs/reference-ui/`; generated ones in
   `docs/ui/`. Read the images; do not only diff them.
 
@@ -169,7 +184,10 @@ Drives the platform accessibility tree:
 ### Test driver (feature-gated)
 
 A newline-delimited JSON service on a Unix socket, compiled only with
-`--features test-driver`:
+`--features test-driver`. Until the driver exists that feature is what
+carries the fixture (`crates/berth-app/src/fixture.rs`) the screenshot and
+performance examples run on; none of it is in a release build. The driver,
+when it comes, belongs behind the same feature. Its commands:
 
 - `hello` — version, pid, capabilities;
 - `status` — tab, theme, engine state, selection, bulk mode, sheet, counts;
@@ -189,7 +207,7 @@ accessibility; the driver proves exact state transitions and waits.
 
 ## 8. L6 — live engine
 
-`scripts/smoke-live.sh` on a disposable engine:
+`scripts/smoke-live.sh` (planned — not yet created; currently exercised manually via `examples/live_probe.rs` and `examples/live_actions.rs`) on a disposable engine:
 
 1. list containers/images/volumes/networks; one stats sample;
 2. start/stop/restart/pause/resume/delete a test container;
@@ -231,7 +249,8 @@ developer's main engine. Use a unique name prefix and clean up in a trap.
 - full screenshot matrix (both themes, three sizes)
 - real-window macOS smoke + Linux X11 smoke (xa11y)
 - live-engine smoke
-- 100-container performance/fixture run
+- frame budget (`cargo run -p berth-app --release --example perf --features
+  test-driver`): 100, 500, 1,000 and 5,000 rows, each under 33 ms a frame
 - kill/restart engine during refresh
 
 ### Release

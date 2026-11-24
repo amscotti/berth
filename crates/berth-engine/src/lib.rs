@@ -1,6 +1,6 @@
 //! Engine-facing types and transport. This crate never depends on GPUI.
 //!
-//! The GitHub Docker Engine API is the common surface Docker, Podman, Colima
+//! The Docker Engine API is the common surface Docker, Podman, Colima
 //! and Lima expose. Types default every field so a newer or older engine that
 //! adds or omits one does not fail to parse.
 
@@ -11,11 +11,14 @@ pub mod discovery;
 pub mod dto;
 pub mod events;
 pub mod guards;
+pub mod image_use;
 pub mod logs;
 pub mod network_counts;
 pub mod projects;
 pub mod prune;
 pub mod stats;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod transport;
 
 /// The largest response body berth will buffer for a list call.

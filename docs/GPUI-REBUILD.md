@@ -258,7 +258,7 @@ Do not start a milestone on a red gate.
       toasts.
 - [ ] Widgets: page header, sortable header, cells, pills, chips, buttons,
       cards, empty/loading/error, legend, stacked bar.
-- [ ] Tables: exact density tiers/columns, `uniform_list`, hover/selected/
+- [x] Tables: exact density tiers/columns, `uniform_list`, hover/selected/
       alternating, bulk checkbox slot.
 - [ ] Containers (fully interactive read-only), Images, Volumes, Networks.
 - [ ] Keyboard: Cmd/Ctrl+1…9, Cmd/Ctrl+F, Esc.

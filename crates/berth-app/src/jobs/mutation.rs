@@ -2,13 +2,16 @@
 //! and machine commands. The worker owns every copied string and returns a
 //! sentence for the rail toast.
 
-use std::process::Command;
-
 use berth_engine::client::Client;
-use berth_engine::discovery::{Kind, podman_machine_name};
-use berth_engine::prune::{self, Engine};
+use berth_engine::discovery::Dialect;
+use berth_engine::discovery::Kind;
+use berth_engine::prune;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+use crate::actions::{ContainerAction, Target};
+
+use super::engine_ops::{self, EngineOp};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PruneOptions {
     pub containers: bool,
     pub images: bool,
@@ -34,9 +37,7 @@ pub enum Request {
     Action {
         socket: String,
         api: String,
-        method: String,
-        path: String,
-        verb: String,
+        target: Target,
     },
     CreateVolume {
         socket: String,
@@ -65,19 +66,20 @@ pub enum Request {
     Prune {
         socket: String,
         api: String,
-        engine: Engine,
+        dialect: Dialect,
         options: PruneOptions,
     },
     EngineOp {
-        verb: String,
+        op: EngineOp,
         kind: Kind,
         socket: String,
     },
+    /// One action on each of the containers, in order.
     Bulk {
         socket: String,
         api: String,
-        actions: Vec<(String, String)>,
-        verb: String,
+        action: ContainerAction,
+        ids: Vec<String>,
     },
 }
 
@@ -87,15 +89,20 @@ pub struct Outcome {
     pub bad: bool,
 }
 
+impl Outcome {
+    /// A failure the toast shows as an error.
+    pub(super) fn bad(message: String) -> Self {
+        Self { message, bad: true }
+    }
+}
+
 pub fn run(request: Request) -> Outcome {
     match request {
         Request::Action {
             socket,
             api,
-            method,
-            path,
-            verb,
-        } => action(&socket, &api, &method, &path, &verb),
+            target,
+        } => action(&socket, &api, &target),
         Request::CreateVolume { socket, api, name } => {
             let client = Client::new(socket).with_api(api);
             match client.create_volume(&name) {
@@ -133,26 +140,26 @@ pub fn run(request: Request) -> Outcome {
         Request::Prune {
             socket,
             api,
-            engine,
+            dialect,
             options,
-        } => prune_engine(&socket, &api, engine, &options),
-        Request::EngineOp { verb, kind, socket } => engine_op(&verb, kind, &socket),
+        } => prune_stores(&socket, &api, dialect, &options),
+        Request::EngineOp { op, kind, socket } => engine_ops::run(op, kind, &socket),
         Request::Bulk {
             socket,
             api,
-            actions,
-            verb,
-        } => bulk(&socket, &api, &actions, &verb),
+            action,
+            ids,
+        } => bulk(&socket, &api, action, &ids),
     }
 }
 
-fn bulk(socket: &str, api: &str, actions: &[(String, String)], verb: &str) -> Outcome {
+fn bulk(socket: &str, api: &str, action: ContainerAction, ids: &[String]) -> Outcome {
     let client = Client::new(socket).with_api(api);
-    let total = actions.len();
+    let total = ids.len();
     let mut done = 0;
     let mut first_error: Option<String> = None;
-    for (method, path) in actions {
-        match client.action(method, path) {
+    for id in ids {
+        match client.action(action.method(), &action.path(id)) {
             Ok(()) => done += 1,
             Err(error) => {
                 if first_error.is_none() {
@@ -162,14 +169,15 @@ fn bulk(socket: &str, api: &str, actions: &[(String, String)], verb: &str) -> Ou
         }
     }
     if let Some(error) = first_error {
-        return bad(format!("{verb} {done} of {total}: {error}"));
+        return bad(format!("{} {done} of {total}: {error}", action.label()));
     }
-    ok(format!("{verb} {done} of {total} containers"))
+    ok(format!("{} {done} of {total} containers", action.label()))
 }
 
-fn action(socket: &str, api: &str, method: &str, path: &str, verb: &str) -> Outcome {
+fn action(socket: &str, api: &str, target: &Target) -> Outcome {
     let client = Client::new(socket).with_api(api);
-    match client.action(method, path) {
+    let (method, path, verb) = target.parts();
+    match client.action(method, &path) {
         Ok(()) => ok(verb.to_owned()),
         Err(error) => bad(error.message()),
     }
@@ -185,8 +193,11 @@ fn run_container(
     env: &str,
 ) -> Outcome {
     let client = Client::new(socket).with_api(api);
-    let Ok(body) = container_body(image, ports, volumes, env) else {
-        return bad("could not build the container request".to_owned());
+    let body = match container_body(image, name, ports, volumes, env) {
+        Ok(body) => body,
+        // A last line. A run is checked by the form, by the same rule, before
+        // it is queued, so this only fires for a run that came another way.
+        Err(what) => return bad(what),
     };
     match client.create_container(&body, name) {
         Ok(id) => match client.start_container(&id) {
@@ -201,54 +212,65 @@ fn run_container(
     }
 }
 
-fn container_body(image: &str, ports: &str, volumes: &str, env: &str) -> Result<Vec<u8>, ()> {
+/// The body of a create-container request. It is built only from a run the
+/// form's own rule accepts, so the worker can't be lenient where the form is
+/// strict: an address with no port to publish on would otherwise ask the
+/// engine for any free port.
+fn container_body(
+    image: &str,
+    name: &str,
+    ports: &str,
+    volumes: &str,
+    env: &str,
+) -> Result<Vec<u8>, String> {
+    if let Some(failure) = berth_core::validation::run(image, name, ports, volumes, env) {
+        return Err(berth_core::validation::describe(&failure));
+    }
+
     let mut exposed = serde_json::Map::new();
     let mut bindings = serde_json::Map::new();
-    if !ports.trim().is_empty() {
-        for entry in ports.split(',') {
-            let entry = entry.trim();
-            let Some((rest, container_spec)) = entry.rsplit_once(':') else {
-                return Err(());
-            };
-            let (raw_ip, host) = match rest.rsplit_once(':') {
-                None => ("", rest),
-                Some((ip, host)) if !ip.is_empty() => (ip, host),
-                Some(_) => return Err(()),
-            };
-            let host_ip = raw_ip
-                .strip_prefix('[')
-                .and_then(|ip| ip.strip_suffix(']'))
-                .unwrap_or(raw_ip);
-            let key = if container_spec.contains('/') {
-                container_spec.to_owned()
-            } else {
-                format!("{container_spec}/tcp")
-            };
-            exposed.insert(key.clone(), serde_json::json!({}));
-            bindings.insert(
-                key,
-                serde_json::json!([{ "HostIp": host_ip, "HostPort": host }]),
-            );
+    for entry in ports
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+    {
+        let (rest, container_spec) = entry.rsplit_once(':').ok_or_else(|| unreadable(entry))?;
+        let (raw_ip, host) = match rest.rsplit_once(':') {
+            None => ("", rest),
+            Some((ip, host)) if !ip.is_empty() => (ip, host),
+            Some(_) => return Err(unreadable(entry)),
+        };
+        let host_ip = raw_ip
+            .strip_prefix('[')
+            .and_then(|ip| ip.strip_suffix(']'))
+            .unwrap_or(raw_ip);
+        let key = if container_spec.contains('/') {
+            container_spec.to_owned()
+        } else {
+            format!("{container_spec}/tcp")
+        };
+        exposed.insert(key.clone(), serde_json::json!({}));
+        let host_binding = serde_json::json!({ "HostIp": host_ip, "HostPort": host });
+        match bindings
+            .get_mut(&key)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            Some(list) => list.push(host_binding),
+            None => {
+                bindings.insert(key, serde_json::Value::Array(vec![host_binding]));
+            }
         }
     }
 
-    let binds: Vec<String> = if volumes.trim().is_empty() {
-        Vec::new()
-    } else {
-        volumes
-            .split(',')
-            .map(|entry| entry.trim().to_owned())
+    let list = |text: &str| {
+        text.split(',')
+            .map(str::trim)
             .filter(|entry| !entry.is_empty())
-            .collect()
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
     };
-    let env: Vec<String> = if env.trim().is_empty() {
-        Vec::new()
-    } else {
-        env.split(',')
-            .map(|entry| entry.trim().to_owned())
-            .filter(|entry| !entry.is_empty())
-            .collect()
-    };
+    let binds = list(volumes);
+    let env = list(env);
 
     let mut host_config = serde_json::Map::new();
     if !binds.is_empty() {
@@ -263,10 +285,18 @@ fn container_body(image: &str, ports: &str, volumes: &str, env: &str) -> Result<
         "ExposedPorts": exposed,
         "HostConfig": host_config,
     });
-    serde_json::to_vec(&body).map_err(|_| ())
+    serde_json::to_vec(&body).map_err(|error| format!("The request could not be written: {error}"))
 }
 
-fn prune_engine(socket: &str, api: &str, engine: Engine, options: &PruneOptions) -> Outcome {
+/// What to say about an entry the rule above accepted and this couldn't read:
+/// the two disagree, which is a fault in berth, never in the run.
+fn unreadable(entry: &str) -> String {
+    format!(
+        "berth couldn't read {entry:?} as a port, though its own rule accepted it. Nothing was run."
+    )
+}
+
+fn prune_stores(socket: &str, api: &str, dialect: Dialect, options: &PruneOptions) -> Outcome {
     let client = Client::new(socket).with_api(api);
     let plan = prune::plan(
         options.containers,
@@ -274,90 +304,36 @@ fn prune_engine(socket: &str, api: &str, engine: Engine, options: &PruneOptions)
         options.volumes,
         options.networks,
         options.build_cache,
-        engine,
+        dialect,
     );
     let mut freed = 0u64;
+    let mut failures = Vec::new();
+    // Every step runs even when an earlier one fails: a store that can't be
+    // pruned is no reason to leave the others full.
     for (kind, routes) in plan {
         for route in routes {
             match client.prune(route) {
                 Ok(bytes) => prune::add_reclaimed(&mut freed, bytes),
-                Err(error) => {
-                    return bad(format!("{}: {}", kind.label(), error.message()));
-                }
+                Err(error) => failures.push((kind.label(), error.message())),
             }
         }
     }
-    ok(format!("Reclaimed {}", berth_core::format::bytes(freed)))
-}
-
-fn engine_op(verb: &str, kind: Kind, socket: &str) -> Outcome {
-    let mut steps: Vec<Vec<String>> = Vec::new();
-    match kind {
-        Kind::Colima => {
-            steps.push(vec!["colima".into(), verb.into()]);
-        }
-        Kind::Lima => {
-            let name = socket
-                .split("/.lima/")
-                .nth(1)
-                .and_then(|rest| rest.split('/').next())
-                .unwrap_or("default")
-                .to_owned();
-            if verb == "restart" {
-                steps.push(vec!["limactl".into(), "stop".into(), name.clone()]);
-                steps.push(vec!["limactl".into(), "start".into(), name]);
-            } else {
-                steps.push(vec!["limactl".into(), verb.into(), name]);
-            }
-        }
-        Kind::PodmanMachine => {
-            let name = podman_machine_name(socket)
-                .unwrap_or("podman-machine-default")
-                .to_owned();
-            if verb == "restart" {
-                steps.push(vec![
-                    "podman".into(),
-                    "machine".into(),
-                    "stop".into(),
-                    name.clone(),
-                ]);
-                steps.push(vec![
-                    "podman".into(),
-                    "machine".into(),
-                    "start".into(),
-                    name,
-                ]);
-            } else {
-                steps.push(vec!["podman".into(), "machine".into(), verb.into(), name]);
-            }
-        }
-        _ => return bad("this engine has no machine command".to_owned()),
+    if failures.is_empty() {
+        return ok(format!("Reclaimed {}", berth_core::format::bytes(freed)));
     }
-
-    let default_path =
-        "/opt/homebrew/bin:/usr/local/bin:/opt/podman/bin:/usr/bin:/bin:/usr/sbin:/sbin";
-    let path = match std::env::var("PATH") {
-        Ok(existing) if !existing.is_empty() => format!("{default_path}:{existing}"),
-        _ => default_path.to_owned(),
-    };
-    for step in steps {
-        let Some((program, args)) = step.split_first() else {
-            continue;
-        };
-        let output = Command::new(program).args(args).env("PATH", &path).output();
-        match output {
-            Ok(output) if output.status.success() => {}
-            Ok(output) => {
-                let text = String::from_utf8_lossy(&output.stderr);
-                return bad(format!(
-                    "{program} {verb} failed: {}",
-                    text.lines().next().unwrap_or("no output")
-                ));
-            }
-            Err(error) => return bad(format!("could not run {program}: {error}")),
+    // Name each store once, then the first error in full.
+    let mut stores = Vec::new();
+    for (store, _) in &failures {
+        if !stores.contains(store) {
+            stores.push(*store);
         }
     }
-    ok(format!("{} engine", verb))
+    bad(format!(
+        "Reclaimed {} · {} failed: {}",
+        berth_core::format::bytes(freed),
+        stores.join(", "),
+        failures[0].1
+    ))
 }
 
 fn ok(message: String) -> Outcome {
@@ -374,10 +350,12 @@ fn bad(message: String) -> Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use berth_engine::test_support::MockEngine;
 
     #[test]
     fn a_run_body_has_ports_env_and_binds() {
-        let body = container_body("nginx", "127.0.0.1:8080:80", "data:/data", "A=1").expect("body");
+        let body =
+            container_body("nginx", "web", "127.0.0.1:8080:80", "data:/data", "A=1").expect("body");
         let value: serde_json::Value = serde_json::from_slice(&body).expect("json");
         assert_eq!(value["Image"], "nginx");
         assert_eq!(
@@ -390,11 +368,117 @@ mod tests {
         );
         assert_eq!(value["HostConfig"]["Binds"][0], "data:/data");
         assert_eq!(value["Env"][0], "A=1");
+
+        // Multiple host bindings for the same container port are kept, not overwritten.
+        let multi = container_body("nginx", "", "127.0.0.1:8080:80, 10.0.0.1:8443:80", "", "")
+            .expect("body");
+        let multi: serde_json::Value = serde_json::from_slice(&multi).expect("json");
+        let list = multi["HostConfig"]["PortBindings"]["80/tcp"]
+            .as_array()
+            .expect("bindings array");
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0]["HostIp"], "127.0.0.1");
+        assert_eq!(list[0]["HostPort"], "8080");
+        assert_eq!(list[1]["HostIp"], "10.0.0.1");
+        assert_eq!(list[1]["HostPort"], "8443");
     }
 
     #[test]
-    fn an_invalid_port_is_refused_before_a_request() {
-        assert!(container_body("nginx", "8080", "", "").is_err());
+    fn a_run_the_form_refuses_is_refused_here_too_in_the_same_words() {
+        // The worker is a last line, not a second opinion: it applies the
+        // form's rule, and says what the form says.
+        let error = container_body("nginx", "", "8080", "", "").expect_err("no colon");
+        assert_eq!(
+            error,
+            "Port 8080 needs host:container or ip:host:container."
+        );
+        // An address with no port to publish on. Read leniently, this would
+        // ask the engine for any free port.
+        let error = container_body("nginx", "", "127.0.0.1::80", "", "").expect_err("no host port");
+        assert!(error.contains("needs host:container"), "{error}");
+        let error = container_body("nginx", "bad name", "8080:80", "", "").expect_err("bad name");
+        assert_eq!(
+            error,
+            "Container names are letters, digits, dot, dash and underscore."
+        );
+    }
+
+    #[test]
+    fn prune_runs_every_step_and_reports_what_it_freed_and_what_failed() {
+        let engine = MockEngine::start();
+        engine
+            .on("POST /containers/prune")
+            .ok(r#"{"SpaceReclaimed":100}"#)
+            .on("POST /images/prune")
+            .error(500, "image prune refused")
+            .on("POST /volumes/prune")
+            .ok(r#"{"SpaceReclaimed":50}"#)
+            .on("POST /build/prune")
+            .ok(r#"{"SpaceReclaimed":25}"#);
+        let outcome = prune_stores(
+            &engine.socket(),
+            "v1.43",
+            Dialect::Docker,
+            &PruneOptions {
+                containers: true,
+                images: true,
+                volumes: true,
+                networks: false,
+                build_cache: true,
+            },
+        );
+        assert!(outcome.bad);
+        assert!(
+            outcome.message.contains("Reclaimed 175 B"),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("unused images"),
+            "{}",
+            outcome.message
+        );
+        assert!(
+            outcome.message.contains("image prune refused"),
+            "{}",
+            outcome.message
+        );
+        // The steps after the failure still ran.
+        assert_eq!(engine.count("/volumes/prune"), 1);
+        assert_eq!(engine.count("/build/prune"), 1);
+    }
+
+    #[test]
+    fn a_batch_sends_its_one_action_to_every_container_and_says_how_many() {
+        let engine = MockEngine::start();
+        engine.on("POST /containers/").ok("");
+        engine.on("DELETE /containers/").error(500, "it is running");
+        let batch = |action: ContainerAction, ids: &[&str]| {
+            run(Request::Bulk {
+                socket: engine.socket(),
+                api: "v1.43".into(),
+                action,
+                ids: ids.iter().map(|id| (*id).to_owned()).collect(),
+            })
+        };
+
+        let outcome = batch(ContainerAction::Stop, &["web", "odd name"]);
+        assert!(!outcome.bad, "{}", outcome.message);
+        assert_eq!(outcome.message, "Stop 2 of 2 containers");
+        assert_eq!(engine.count("/containers/web/stop"), 1);
+        assert_eq!(engine.count("/containers/odd%20name/stop"), 1);
+
+        // Every container is tried even once one has failed, and the count
+        // says how far it got.
+        let outcome = batch(ContainerAction::Delete, &["web", "db"]);
+        assert!(outcome.bad);
+        assert_eq!(
+            outcome.message,
+            "Delete 0 of 2: engine returned 500: it is running"
+        );
+        assert_eq!(engine.count("/containers/web?force=1"), 1);
+        assert_eq!(engine.count("/containers/db?force=1"), 1);
+        assert_eq!(engine.count("/containers/"), 4, "nothing else was sent");
     }
 
     #[test]
@@ -406,7 +490,7 @@ mod tests {
             networks: false,
             build_cache: false,
         };
-        let outcome = prune_engine("missing.sock", "v1.43", Engine::Docker, &options);
+        let outcome = prune_stores("missing.sock", "v1.43", Dialect::Docker, &options);
         // No plan means no request and a zero-byte sentence.
         assert!(!outcome.bad);
         assert!(outcome.message.contains("0 B"));

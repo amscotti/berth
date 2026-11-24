@@ -1,17 +1,88 @@
 //! Image reference and form rules. These are checked before a request so a bad
 //! value becomes a sentence beside the field, not a 400 from the engine.
 
-/// A reference the engine will accept: a registry path, optional tag/digest.
+/// A reference the engine will accept: `[domain[:port]/]path[:tag][@digest]`.
+///
+/// The check is conservative in one direction only. Everything it rejects the
+/// engine rejects too, so a bad value becomes a sentence beside the field
+/// instead of a 400. It doesn't try to catch everything the engine would.
 pub fn valid_reference(reference: &str) -> bool {
-    if reference.is_empty() || reference.len() > 512 {
-        return false;
+    reference_problem(reference).is_none()
+}
+
+/// The first rule a reference breaks, or `None` when it breaks none.
+pub fn reference_problem(reference: &str) -> Option<&'static str> {
+    if reference.is_empty() {
+        return Some("is empty");
     }
-    if reference.starts_with('/') || reference.ends_with('/') {
-        return false;
+    if reference.len() > 512 {
+        return Some("is longer than 512 characters");
     }
-    reference
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-' | '/' | ':' | '@'))
+    if !reference
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"._-/:@".contains(&byte))
+    {
+        return Some("has characters an engine will reject");
+    }
+
+    // Take off the digest, then the tag. A colon after the last slash starts a
+    // tag; anywhere else it is a registry port.
+    let name = match reference.split_once('@') {
+        Some((name, digest)) => {
+            if digest.contains('@') {
+                return Some("has more than one digest separator");
+            }
+            match digest.split_once(':') {
+                Some((algorithm, hex)) if !algorithm.is_empty() && !hex.is_empty() => {}
+                Some(_) => return Some("has an empty digest"),
+                None => return Some("has a digest without an algorithm"),
+            }
+            name
+        }
+        None => reference,
+    };
+    let last_slash = name.rfind('/').map_or(0, |at| at + 1);
+    let (path, tag) = match name[last_slash..].rfind(':').map(|at| last_slash + at) {
+        Some(at) => (&name[..at], Some(&name[at + 1..])),
+        None => (name, None),
+    };
+    if tag.is_some_and(|tag| tag.is_empty() || tag.len() > 128) {
+        return Some("has an empty or oversized tag");
+    }
+
+    // The first part may be a registry domain, which may have any case and a
+    // port but needs a path after it. Every other part is a repository name.
+    let mut components = path.split('/');
+    let first = components.next().unwrap_or("");
+    let rest = components.clone().count();
+    let is_domain =
+        rest > 0 && (first.contains('.') || first == "localhost" || first.contains(':'));
+    if first.is_empty() {
+        return Some("has an empty path part");
+    }
+    if !is_domain && (first.contains(':') || !is_repository_name(first)) {
+        return Some("needs a lowercase name");
+    }
+    for component in components {
+        if component.is_empty() {
+            return Some("has an empty path part");
+        }
+        if component.contains(':') || !is_repository_name(component) {
+            return Some("needs a lowercase name");
+        }
+    }
+    None
+}
+
+/// A repository name: lowercase letters and digits, with `.`, `-` or `_`
+/// between them.
+fn is_repository_name(component: &str) -> bool {
+    let edge = |ch: char| ch.is_ascii_alphanumeric();
+    component.chars().next().is_some_and(edge)
+        && component.chars().last().is_some_and(edge)
+        && component.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '-' | '_')
+        })
 }
 
 /// The first line of a bad reference, for the error sentence.
@@ -79,10 +150,12 @@ pub fn first_invalid(list: &str, separator: char) -> Option<&str> {
     }
     for entry in list.split(',') {
         let entry = entry.trim();
+        // An empty value is how an empty variable is set (`KEY=`); a missing
+        // key is not a variable at all.
         let valid = if separator == '=' {
             entry
                 .split_once('=')
-                .is_some_and(|(key, value)| !key.is_empty() && !value.is_empty())
+                .is_some_and(|(key, _value)| !key.is_empty())
         } else {
             let mut parts = entry.split(separator);
             let (Some(first), Some(second)) = (parts.next(), parts.next()) else {
@@ -117,6 +190,37 @@ mod tests {
     }
 
     #[test]
+    fn references_the_engine_rejects_name_their_problem() {
+        let digest = format!("alpine@sha256:{}", "a".repeat(64));
+        let tagged_digest = format!("nginx:latest@sha256:{}", "b".repeat(64));
+        for good in [
+            "nginx",
+            "nginx:alpine",
+            "localhost:5000/a/b:t",
+            "registry.example.com:443/team/app",
+            "Docker.io/library/alpine",
+            "a-b.c/d",
+            digest.as_str(),
+            tagged_digest.as_str(),
+        ] {
+            assert_eq!(reference_problem(good), None, "{good}");
+        }
+        for (bad, problem) in [
+            ("nginx::", "has an empty or oversized tag"),
+            ("nginx:alpine:latest", "needs a lowercase name"),
+            ("alpine@sha256:", "has an empty digest"),
+            ("alpine@abc", "has a digest without an algorithm"),
+            ("NGINX", "needs a lowercase name"),
+            ("Docker.io", "needs a lowercase name"),
+            ("ghcr.io/Org/app", "needs a lowercase name"),
+            (":tag", "has an empty path part"),
+            ("ghcr.io//app", "has an empty path part"),
+        ] {
+            assert_eq!(reference_problem(bad), Some(problem), "{bad}");
+        }
+    }
+
+    #[test]
     fn names_are_conservative() {
         assert!(valid_name("web-1"));
         assert!(valid_name("a.b_c"));
@@ -144,6 +248,8 @@ mod tests {
         assert_eq!(first_invalid("data:", ':'), Some("data:"));
         assert_eq!(first_invalid("a:b:c:d", ':'), Some("a:b:c:d"));
         assert_eq!(first_invalid("KEY=value,A", '='), Some("A"));
+        // An empty value sets an empty variable; it isn't a malformed entry.
+        assert_eq!(first_invalid("EMPTY=,KEY=value", '='), None);
         assert_eq!(first_invalid("DB_URL=postgres://u:p@h/d?ssl=1", '='), None);
     }
 }

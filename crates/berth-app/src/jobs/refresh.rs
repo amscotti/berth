@@ -2,8 +2,6 @@
 //! it; the UI thread swaps it in one step. A core failure aborts the pass and
 //! leaves the previous snapshot on screen.
 
-use std::time::Duration;
-
 use berth_core::format;
 use berth_engine::client::{Client, ClientError};
 use berth_engine::df::Df;
@@ -11,9 +9,14 @@ use berth_engine::discovery::Dialect;
 use berth_engine::events::{Event, merge};
 use berth_engine::network_counts::Counts;
 use berth_engine::projects::summaries;
-use berth_engine::stats::{Sample, all_sampled};
+use berth_engine::stats::Sample;
 
 use crate::state::Snapshot;
+
+/// How far back to read events on the first pass, in seconds, before there is
+/// a cursor to continue from. The engine keeps its most recent events, so this
+/// shows what happened just before berth was opened.
+pub const EVENTS_BACKFILL: i64 = 5 * 60;
 
 /// What the worker needs. Everything is copied; no state is shared.
 #[derive(Clone, Debug)]
@@ -30,6 +33,9 @@ pub struct Request {
 #[derive(Debug)]
 pub struct Outcome {
     pub snapshot: Snapshot,
+    /// The machine's own figures, read on the same pass. Kept beside the
+    /// snapshot, not in it, so the next sample doesn't rebuild the snapshot.
+    pub host: crate::state::HostSample,
     /// `None` when the disk figures were not due; `Some(Err(..))` keeps the
     /// previous document and records why.
     pub df: Option<Result<Df, String>>,
@@ -67,7 +73,7 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
     let containers = client
         .containers()
         .map_err(|error| RefreshError::core(error, generation))?;
-    let (stats, stats_complete) = sample_stats(&client, &containers, request.cores);
+    let stats = sample_stats(&client, &containers, request.cores);
 
     let images = client
         .images()
@@ -80,13 +86,19 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
         .map_err(|error| RefreshError::core(error, generation))?;
 
     let now = format::now();
+    // `since` is a time on the engine's clock (see `events::cursor`), carried
+    // over from the last pass. `until` is on the host's; the client samples
+    // the stream, so a clock that has drifted only costs the sample window.
+    let since = if request.events_since > 0 {
+        request.events_since
+    } else {
+        now - EVENTS_BACKFILL
+    };
     let mut events = Vec::new();
     let mut events_error = false;
-    if request.events_since > 0 {
-        match client.events(request.events_since, now) {
-            Ok(fresh) => events = fresh,
-            Err(_) => events_error = true,
-        }
+    match client.events(since, now.max(since + 1)) {
+        Ok(fresh) => events = fresh,
+        Err(_) => events_error = true,
     }
 
     let df = if request.want_df {
@@ -97,15 +109,16 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
 
     let projects = summaries(&containers);
     let network_counts = Counts::from_containers(&containers);
+    let image_use = berth_engine::image_use::counts(&containers, &images);
     let snapshot = Snapshot {
         containers,
         stats,
-        stats_complete,
         images,
         volumes,
         networks,
         projects,
         network_counts,
+        image_use,
         events,
         events_error,
         error: String::new(),
@@ -113,11 +126,11 @@ pub fn load(request: Request) -> Result<Outcome, RefreshError> {
         df: None,
         df_at: 0,
         df_error: String::new(),
-        host: crate::host::sample(),
     };
 
     Ok(Outcome {
         snapshot,
+        host: crate::host::sample(),
         df,
         generation: request.generation,
     })
@@ -139,7 +152,7 @@ fn sample_stats(
     client: &Client,
     containers: &[berth_engine::dto::Container],
     cores: u32,
-) -> (Vec<Sample>, bool) {
+) -> Vec<Sample> {
     let running: Vec<(usize, String)> = containers
         .iter()
         .enumerate()
@@ -148,7 +161,7 @@ fn sample_stats(
         .collect();
     let mut stats = vec![Sample::default(); containers.len()];
     if running.is_empty() {
-        return (stats, true);
+        return stats;
     }
 
     let workers = worker_count(running.len());
@@ -180,8 +193,7 @@ fn sample_stats(
     for (index, sample) in results {
         stats[index] = sample;
     }
-    let complete = all_sampled(containers, &stats);
-    (stats, complete)
+    stats
 }
 
 /// Merge a fresh event interval into the previous ring, newest first.
@@ -189,49 +201,12 @@ pub fn merge_events(previous: &[Event], fresh: &[Event]) -> Vec<Event> {
     merge(previous, fresh, 200)
 }
 
-#[allow(dead_code)]
-const _REFRESH_PERIOD: Duration = Duration::from_secs(5);
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn server(
-        body_by_path: impl Fn(&str) -> (u16, &'static str) + Send + 'static,
-        requests: usize,
-    ) -> String {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("berth-refresh-{}-{id}.sock", std::process::id()));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            for _ in 0..requests {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    return;
-                };
-                let mut request = [0u8; 4096];
-                let n = stream.read(&mut request).unwrap_or(0);
-                let text = String::from_utf8_lossy(&request[..n]);
-                let request_path = text
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or("/");
-                let (status, body) = body_by_path(request_path);
-                let head = format!(
-                    "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(body.as_bytes());
-            }
-        });
-        path.to_string_lossy().into_owned()
-    }
+    use berth_engine::test_support::{MockEngine, Reply};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     fn request(socket: String) -> Request {
         Request {
@@ -247,51 +222,102 @@ mod tests {
 
     #[test]
     fn one_pass_builds_a_complete_snapshot() {
-        let socket = server(
-            |path| {
-                if path.contains("/containers/json") {
-                    (
-                        200,
-                        r#"[{"Id":"a","Names":["/web"],"Image":"nginx","State":"running","Status":"Up 1 hour"}]"#,
-                    )
-                } else if path.contains("/stats") {
-                    (
-                        200,
-                        r#"{"cpu_stats":{"cpu_usage":{"total_usage":3000000},"system_cpu_usage":40000000,"online_cpus":4},"precpu_stats":{"cpu_usage":{"total_usage":1000000},"system_cpu_usage":20000000},"memory_stats":{"usage":1000,"limit":2000,"stats":{"inactive_file":200}},"pids_stats":{"current":5}}"#,
-                    )
-                } else if path.contains("/images/json") {
-                    (200, "[]")
-                } else if path.contains("/volumes") {
-                    (200, r#"{"Volumes":[]}"#)
-                } else if path.contains("/networks") {
-                    (200, "[]")
-                } else if path.contains("/system/df") {
-                    (
-                        200,
-                        r#"{"LayersSize":0,"ImageUsage":{"TotalSize":100,"Reclaimable":40}}"#,
-                    )
-                } else {
-                    (404, "{}")
-                }
-            },
-            6,
-        );
-        let outcome = load(request(socket)).expect("pass");
+        let engine = crate::testkit::scripted_engine();
+        let outcome = load(request(engine.socket())).expect("pass");
         assert_eq!(outcome.snapshot.containers.len(), 1);
-        assert!(outcome.snapshot.stats_complete);
-        assert_eq!(outcome.snapshot.stat(0).pids, Some(5));
+        assert!(outcome.snapshot.stats_complete());
+        let stat = outcome.snapshot.stat(0);
+        assert!(stat.cpu_known, "live stats JSON must decode CPU usage");
+        assert!((stat.cpu - 40.0).abs() < 0.001, "got cpu {}", stat.cpu);
+        assert_eq!(stat.pids, Some(5));
         assert_eq!(outcome.generation, 3);
         let df = outcome.df.expect("df requested").expect("df ok");
         assert_eq!(df.reclaimable(), 40);
+        assert_eq!(engine.count("/stats"), 1);
+        assert_eq!(engine.count("/system/df"), 1);
+    }
+
+    #[test]
+    fn the_events_cursor_follows_the_engine_clock() {
+        // The engine's clock reads a minute behind the host's. Like a real
+        // engine, the mock answers with every event stamped at or after
+        // `since`. A second event happens after the first pass.
+        let host_now = format::now();
+        // Times on the engine's clock, in seconds as `since` is. The event
+        // itself carries nanoseconds.
+        let older = host_now - 60;
+        let newer = host_now - 30;
+        let event = |seconds: i64, name: &str| {
+            format!(
+                r#"{{"status":"start","id":"{name}","Type":"container","Action":"start","Actor":{{"ID":"{name}","Attributes":{{"name":"{name}"}}}},"time":{seconds},"timeNano":{}}}"#,
+                seconds * 1_000_000_000
+            )
+        };
+        let requests = Arc::new(AtomicUsize::new(0));
+        let engine = crate::testkit::scripted_engine_with(Reply::With(Arc::new(move |request| {
+            let since = request
+                .path
+                .split("since=")
+                .nth(1)
+                .and_then(|rest| rest.split('&').next())
+                .and_then(|since| since.parse::<i64>().ok())
+                .unwrap_or(0);
+            let first = requests.fetch_add(1, Ordering::SeqCst) == 0;
+            let mut events = Vec::new();
+            if since <= older {
+                events.push(event(older, "web"));
+            }
+            if since <= newer && !first {
+                events.push(event(newer, "api"));
+            }
+            Reply::ok(events.join("\n"))
+        })));
+        fn names(events: &[Event]) -> Vec<&str> {
+            events.iter().map(|event| event.name()).collect()
+        }
+
+        // The first pass backfills far enough to reach the older event.
+        let first = load(request(engine.socket())).expect("pass");
+        assert!(!first.snapshot.events_error);
+        assert_eq!(names(&first.snapshot.events), ["web"]);
+
+        // With the host's clock as the cursor, the engine is asked for events
+        // from a time it hasn't reached, and the newer one is never returned.
+        let mut lost = request(engine.socket());
+        lost.events_since = first.snapshot.last_update;
+        let lost = load(lost).expect("pass");
+        assert!(lost.snapshot.events.is_empty());
+
+        // With the engine's own clock it arrives.
+        let mut next = request(engine.socket());
+        next.events_since = berth_engine::events::cursor(&first.snapshot.events, 0);
+        let second = load(next).expect("pass");
+        // Merged into the ring as a commit would: newest first, no duplicate.
+        let ring = merge_events(&first.snapshot.events, &second.snapshot.events);
+        assert_eq!(names(&ring), ["api", "web"]);
+    }
+
+    #[test]
+    fn an_events_stream_the_engine_holds_open_is_sampled_not_failed() {
+        // An engine whose clock is behind the host's never reaches `until`.
+        let engine = crate::testkit::scripted_engine_with(Reply::Hang);
+        let started = std::time::Instant::now();
+        let outcome = load(request(engine.socket())).expect("a held stream is not a failed pass");
+        assert!(!outcome.snapshot.events_error);
+        assert!(outcome.snapshot.events.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(4));
     }
 
     #[test]
     fn a_core_failure_aborts_the_pass() {
-        let socket = server(|_| (500, r#"{"message":"engine broke"}"#), 1);
-        let error = load(request(socket)).expect_err("must fail");
+        let engine = MockEngine::start();
+        engine.on("*").error(500, "engine broke");
+        let error = load(request(engine.socket())).expect_err("must fail");
         assert!(error.message.contains("engine broke"));
         assert!(!error.engine_dead);
+        assert_eq!(engine.paths().len(), 1);
     }
+
     #[test]
     fn stats_workers_are_bounded_at_sixty_four() {
         assert_eq!(worker_count(1), 1);

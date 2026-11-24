@@ -143,40 +143,10 @@ impl History {
         self.mem_known[..self.count].iter().all(|known| *known)
     }
 
+    /// The latest CPU reading, or `None` when the ring is empty or the latest
+    /// pass did not have a complete measurement.
     pub fn latest_cpu(&self) -> Option<f32> {
-        (self.count > 0).then(|| self.cpu[self.count - 1])
-    }
-
-    pub fn peak(&self, which: Which) -> f32 {
-        self.values(which).iter().copied().fold(0.0_f32, f32::max)
-    }
-
-    /// A rounded 1/2/5 × 10^n ceiling for a graph. A fixed ceiling keeps a flat
-    /// series at one height while its oldest samples leave the ring.
-    pub fn ceiling(peak: f32) -> f32 {
-        if !peak.is_finite() || peak <= 0.0 {
-            return 1.0;
-        }
-        let magnitude = 10.0_f32.powf(peak.log10().floor());
-        let n = peak / magnitude;
-        let step = if n <= 1.0 {
-            1.0
-        } else if n <= 2.0 {
-            2.0
-        } else if n <= 5.0 {
-            5.0
-        } else {
-            10.0
-        };
-        (step * magnitude).max(1.0)
-    }
-
-    /// Drop engine points when the engine changes; host points are still valid.
-    pub fn clear_engine(&mut self) {
-        self.cpu[..self.count].fill(0.0);
-        self.mem[..self.count].fill(0.0);
-        self.running[..self.count].fill(0.0);
-        self.disk[..self.count].fill(0.0);
+        (self.count > 0 && self.cpu_known[self.count - 1]).then(|| self.cpu[self.count - 1])
     }
 }
 
@@ -246,21 +216,30 @@ mod tests {
     }
 
     #[test]
-    fn ceilings_are_1_2_5() {
-        assert_eq!(History::ceiling(0.0), 1.0);
-        assert_eq!(History::ceiling(1.0), 1.0);
-        assert_eq!(History::ceiling(1.5), 2.0);
-        assert_eq!(History::ceiling(3.0), 5.0);
-        assert_eq!(History::ceiling(7.0), 10.0);
-        assert_eq!(History::ceiling(120.0), 200.0);
-    }
-
-    #[test]
-    fn peak_and_latest_are_independent_of_known_flags() {
+    fn the_latest_cpu_is_none_when_the_latest_pass_is_unknown() {
         let mut history = History::default();
+        assert_eq!(history.latest_cpu(), None);
+
+        // First pass unknown: must not report a fabricated 0.0%.
+        history.push(Sample {
+            cpu_known: false,
+            ..sample(0.0, 0.0)
+        });
+        assert_eq!(history.latest_cpu(), None);
+
+        // Known pass reports its reading.
         history.push(sample(4.0, 8.0));
+        assert_eq!(history.latest_cpu(), Some(4.0));
+
+        // Follow-up unknown pass holds the graph value, but latest_cpu stays honest.
+        history.push(Sample {
+            cpu_known: false,
+            ..sample(0.0, 8.0)
+        });
+        assert_eq!(history.values(Which::Cpu), &[0.0, 4.0, 4.0]);
+        assert_eq!(history.latest_cpu(), None);
+
         history.push(sample(2.0, 3.0));
-        assert_eq!(history.peak(Which::Cpu), 4.0);
         assert_eq!(history.latest_cpu(), Some(2.0));
     }
 }

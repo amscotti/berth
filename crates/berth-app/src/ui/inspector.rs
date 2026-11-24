@@ -1,19 +1,24 @@
-//! The right-hand inspector. M0 shows the selected container's facts; logs,
-//! actions and the raw inspect document arrive in M4.
+//! The right-hand inspector: container facts, config, runtime processes/diff,
+//! live-polled logs, raw inspect JSON, and image/volume/network details.
 
 use berth_core::format;
 use berth_engine::detail::up_seconds;
 use berth_engine::dto::Container;
 use berth_engine::stats::Sample;
+use berth_ui::layout;
 use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{FontWeight, IntoElement, Role, div, px};
+use gpui::{FontWeight, IntoElement, Role, ScrollEvent, SharedString, div, px};
 
 pub(crate) use super::inspect_objects::{image_pane, network_pane, volume_pane};
-use super::inspect_shared::*;
+use super::inspect_shared::{
+    fact, inspector_button, inspector_delete, inspector_tab, inspector_toggle, pane_shell,
+};
 use super::inspect_tabs::{config_tab, runtime_tab};
+use crate::actions::ContainerAction;
 use crate::app::InspectorTab;
+use crate::ui::kit::button;
 
 pub(crate) fn container_pane(
     app: &crate::app::BerthApp,
@@ -23,59 +28,26 @@ pub(crate) fn container_pane(
     tokens: Tokens,
     cx: &mut gpui::Context<crate::app::BerthApp>,
 ) -> impl IntoElement {
-    let tab = app.inspector_tab;
+    let tab = app.inspector.tab;
+    // The pages of the inspector are tabs: one strip, one of them selected.
     let mut pane = pane_shell(container.name(), "Container inspector", width, tokens, cx).child(
         div()
+            .id("inspector-tabs")
+            .role(Role::TabList)
+            .aria_label("Container inspector")
             .flex()
             .flex_row()
             .flex_wrap()
             .items_center()
             .gap(px(6.0))
-            .child(pane_tab(
-                "Facts",
-                tab == InspectorTab::Facts,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Facts;
-                    cx.notify();
-                }),
-            ))
-            .child(pane_tab(
-                "Config",
-                tab == InspectorTab::Config,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Config;
-                    if this.detail_lifetime.is_none() {
-                        this.reload_detail(cx);
-                    }
-                    cx.notify();
-                }),
-            ))
-            .child(pane_tab(
-                "Runtime",
-                tab == InspectorTab::Runtime,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Runtime;
-                    if this.detail_top.is_none() && this.detail_changes.is_empty() {
-                        this.reload_detail(cx);
-                    }
-                    cx.notify();
-                }),
-            ))
-            .child(pane_tab(
-                "Inspect",
-                tab == InspectorTab::Inspect,
-                tokens,
-                cx.listener(|this, _, _, cx| {
-                    this.inspector_tab = InspectorTab::Inspect;
-                    if this.inspect_text.is_none() {
-                        this.reload_detail(cx);
-                    }
-                    cx.notify();
-                }),
-            )),
+            .children(InspectorTab::ALL.into_iter().map(|page| {
+                inspector_tab(
+                    page.label(),
+                    tab == page,
+                    tokens,
+                    cx.listener(move |this, _, _, cx| this.show_inspector_tab(page, cx)),
+                )
+            })),
     );
 
     if tab == InspectorTab::Config {
@@ -92,22 +64,26 @@ pub(crate) fn container_pane(
                     .flex_row()
                     .items_center()
                     .gap(px(6.0))
-                    .child(small_action(
-                        "inspect-copy",
-                        "Copy",
-                        tokens,
-                        cx.listener(|this, _, _, cx| this.copy_inspect(cx)),
-                    ))
-                    .child(small_action(
-                        "inspect-refresh",
-                        "Refresh",
-                        tokens,
-                        cx.listener(|this, _, _, cx| this.reload_detail(cx)),
-                    )),
+                    // Quiet buttons: here when wanted, nothing in the way
+                    // of the document otherwise.
+                    .child(
+                        button("inspect-copy", "Copy", tokens)
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _, cx| this.copy_inspect(cx))),
+                    )
+                    .child(
+                        button("inspect-refresh", "Refresh", tokens)
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, _, cx| this.reload_detail(cx))),
+                    ),
             )
             .child(
                 div()
                     .id("inspect-well")
+                    .track_scroll(&app.inspector.inspect_scroll)
+                    .debug_selector(|| "inspect-well".to_string())
                     .flex()
                     .flex_col()
                     .w_full()
@@ -115,17 +91,17 @@ pub(crate) fn container_pane(
                     .min_h(px(0.0))
                     .overflow_y_scroll()
                     .p(px(8.0))
-                    .rounded(px(8.0))
+                    .rounded(px(layout::RADIUS_WELL))
                     .bg(tokens.background)
                     .border_1()
                     .border_color(tokens.border)
                     .child(
                         div()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.text)
-                            .child(app.inspect_text.clone().unwrap_or_else(|| {
-                                if app.inspect_loading {
+                            .child(app.inspector.inspect_text.clone().unwrap_or_else(|| {
+                                if app.inspector.inspect_loading {
                                     "Reading…".to_owned()
                                 } else {
                                     "Nothing loaded yet. Refresh fetches the engine's JSON."
@@ -137,51 +113,58 @@ pub(crate) fn container_pane(
         return pane;
     }
 
-    pane = pane
+    let mut facts_box = div()
+        .id("inspector-facts-scroll")
+        .flex()
+        .flex_col()
+        .w_full()
+        .max_h(px(210.0))
+        .overflow_y_scroll()
+        .gap(px(3.0))
         .child(fact("Image", &container.image, tokens))
         .child(fact("State", &container.state, tokens))
         .child(fact("Status", &container.status, tokens));
     if let Some(health) = container.health() {
-        pane = pane.child(fact("Health", health, tokens));
+        facts_box = facts_box.child(fact("Health", health, tokens));
     }
     if let Some(project) = container.project() {
-        pane = pane.child(fact("Project", project, tokens));
+        facts_box = facts_box.child(fact("Project", project, tokens));
     }
     if let Some(service) = container.service() {
-        pane = pane.child(fact("Service", service, tokens));
+        facts_box = facts_box.child(fact("Service", service, tokens));
     }
-    if let Some(lifetime) = &app.detail_lifetime {
-        if let Some(started) = lifetime.started_at {
-            pane = pane.child(fact(
+    if let Some(facts) = &app.inspector.inspect_facts {
+        if let Some(started) = facts.started_at {
+            facts_box = facts_box.child(fact(
                 "Started",
                 &format::started(started, format::now()),
                 tokens,
             ));
         }
-        pane = pane.child(fact("Restarts", &lifetime.restarts.to_string(), tokens));
-        if let Some(policy) = &lifetime.restart_policy {
-            pane = pane.child(fact("Policy", policy, tokens));
+        facts_box = facts_box.child(fact("Restarts", &facts.restarts.to_string(), tokens));
+        if let Some(policy) = &facts.restart_policy {
+            facts_box = facts_box.child(fact("Policy", policy, tokens));
         }
-        if let Some(code) = lifetime.exit_code {
-            let label = if lifetime.oom_killed {
+        if let Some(code) = facts.exit_code {
+            let label = if facts.oom_killed {
                 format!("{code} (OOM killed)")
             } else {
                 code.to_string()
             };
-            pane = pane.child(fact("Exit", &label, tokens));
-        } else if lifetime.oom_killed {
-            pane = pane.child(fact("Exit", "OOM killed", tokens));
+            facts_box = facts_box.child(fact("Exit", &label, tokens));
+        } else if facts.oom_killed {
+            facts_box = facts_box.child(fact("Exit", "OOM killed", tokens));
         }
-        if let Some(probe) = &lifetime.health_log {
-            pane = pane.child(fact("Probe", probe, tokens));
+        if let Some(probe) = &facts.health_log {
+            facts_box = facts_box.child(fact("Probe", probe, tokens));
         }
-    } else if app.logs_loading {
-        pane = pane.child(fact("Started", "Reading…", tokens));
+    } else if app.inspector.logs_loading {
+        facts_box = facts_box.child(fact("Started", "Reading…", tokens));
     } else if let Some(seconds) = up_seconds(&container.status) {
-        pane = pane.child(fact("Up", &format::duration(seconds), tokens));
+        facts_box = facts_box.child(fact("Up", &format::duration(seconds), tokens));
     }
     if container.is_up() {
-        pane = pane
+        facts_box = facts_box
             .child(fact(
                 "CPU",
                 &if stat.sampled && stat.cpu_known {
@@ -237,7 +220,7 @@ pub(crate) fn container_pane(
                 tokens,
             ));
         if let Some(pids) = stat.pids {
-            pane = pane.child(fact("PIDs", &pids.to_string(), tokens));
+            facts_box = facts_box.child(fact("PIDs", &pids.to_string(), tokens));
         }
     }
     let ports = container.published_ports();
@@ -252,7 +235,7 @@ pub(crate) fn container_pane(
             .child(
                 div()
                     .w(px(64.0))
-                    .text_size(px(type_scale::FACT_LABEL))
+                    .text_size(px(type_scale::LABEL))
                     .text_color(tokens.muted)
                     .child("Ports"),
             );
@@ -260,29 +243,21 @@ pub(crate) fn container_pane(
             let host = binding.ip.clone();
             let port = binding.port;
             row = row.child(
-                div()
-                    .id(gpui::SharedString::from(format!(
+                button(
+                    SharedString::from(format!(
                         "port-{}:{}/{}",
                         binding.ip, binding.port, binding.private_port
-                    )))
-                    .flex()
-                    .items_center()
-                    .h(px(20.0))
-                    .px(px(8.0))
-                    .rounded(px(10.0))
-                    .bg(tokens.warning_fill.alpha(0.14))
-                    .role(Role::Button)
-                    .aria_label(format!("Open port {port}"))
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.open_port(&host, port, cx);
-                    }))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .font_features(super::tabular())
-                            .text_color(tokens.warning_text())
-                            .child(format!("{}→{}", binding.port, binding.private_port)),
-                    ),
+                    )),
+                    format!("{}→{}", binding.port, binding.private_port),
+                    tokens,
+                )
+                .small()
+                .port()
+                .tabular()
+                .name(format!("Open port {port}"))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.open_port(&host, port, cx);
+                })),
             );
         }
         if ports.len() > 6 {
@@ -296,18 +271,22 @@ pub(crate) fn container_pane(
                     .bg(tokens.surface_hover)
                     .child(
                         div()
-                            .text_size(px(11.0))
+                            .text_size(px(type_scale::LABEL))
                             .font_features(super::tabular())
                             .text_color(tokens.muted)
                             .child(format!("+{}", ports.len() - 6)),
                     ),
             );
         }
-        pane = pane.child(row);
+        facts_box = facts_box.child(row);
     }
+    pane = pane.child(facts_box);
 
     let name = container.name().to_owned();
     let id = container.id.clone();
+    let actions = container.actions();
+    // What the state allows, in the order a person reaches for it (matching
+    // container rows: Stop before Restart), then state-independent actions.
     pane = pane.child(
         div()
             .flex()
@@ -315,145 +294,88 @@ pub(crate) fn container_pane(
             .flex_wrap()
             .w_full()
             .gap(px(6.0))
-            .when(container.is_up(), |this| {
-                this.child(verb_button(
-                    if container.is_paused() {
-                        "Resume"
-                    } else {
-                        "Pause"
-                    },
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            let (path, verb) = if container_state_paused(this, &id) {
-                                (format!("/containers/{id}/unpause"), "Resumed")
-                            } else {
-                                (format!("/containers/{id}/pause"), "Paused")
-                            };
-                            this.run_action("POST".into(), path, verb.into(), cx);
-                        }
-                    }),
-                ))
+            .when(actions.resume, |this| {
+                this.child(lifecycle(ContainerAction::Resume, &id, &name, tokens, cx))
             })
-            .when(!container.is_up(), |this| {
-                this.child(verb_button(
-                    "Start",
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            this.run_action(
-                                "POST".into(),
-                                format!("/containers/{id}/start"),
-                                "Started".into(),
-                                cx,
-                            );
-                        }
-                    }),
-                ))
+            .when(actions.pause, |this| {
+                this.child(lifecycle(ContainerAction::Pause, &id, &name, tokens, cx))
             })
-            .when(container.is_up(), |this| {
-                this.child(verb_button(
-                    "Restart",
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            this.run_action(
-                                "POST".into(),
-                                format!("/containers/{id}/restart"),
-                                "Restarted".into(),
-                                cx,
-                            );
-                        }
-                    }),
-                ))
-                .child(verb_button(
-                    "Stop",
-                    tokens,
-                    cx.listener({
-                        let id = id.clone();
-                        move |this, _, _, cx| {
-                            this.run_action(
-                                "POST".into(),
-                                format!("/containers/{id}/stop"),
-                                "Stopped".into(),
-                                cx,
-                            );
-                        }
-                    }),
-                ))
+            .when(actions.start, |this| {
+                this.child(lifecycle(ContainerAction::Start, &id, &name, tokens, cx))
             })
-            .when(container.is_up(), |this| {
-                this.child(verb_button(
+            .when(actions.stop, |this| {
+                this.child(lifecycle(ContainerAction::Stop, &id, &name, tokens, cx))
+            })
+            .when(actions.restart, |this| {
+                this.child(lifecycle(ContainerAction::Restart, &id, &name, tokens, cx))
+            })
+            .when(actions.terminal, |this| {
+                this.child(inspector_button(
                     "Terminal",
                     tokens,
                     cx.listener(|this, _, _, cx| this.open_terminal(cx)),
                 ))
             })
-            .child(verb_button(
+            .child(inspector_button(
                 "Clone…",
                 tokens,
                 cx.listener(|this, _, _, cx| this.clone_container_to_run(cx)),
             ))
             .when(
-                app.detail_lifetime
+                app.inspector
+                    .inspect_facts
                     .as_ref()
-                    .is_some_and(|lifetime| lifetime.run_cmd.is_some()),
+                    .is_some_and(|facts| facts.run_cmd.is_some()),
                 |this| {
-                    this.child(verb_button(
+                    this.child(inspector_button(
                         "Copy run",
                         tokens,
                         cx.listener(|this, _, _, cx| this.copy_run_command(cx)),
                     ))
                 },
             )
-            .child(delete_button(
-                "Delete",
-                tokens,
-                cx.listener({
-                    let id = id.clone();
-                    let name = name.clone();
-                    move |this, _, _, cx| {
-                        this.confirm_action(
-                            "DELETE".into(),
-                            format!("/containers/{id}?force=1"),
-                            "Delete".into(),
-                            name.clone(),
-                            cx,
-                        );
-                    }
-                }),
-            )),
+            // Deleting destroys, and sits apart from the verbs that don't.
+            .when(container.state != "removing", |this| {
+                this.child(inspector_delete(
+                    "Delete",
+                    tokens,
+                    cx.listener({
+                        let id = id.clone();
+                        let name = name.clone();
+                        move |this, _, _, cx| {
+                            this.act_on(ContainerAction::Delete, &id, &name, cx);
+                        }
+                    }),
+                ))
+            }),
     );
 
-    let mut logs_head = div()
+    let logs_head = div()
         .flex()
         .flex_row()
         .items_center()
         .w_full()
-        .gap(px(8.0))
+        .gap(px(6.0))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(tokens.muted)
                 .child("Logs · last 500 lines"),
         )
         .child(div().flex_1())
-        .child(small_action(
-            "logs-refresh",
-            "Refresh",
-            tokens,
-            cx.listener(|this, _, _, cx| this.reload_detail(cx)),
-        ));
-    logs_head = logs_head.child(small_action(
-        "logs-copy",
-        "Copy",
-        tokens,
-        cx.listener(|this, _, _, cx| this.copy_logs(cx)),
-    ));
+        .child(
+            button("logs-refresh", "Refresh", tokens)
+                .small()
+                .ghost()
+                .on_click(cx.listener(|this, _, _, cx| this.reload_detail(cx))),
+        )
+        .child(
+            button("logs-copy", "Copy", tokens)
+                .small()
+                .ghost()
+                .on_click(cx.listener(|this, _, _, cx| this.copy_logs(cx))),
+        );
     pane = pane.child(logs_head);
 
     pane = pane.child(
@@ -462,69 +384,189 @@ pub(crate) fn container_pane(
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .child(toggle(
+            .child(inspector_toggle(
                 "Follow",
-                app.logs_follow,
+                app.inspector.logs_follow,
                 tokens,
                 cx.listener(|this, _, _, cx| {
-                    this.logs_follow = !this.logs_follow;
-                    if this.logs_follow {
+                    this.inspector.logs_follow = !this.inspector.logs_follow;
+                    if this.inspector.logs_follow {
                         this.reload_detail(cx);
                     }
-                    cx.notify();
+                    this.redraw_inspector(cx);
                 }),
             ))
-            .child(toggle(
+            .child(inspector_toggle(
                 "Times",
-                app.logs_timestamps,
+                app.inspector.logs_timestamps,
                 tokens,
                 cx.listener(|this, _, _, cx| this.toggle_log_timestamps(cx)),
             ))
             .child(div().flex_1())
-            .child(app.log_search.clone()),
+            .child(app.inspector.log_search.clone()),
     );
 
-    let query = app.log_search.read(cx).text().to_owned();
-    let visible = if query.is_empty() {
-        app.logs_text.clone()
-    } else {
-        berth_engine::logs::filter_lines(&app.logs_text, &query).join("\n")
-    };
-    let body = if app.logs_loading {
-        "Reading…".to_owned()
-    } else if visible.is_empty() {
-        "No output yet. A container that has said nothing says nothing.".to_owned()
-    } else {
-        visible
-    };
+    let body = log_body(app, cx);
     pane.child(
         div()
             .id("log-well")
+            .track_scroll(&app.inspector.log_scroll)
+            .debug_selector(|| "log-well".to_string())
             .flex()
             .flex_col()
             .w_full()
             .flex_1()
-            .min_h(px(0.0))
+            .min_h(px(120.0))
             .overflow_y_scroll()
             .p(px(8.0))
-            .rounded(px(8.0))
+            .rounded(px(layout::RADIUS_WELL))
             .bg(tokens.background)
             .border_1()
             .border_color(tokens.border)
+            // Scrolling back up pauses Follow, as it does in every log viewer.
+            // The toggle shows that it has paused.
+            .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
+                if event.delta.pixel_delta(px(1.0)).y > px(0.0) && this.inspector.logs_follow {
+                    this.inspector.logs_follow = false;
+                    this.redraw_inspector(cx);
+                }
+            }))
             .child(
                 div()
-                    .text_size(px(11.5))
-                    .font_family("Menlo")
+                    .text_size(px(type_scale::MONO))
+                    .font_family(type_scale::MONO_FAMILY)
                     .text_color(tokens.text)
                     .child(body),
             ),
     )
 }
 
-fn container_state_paused(app: &crate::app::BerthApp, id: &str) -> bool {
-    app.snapshot
-        .containers
-        .iter()
-        .find(|container| container.id == id)
-        .is_some_and(|container| container.is_paused())
+/// What the log well shows. A poll in flight never blanks the lines already
+/// on screen: only the very first read, with nothing to show yet, says it is
+/// reading.
+pub(crate) fn log_body(app: &crate::app::BerthApp, cx: &gpui::App) -> String {
+    let query = app.inspector.log_search.read(cx).text().to_owned();
+    if app.inspector.logs_loading && app.inspector.logs_text.is_empty() {
+        return "Reading…".to_owned();
+    }
+    if query.is_empty() {
+        if app.inspector.logs_text.is_empty() {
+            "No output yet. A container that has said nothing says nothing.".to_owned()
+        } else {
+            app.inspector.logs_text.clone()
+        }
+    } else {
+        let matched = berth_engine::logs::filter_lines(&app.inspector.logs_text, &query);
+        if matched.is_empty() {
+            format!("No line contains {query:?}.")
+        } else {
+            matched.join("\n")
+        }
+    }
+}
+
+/// A button for one container lifecycle action. The request is made when it
+/// is pressed.
+fn lifecycle(
+    action: ContainerAction,
+    id: &str,
+    name: &str,
+    tokens: Tokens,
+    cx: &mut gpui::Context<crate::app::BerthApp>,
+) -> impl IntoElement {
+    let id = id.to_owned();
+    let name = name.to_owned();
+    inspector_button(
+        action.label(),
+        tokens,
+        cx.listener(move |this, _, _, cx| this.act_on(action, &id, &name, cx)),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Point, ScrollDelta, ScrollEvent, TestAppContext, px};
+
+    #[gpui::test]
+    fn a_follow_poll_never_blanks_the_logs_already_on_screen(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.inspector.logs_text = "line one\nline two\n".into();
+            // A poll is in flight.
+            app.inspector.logs_loading = true;
+            assert_eq!(log_body(app, cx), "line one\nline two\n");
+            // Only the very first read has nothing to show yet.
+            app.inspector.logs_text.clear();
+            assert_eq!(log_body(app, cx), "Reading…");
+            app.inspector.logs_loading = false;
+            assert_eq!(
+                log_body(app, cx),
+                "No output yet. A container that has said nothing says nothing."
+            );
+            // A search that matches nothing says so.
+            app.inspector.logs_text = "alpha\nbeta\n".into();
+            app.inspector
+                .log_search
+                .update(cx, |input, cx| input.set_value("gamma", cx));
+            assert_eq!(log_body(app, cx), "No line contains \"gamma\".");
+            app.inspector
+                .log_search
+                .update(cx, |input, cx| input.set_value("beta", cx));
+            assert_eq!(log_body(app, cx), "beta");
+        });
+    }
+
+    #[gpui::test]
+    fn follow_keeps_the_well_at_its_end_until_the_reader_scrolls_up(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| {
+            app.select(0, cx);
+            app.inspector.logs_text = (0..400).map(|line| format!("line {line}\n")).collect();
+            app.inspector.logs_loading = false;
+            app.inspector.logs_follow = true;
+            // What a finished read does when Follow is on.
+            app.inspector.log_scroll.scroll_to_bottom();
+        });
+        crate::testkit::draw(cx);
+        app.read_with(&*cx, |app, _| {
+            let max = app.inspector.log_scroll.max_offset().y;
+            assert!(max > px(0.0), "the logs overflow the well ({max:?})");
+            assert_eq!(
+                app.inspector.log_scroll.offset().y,
+                -max,
+                "the newest lines are on screen"
+            );
+        });
+
+        // The reader scrolls back up: Follow pauses, and the toggle shows it.
+        let well = cx
+            .debug_bounds("log-well")
+            .expect("the log well was laid out");
+        cx.simulate_event(ScrollEvent {
+            position: well.center(),
+            delta: ScrollDelta::Pixels(Point::new(px(0.0), px(40.0))),
+            ..Default::default()
+        });
+        assert!(
+            !app.read_with(&*cx, |app, _| app.inspector.logs_follow),
+            "scrolling up pauses Follow"
+        );
+    }
+
+    #[gpui::test]
+    fn the_log_well_keeps_room_at_the_minimum_window_height(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| app.select(0, cx));
+        cx.simulate_resize(gpui::size(px(960.0), px(600.0)));
+        crate::testkit::redraw(cx);
+        let well = cx
+            .debug_bounds("log-well")
+            .expect("the log well was laid out");
+        assert!(
+            f32::from(well.size.height) >= 120.0,
+            "the log well stayed visible at 960×600: {:?}",
+            well.size.height
+        );
+    }
 }

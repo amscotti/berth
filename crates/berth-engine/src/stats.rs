@@ -167,6 +167,65 @@ pub fn aggregate_cpu_percent(
     Some(sum / cores.max(1.0))
 }
 
+/// How much of the fleet a pass measured.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Coverage {
+    /// The up containers with a whole sample: a CPU reading and a working set.
+    pub measured: usize,
+    /// The up containers there are.
+    pub up: usize,
+}
+
+impl Coverage {
+    /// The share of the fleet that is in the figures, as "49 of 50".
+    pub fn said(self) -> String {
+        format!("{} of {}", self.measured, self.up)
+    }
+}
+
+/// How many of the up containers have a whole sample, and how many there are.
+pub fn coverage(containers: &[crate::dto::Container], stats: &[Sample]) -> Coverage {
+    let mut coverage = Coverage::default();
+    for (index, container) in containers.iter().enumerate() {
+        if !container.is_up() {
+            continue;
+        }
+        coverage.up += 1;
+        if stats
+            .get(index)
+            .is_some_and(|sample| sample.sampled && sample.cpu_known && sample.mem_known)
+        {
+            coverage.measured += 1;
+        }
+    }
+    coverage
+}
+
+/// Container CPU as a share of the cores, over the containers that were
+/// measured. `None` when none was. Where some were not, this is a lower
+/// bound, and `coverage` says how much of one.
+pub fn measured_cpu_percent(
+    containers: &[crate::dto::Container],
+    stats: &[Sample],
+    cores: f32,
+) -> Option<f32> {
+    let mut sum = 0.0f32;
+    let mut measured = 0;
+    for (index, container) in containers.iter().enumerate() {
+        if !container.is_up() {
+            continue;
+        }
+        if let Some(sample) = stats.get(index)
+            && sample.sampled
+            && sample.cpu_known
+        {
+            sum += sample.cpu as f32;
+            measured += 1;
+        }
+    }
+    (measured > 0).then(|| sum / cores.max(1.0))
+}
+
 /// True only when every up container has a sample.
 pub fn all_sampled(containers: &[crate::dto::Container], stats: &[Sample]) -> bool {
     containers.iter().enumerate().all(|(index, container)| {
@@ -174,22 +233,75 @@ pub fn all_sampled(containers: &[crate::dto::Container], stats: &[Sample]) -> bo
     })
 }
 
-/// Container memory for the overview and menu bar, saturating.
+/// Container memory for the overview and menu bar. Only samples with a known
+/// working set are summed: an unmeasured container must not count as zero.
 pub fn memory_used(containers: &[crate::dto::Container], stats: &[Sample]) -> u64 {
     containers
         .iter()
         .enumerate()
-        .filter(|(index, container)| {
-            container.is_up() && stats.get(*index).is_some_and(|sample| sample.sampled)
-        })
+        .filter(|(index, container)| container.is_up() && has_memory(stats.get(*index)))
         .fold(0u64, |total, (index, _)| {
             total.saturating_add(stats[index].mem)
         })
 }
 
+/// True only when every up container answered with a known working set.
+/// Without that, the sum above is a lower bound and has to say so.
+pub fn all_memory_known(containers: &[crate::dto::Container], stats: &[Sample]) -> bool {
+    containers
+        .iter()
+        .enumerate()
+        .all(|(index, container)| !container.is_up() || has_memory(stats.get(index)))
+}
+
+fn has_memory(sample: Option<&Sample>) -> bool {
+    sample.is_some_and(|sample| sample.sampled && sample.mem_known)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coverage_counts_the_up_containers_with_a_whole_sample() {
+        let up = |state: &str| crate::dto::Container {
+            state: state.into(),
+            ..Default::default()
+        };
+        let whole = Sample {
+            sampled: true,
+            cpu_known: true,
+            cpu: 10.0,
+            mem_known: true,
+            mem: 1024,
+            ..Default::default()
+        };
+        let containers = [up("running"), up("running"), up("exited")];
+        // The second never answered, and the third is not up, so is not counted.
+        let stats = [whole, Sample::default(), Sample::default()];
+        let measured = coverage(&containers, &stats);
+        assert_eq!(measured, Coverage { measured: 1, up: 2 });
+        assert_eq!(measured.said(), "1 of 2");
+        // A sample with no CPU reading is not a whole one either.
+        let mut no_cpu = whole;
+        no_cpu.cpu_known = false;
+        assert_eq!(coverage(&containers, &[whole, no_cpu, whole]).measured, 1);
+        // The CPU figure is what was measured, a lower bound here.
+        assert_eq!(measured_cpu_percent(&containers, &stats, 4.0), Some(2.5));
+        // With both up containers measured, it is both of them.
+        assert_eq!(
+            measured_cpu_percent(&containers, &[whole; 3], 4.0),
+            Some(5.0)
+        );
+        assert_eq!(
+            measured_cpu_percent(&containers, &[Sample::default(); 3], 4.0),
+            None,
+            "nothing measured is unknown, not zero"
+        );
+        // The strict figure refuses the partial one, as it always did.
+        assert_eq!(aggregate_cpu_percent(&containers, &stats, 4.0), None);
+    }
+
     use crate::dto::{Container, CpuStats, CpuUsage, MemoryStats, NetworkStats, PidsStats};
 
     fn stats(now: u64, pre: u64, system: u64, pre_system: u64, cores: u32) -> Stats {
@@ -343,6 +455,7 @@ mod tests {
                 cpu: 10.0,
                 cpu_known: true,
                 mem: 5,
+                mem_known: true,
                 ..Default::default()
             },
             Sample {
@@ -350,16 +463,25 @@ mod tests {
                 cpu: 10.0,
                 cpu_known: true,
                 mem: 7,
+                mem_known: true,
                 ..Default::default()
             },
         ];
         assert_eq!(aggregate_cpu_percent(&containers, &stats, 4.0), Some(5.0));
         assert_eq!(memory_used(&containers, &stats), 12);
         assert!(all_sampled(&containers, &stats));
+        assert!(all_memory_known(&containers, &stats));
 
         stats[1].sampled = false;
         assert_eq!(aggregate_cpu_percent(&containers, &stats, 4.0), None);
         assert!(!all_sampled(&containers, &stats));
         assert_eq!(memory_used(&containers, &stats), 5);
+
+        // Answered, but without a working set: that is unknown, not zero.
+        stats[1].sampled = true;
+        stats[1].mem_known = false;
+        assert_eq!(memory_used(&containers, &stats), 5);
+        assert!(!all_memory_known(&containers, &stats));
+        assert!(all_sampled(&containers, &stats));
     }
 }

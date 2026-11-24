@@ -29,12 +29,12 @@ const OTHER_TABS: [&str; 9] = [
 ];
 
 /// Install the application keybindings. Tab digits are one-based, matching the
-/// rail: 1 is Overview through 9 is Runtimes. Settings deliberately has no
-/// digit; ten views do not fit a single row of keys.
+/// rail: 1 is Overview through 9 is Runtimes. Settings uses Cmd/Ctrl+, rather
+/// than a digit, since ten views do not fit a single row of keys.
 pub fn install(cx: &mut App, platform: Platform) {
-    let (tabs, search, refresh, quit) = match platform {
-        Platform::MacOs => (MAC_TABS, "cmd-f", "cmd-r", "cmd-q"),
-        Platform::Other => (OTHER_TABS, "ctrl-f", "ctrl-r", "ctrl-q"),
+    let (tabs, settings, search, refresh, quit) = match platform {
+        Platform::MacOs => (MAC_TABS, "cmd-,", "cmd-f", "cmd-r", "cmd-q"),
+        Platform::Other => (OTHER_TABS, "ctrl-,", "ctrl-f", "ctrl-r", "ctrl-q"),
     };
 
     let bindings = vec![
@@ -47,10 +47,14 @@ pub fn install(cx: &mut App, platform: Platform) {
         KeyBinding::new(tabs[6], ShowStacks, None),
         KeyBinding::new(tabs[7], ShowDisk, None),
         KeyBinding::new(tabs[8], ShowRuntimes, None),
+        KeyBinding::new(settings, ShowSettings, None),
         KeyBinding::new(search, FocusSearch, None),
         KeyBinding::new(refresh, Refresh, None),
         KeyBinding::new(quit, Quit, None),
         KeyBinding::new("escape", Dismiss, None),
+        // GPUI installs no default for Tab, so the app owns focus traversal.
+        KeyBinding::new("tab", FocusNext, None),
+        KeyBinding::new("shift-tab", FocusPrevious, None),
         KeyBinding::new("down", SelectNext, Some("Berth")),
         KeyBinding::new("up", SelectPrev, Some("Berth")),
     ];

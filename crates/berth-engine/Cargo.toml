@@ -6,6 +6,11 @@ license.workspace = true
 repository.workspace = true
 description = "berth Docker Engine API types, guards and transport"
 
+[features]
+# The scripted mock engine, for crates that test against it. Never enabled in
+# a release: it belongs in dev-dependencies only.
+test-support = []
+
 [dependencies]
 berth-core = { workspace = true }
 serde = { workspace = true }

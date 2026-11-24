@@ -80,6 +80,12 @@ pub fn candidates(
         add_if_exists(&mut list, path);
     }
 
+    let runtime = if xdg_runtime.is_empty() {
+        format!("/run/user/{uid}")
+    } else {
+        xdg_runtime.to_owned()
+    };
+
     if !home.is_empty() {
         for suffix in [
             "/.docker/run/docker.sock",
@@ -93,16 +99,12 @@ pub fn candidates(
         ] {
             add_if_exists(&mut list, &format!("{home}{suffix}"));
         }
-        add_podman_runtime_sockets(&mut list, home);
-        add_podman_machines(&mut list, home, xdg_data_home);
         add_lima_instances(&mut list, home);
     }
-
-    let runtime = if xdg_runtime.is_empty() {
-        format!("/run/user/{uid}")
-    } else {
-        xdg_runtime.to_owned()
-    };
+    add_podman_runtime_sockets(&mut list, home, xdg_data_home, &runtime);
+    if !home.is_empty() || !xdg_data_home.is_empty() {
+        add_podman_machines(&mut list, home, xdg_data_home);
+    }
     add_if_exists(&mut list, &format!("{runtime}/podman/podman.sock"));
 
     for path in [
@@ -139,9 +141,23 @@ pub fn same_socket(a: &str, b: &str) -> bool {
     ra == rb
 }
 
-fn add_podman_runtime_sockets(list: &mut Vec<String>, home: &str) {
-    let root = format!("{home}/.local/share/containers/podman/machine");
-    scan_podman_api_sockets(list, Path::new(&root));
+fn add_podman_runtime_sockets(
+    list: &mut Vec<String>,
+    home: &str,
+    xdg_data_home: &str,
+    xdg_runtime: &str,
+) {
+    if !xdg_data_home.is_empty() {
+        let root = format!("{xdg_data_home}/containers/podman/machine");
+        scan_podman_api_sockets(list, Path::new(&root));
+    } else if !home.is_empty() {
+        let root = format!("{home}/.local/share/containers/podman/machine");
+        scan_podman_api_sockets(list, Path::new(&root));
+    }
+    if !xdg_runtime.is_empty() {
+        let root = format!("{xdg_runtime}/containers/podman/machine");
+        scan_podman_api_sockets(list, Path::new(&root));
+    }
 }
 
 fn scan_podman_api_sockets(list: &mut Vec<String>, dir: &Path) {
@@ -257,6 +273,21 @@ pub fn is_podman_machine_socket(path: &str) -> bool {
             .is_some_and(|base| base.ends_with("-api.sock"))
 }
 
+/// Whether an engine of this kind runs inside a virtual machine. Its disk is
+/// then a disk image on the host, and freeing space inside the machine
+/// doesn't shrink that image until it is compacted.
+pub fn vm_backed(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::DockerDesktop
+            | Kind::OrbStack
+            | Kind::Rancher
+            | Kind::Colima
+            | Kind::Lima
+            | Kind::PodmanMachine
+    )
+}
+
 /// Podman 5 names its socket `<machine>-api.sock` or places `podman.sock` inside
 /// a `<machine>/` subdirectory; the unnamed 4.x layout sits directly in `machine/`.
 pub fn podman_machine_name(path: &str) -> Option<&str> {
@@ -362,15 +393,7 @@ pub fn identity(runtime: &Runtime) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn temp_socket() -> PathBuf {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("berth-discovery-{}-{id}.sock", std::process::id()))
-    }
+    use crate::test_support::{MockEngine, TempDir};
 
     #[test]
     fn socket_paths_name_the_engine() {
@@ -391,6 +414,23 @@ mod tests {
             kind_of("/Users/me/.local/share/containers/podman/machine/podman.sock"),
             Kind::PodmanMachine
         );
+    }
+
+    #[test]
+    fn only_vm_backed_engines_keep_their_disk_in_an_image() {
+        for kind in [
+            Kind::DockerDesktop,
+            Kind::OrbStack,
+            Kind::Rancher,
+            Kind::Colima,
+            Kind::Lima,
+            Kind::PodmanMachine,
+        ] {
+            assert!(vm_backed(kind), "{kind:?}");
+        }
+        // A native daemon, and rootless Podman, write straight to the host.
+        assert!(!vm_backed(Kind::Dockerd));
+        assert!(!vm_backed(Kind::Podman));
     }
 
     #[test]
@@ -416,18 +456,17 @@ mod tests {
 
     #[test]
     fn candidates_keep_the_preferred_socket_first_and_dedupe() {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!("berth-cand-{}-{id}", std::process::id()));
-        std::fs::create_dir_all(dir.join(".docker/run")).expect("dir");
-        std::fs::create_dir_all(dir.join(".lima/docker/sock")).expect("dir");
-        let preferred = dir.join(".docker/run/docker.sock");
-        let lima = dir.join(".lima/docker/sock/docker.sock");
+        let home = TempDir::new("home");
+        std::fs::create_dir_all(home.path().join(".docker/run")).expect("dir");
+        std::fs::create_dir_all(home.path().join(".lima/docker/sock")).expect("dir");
+        let preferred = home.path().join(".docker/run/docker.sock");
+        let lima = home.path().join(".lima/docker/sock/docker.sock");
         for path in [&preferred, &lima] {
-            let _ = std::os::unix::net::UnixListener::bind(path).expect("bind");
+            let _listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
         }
         let list = candidates(
             &preferred.to_string_lossy(),
-            &dir.to_string_lossy(),
+            &home.path().to_string_lossy(),
             "",
             "",
             501,
@@ -439,7 +478,7 @@ mod tests {
         assert!(list.iter().any(|path| path.contains(".lima/docker")));
         // The host may also have /var/run/docker.sock; only the sockets under
         // this temporary HOME prove candidate discovery and deduplication.
-        let root = std::fs::canonicalize(&dir).expect("canonical home");
+        let root = std::fs::canonicalize(home.path()).expect("canonical home");
         let root = root.to_string_lossy();
         assert_eq!(
             list.iter()
@@ -451,7 +490,8 @@ mod tests {
 
     #[test]
     fn a_missing_socket_is_reported_not_dropped() {
-        let path = temp_socket();
+        let path = std::env::temp_dir().join(format!("berth-missing-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
         let runtime = probe(&path.to_string_lossy());
         assert!(!runtime.reachable);
         assert!(!runtime.error_text.is_empty());
@@ -459,26 +499,43 @@ mod tests {
 
     #[test]
     fn probe_reads_version_and_info() {
-        let path = temp_socket();
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            for body in [
-                br#"{"Version":"29.1.3","ApiVersion":"1.56","Components":[]}"#.as_slice(),
-                br#"{"ID":"daemon-1","NCPU":4,"MemTotal":1024,"ContainersRunning":1}"#.as_slice(),
-            ] {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = [0u8; 4096];
-                let _ = std::io::Read::read(&mut stream, &mut request);
-                let response = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.write_all(body);
-            }
-        });
-        let runtime = probe(&path.to_string_lossy());
+        let engine = MockEngine::start();
+        engine
+            .on("GET /version")
+            .ok(r#"{"Version":"29.1.3","ApiVersion":"1.56","Components":[]}"#)
+            .on("GET /info")
+            .ok(r#"{"ID":"daemon-1","NCPU":4,"MemTotal":1024,"ContainersRunning":1}"#);
+        let runtime = probe(&engine.socket());
         assert!(runtime.reachable);
         assert_eq!(runtime.api, "v1.56");
         assert_eq!(runtime.version.version, "29.1.3");
         assert_eq!(runtime.info.ncpu, 4);
         assert_eq!(identity(&runtime), "daemon-1");
+        assert_eq!(engine.paths().len(), 2);
+    }
+
+    #[test]
+    fn podman_runtime_sockets_honor_xdg_data_and_runtime_dirs() {
+        let root = TempDir::new("xdg");
+        let data_dir = root.path().join("d");
+        let runtime_dir = root.path().join("r");
+        let data_sock = data_dir.join("containers/podman/machine/applehv/data-api.sock");
+        let run_sock = runtime_dir.join("containers/podman/machine/run-api.sock");
+        std::fs::create_dir_all(data_sock.parent().expect("parent")).expect("dir");
+        std::fs::create_dir_all(run_sock.parent().expect("parent")).expect("dir");
+        // `candidates` checks path existence rather than binding; plain files avoid
+        // macOS's 104-byte Unix sockaddr SUN_LEN limit under long temp dirs.
+        std::fs::write(&data_sock, b"").expect("create data sock");
+        std::fs::write(&run_sock, b"").expect("create run sock");
+
+        let list = candidates(
+            "",
+            "",
+            &data_dir.to_string_lossy(),
+            &runtime_dir.to_string_lossy(),
+            501,
+        );
+        assert!(list.iter().any(|path| path.ends_with("data-api.sock")));
+        assert!(list.iter().any(|path| path.ends_with("run-api.sock")));
     }
 }

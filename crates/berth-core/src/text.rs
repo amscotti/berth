@@ -1,10 +1,30 @@
-//! A single-line text buffer: a value, a byte cursor, and an optional anchor.
-//! Every offset is kept on a UTF-8 boundary; externally supplied offsets are
-//! snapped before use.
+//! A single-line text buffer: a value, a byte cursor, an optional anchor, and
+//! the steps back to what was typed before. Every offset is kept on a UTF-8
+//! boundary; externally supplied offsets are snapped before use.
+
+/// How far back an edit can be undone. A field holds one line; nobody types
+/// two hundred words and then wants the first one back.
+const MAX_UNDO: usize = 200;
 
 /// The editing state behind one text field.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextBuffer {
+    value: String,
+    cursor: usize,
+    anchor: Option<usize>,
+    /// The field as it was before each step, oldest first.
+    undo: Vec<Memory>,
+    /// The steps undone, newest last, ready to be redone.
+    redo: Vec<Memory>,
+    /// Where a word being typed ends, so that typing on is still one step.
+    typing: Option<usize>,
+    /// The next edit undoes together with the step before it, whatever it is.
+    joining: bool,
+}
+
+/// The field as it was, to go back to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Memory {
     value: String,
     cursor: usize,
     anchor: Option<usize>,
@@ -17,7 +37,7 @@ impl TextBuffer {
         Self {
             value,
             cursor,
-            anchor: None,
+            ..Self::default()
         }
     }
 
@@ -37,16 +57,87 @@ impl TextBuffer {
         self.value.is_empty()
     }
 
+    /// The app filling the field in. There is nothing to undo back to.
     pub fn set_value(&mut self, value: impl Into<String>) {
         self.value = value.into();
         self.cursor = self.value.len();
         self.anchor = None;
+        self.forget_history();
     }
 
     pub fn clear(&mut self) {
         self.value.clear();
         self.cursor = 0;
         self.anchor = None;
+        self.forget_history();
+    }
+
+    /// Take back the last step. False when there is none.
+    pub fn undo(&mut self) -> bool {
+        let Some(before) = self.undo.pop() else {
+            return false;
+        };
+        self.redo.push(self.remember());
+        self.restore(before);
+        true
+    }
+
+    /// Bring back a step that was taken back. False when there is none.
+    pub fn redo(&mut self) -> bool {
+        let Some(after) = self.redo.pop() else {
+            return false;
+        };
+        self.undo.push(self.remember());
+        self.restore(after);
+        true
+    }
+
+    /// Let the next edit undo together with the step before it, whatever the
+    /// edit is: the stages of one composed character are one step, not five.
+    pub fn join_step(&mut self) {
+        self.joining = true;
+    }
+
+    fn remember(&self) -> Memory {
+        Memory {
+            value: self.value.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        }
+    }
+
+    fn restore(&mut self, memory: Memory) {
+        self.value = memory.value;
+        self.cursor = memory.cursor;
+        self.anchor = memory.anchor;
+        self.break_run();
+    }
+
+    fn forget_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+        self.break_run();
+    }
+
+    /// Start a new step, unless this edit runs on from the one before it.
+    fn begin_step(&mut self, runs_on: bool) {
+        if self.joining || (runs_on && self.typing == Some(self.cursor)) {
+            self.joining = false;
+        } else {
+            if self.undo.len() >= MAX_UNDO {
+                self.undo.remove(0);
+            }
+            self.undo.push(self.remember());
+            self.typing = None;
+        }
+        // An edit after an undo leaves nowhere to redo to.
+        self.redo.clear();
+    }
+
+    /// Whatever was being typed is over: the next character starts a step.
+    fn break_run(&mut self) {
+        self.typing = None;
+        self.joining = false;
     }
 
     /// The selected byte range, always ordered.
@@ -64,6 +155,7 @@ impl TextBuffer {
     pub fn select_all(&mut self) {
         self.anchor = Some(0);
         self.cursor = self.value.len();
+        self.break_run();
     }
 
     pub fn set_cursor(&mut self, offset: usize, extend: bool) {
@@ -76,19 +168,25 @@ impl TextBuffer {
         self.cursor = offset;
     }
 
+    /// Type `text` over the selection. A word typed character by character
+    /// is one step to undo; a space starts the next.
     pub fn insert(&mut self, text: &str) {
+        let word = !text.is_empty() && !text.chars().any(char::is_whitespace);
+        self.begin_step(word);
         self.delete_selection();
         let at = self.cursor.min(self.value.len());
         self.value.insert_str(at, text);
         self.cursor = at + text.len();
         self.anchor = None;
+        self.typing = word.then_some(self.cursor);
     }
 
     pub fn backspace(&mut self) {
-        if self.delete_selection() {
+        if self.selection().is_none() && self.cursor == 0 {
             return;
         }
-        if self.cursor == 0 {
+        self.begin_step(false);
+        if self.delete_selection() {
             return;
         }
         let start = self.prev_boundary(self.cursor);
@@ -97,10 +195,11 @@ impl TextBuffer {
     }
 
     pub fn delete(&mut self) {
-        if self.delete_selection() {
+        if self.selection().is_none() && self.cursor >= self.value.len() {
             return;
         }
-        if self.cursor >= self.value.len() {
+        self.begin_step(false);
+        if self.delete_selection() {
             return;
         }
         let end = self.next_boundary(self.cursor);
@@ -108,6 +207,7 @@ impl TextBuffer {
     }
 
     pub fn move_left(&mut self, extend: bool) {
+        self.break_run();
         if !extend && let Some((start, _)) = self.selection() {
             self.set_cursor(start, false);
             return;
@@ -116,6 +216,7 @@ impl TextBuffer {
     }
 
     pub fn move_right(&mut self, extend: bool) {
+        self.break_run();
         if !extend && let Some((_, end)) = self.selection() {
             self.set_cursor(end, false);
             return;
@@ -124,6 +225,7 @@ impl TextBuffer {
     }
 
     pub fn move_word_left(&mut self, extend: bool) {
+        self.break_run();
         let mut at = self.cursor;
         while at > 0
             && self.value[..at]
@@ -145,6 +247,7 @@ impl TextBuffer {
     }
 
     pub fn move_word_right(&mut self, extend: bool) {
+        self.break_run();
         let mut at = self.cursor;
         let len = self.value.len();
         while at < len
@@ -167,29 +270,13 @@ impl TextBuffer {
     }
 
     pub fn home(&mut self, extend: bool) {
+        self.break_run();
         self.set_cursor(0, extend);
     }
 
     pub fn end(&mut self, extend: bool) {
+        self.break_run();
         self.set_cursor(self.value.len(), extend);
-    }
-
-    /// Cursor offset for a click at `x` within a field whose text starts at
-    /// `origin_x` and uses `approx_char_width`.
-    pub fn offset_for_x(&self, x: f32, origin_x: f32, approx_char_width: f32) -> usize {
-        if approx_char_width <= 0.0 {
-            return self.cursor;
-        }
-        let index = (((x - origin_x) / approx_char_width).round()).max(0.0) as usize;
-        let mut offset = 0;
-        for (count, (byte, _)) in self.value.char_indices().enumerate() {
-            if count == index {
-                offset = byte;
-                break;
-            }
-            offset = byte + self.value[byte..].chars().next().map_or(0, char::len_utf8);
-        }
-        offset.min(self.value.len())
     }
 
     fn delete_selection(&mut self) -> bool {
@@ -334,10 +421,120 @@ mod tests {
     }
 
     #[test]
-    fn click_offset_maps_to_a_boundary() {
-        let b = buffer("abcd");
-        assert_eq!(b.offset_for_x(0.0, 0.0, 8.0), 0);
-        assert_eq!(b.offset_for_x(17.0, 0.0, 8.0), 2);
-        assert_eq!(b.offset_for_x(999.0, 0.0, 8.0), 4);
+    fn a_word_typed_is_one_step_back_and_a_space_starts_the_next() {
+        let mut b = buffer("");
+        for key in ["one", " ", "two"] {
+            for ch in key.chars() {
+                b.insert(&ch.to_string());
+            }
+        }
+        assert_eq!(b.text(), "one two");
+        assert!(b.undo());
+        assert_eq!(b.text(), "one ");
+        assert!(b.undo());
+        assert_eq!(b.text(), "one");
+        assert!(b.undo());
+        assert_eq!(b.text(), "");
+        // Nothing before the beginning.
+        assert!(!b.undo());
+    }
+
+    #[test]
+    fn redo_bring_back_a_step_until_something_new_is_typed() {
+        let mut b = buffer("");
+        b.insert("hello");
+        assert!(b.undo());
+        assert_eq!(b.text(), "");
+        assert!(b.redo());
+        assert_eq!(b.text(), "hello");
+        // A new edit leaves nowhere to redo to.
+        assert!(b.undo());
+        b.insert("bye");
+        assert!(!b.redo());
+        assert_eq!(b.text(), "bye");
+    }
+
+    #[test]
+    fn deleting_and_moving_the_cursor_are_steps_of_their_own() {
+        let mut b = buffer("");
+        b.insert("ab");
+        b.backspace();
+        assert_eq!(b.text(), "a");
+        b.insert("c");
+        assert_eq!(b.text(), "ac");
+        // Moving the cursor ends the run of typing, so "c" is its own step.
+        assert!(b.undo());
+        assert_eq!(b.text(), "a");
+        assert!(b.undo());
+        assert_eq!(b.text(), "ab");
+    }
+
+    #[test]
+    fn the_stages_of_a_composed_character_are_one_step() {
+        let mut b = buffer("x ");
+        // A composition is written, then rewritten, then left alone.
+        b.insert("n");
+        b.join_step();
+        b.set_cursor(2, false);
+        b.set_cursor(3, true);
+        b.insert("ni");
+        assert!(b.undo());
+        assert_eq!(b.text(), "x ");
+    }
+
+    #[test]
+    fn undo_goes_back_to_where_the_cursor_and_selection_were() {
+        // Typing over a selection, then taking it back, selects the same text
+        // again: the field is exactly as it was before the step.
+        let mut b = buffer("ab");
+        b.set_cursor(1, false);
+        b.set_cursor(2, true);
+        b.insert("-");
+        assert_eq!(b.text(), "a-");
+        assert!(b.undo());
+        assert_eq!(b.text(), "ab");
+        assert_eq!((b.cursor(), b.anchor()), (2, Some(1)));
+    }
+
+    #[test]
+    fn the_app_filling_a_field_in_leaves_nothing_to_undo() {
+        let mut b = buffer("");
+        b.insert("typed");
+        b.set_value("filled");
+        assert!(!b.undo());
+        b.insert("!");
+        b.clear();
+        assert!(!b.undo());
+    }
+
+    #[test]
+    fn history_is_bounded() {
+        let mut b = buffer("");
+        for step in 0..(MAX_UNDO + 50) {
+            b.insert(&format!("{step} "));
+        }
+        let mut undone = 0;
+        while b.undo() {
+            undone += 1;
+        }
+        assert_eq!(undone, MAX_UNDO);
+    }
+
+    #[test]
+    fn no_op_backspace_and_delete_preserve_undo_and_redo() {
+        let mut b = buffer("");
+        b.insert("hello");
+        assert!(b.undo());
+        assert_eq!(b.text(), "");
+        // Backspace at start of buffer does nothing and must not wipe redo.
+        b.backspace();
+        assert!(!b.undo());
+        assert!(b.redo());
+        assert_eq!(b.text(), "hello");
+        // Delete at end of buffer does nothing and must not add an undo step.
+        b.delete();
+        assert!(b.undo());
+        assert_eq!(b.text(), "");
+        assert!(!b.undo());
     }
 }

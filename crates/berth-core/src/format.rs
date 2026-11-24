@@ -5,19 +5,28 @@
 const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
 
 /// A byte figure: `512 B`, `4.0 KiB`, `103 MiB`.
+///
+/// The figure is rounded before the unit is chosen. Rounding after would print
+/// `1024 KiB` for the byte below a mebibyte, a unit the ladder never reaches.
 pub fn bytes(n: u64) -> String {
     let mut value = n as f64;
     let mut unit = 0;
-    while value >= 1024.0 && unit + 1 < UNITS.len() {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{n} B")
-    } else if value >= 100.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
+    loop {
+        let rounded = if value >= 100.0 {
+            value.round()
+        } else {
+            (value * 10.0).round() / 10.0
+        };
+        if rounded >= 1024.0 && unit + 1 < UNITS.len() {
+            value /= 1024.0;
+            unit += 1;
+        } else if unit == 0 {
+            return format!("{n} B");
+        } else if rounded >= 100.0 {
+            return format!("{rounded:.0} {}", UNITS[unit]);
+        } else {
+            return format!("{rounded:.1} {}", UNITS[unit]);
+        }
     }
 }
 
@@ -29,6 +38,15 @@ pub fn bytes_signed(n: i64) -> String {
         format!("-{}", bytes(magnitude))
     } else {
         bytes(n as u64)
+    }
+}
+
+/// A figure the engine may not have measured: `—` when it didn't, or when it
+/// answered with a negative sentinel. Zero is only shown when it was measured.
+pub fn measured(measured: Option<i64>) -> String {
+    match measured {
+        Some(value) if value >= 0 => bytes(value as u64),
+        _ => "—".to_owned(),
     }
 }
 
@@ -133,6 +151,22 @@ mod tests {
         assert_eq!(bytes(4 * 1024 * 1024), "4.0 MiB");
         assert_eq!(bytes(103 * 1024 * 1024), "103 MiB");
         assert_eq!(bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    }
+
+    #[test]
+    fn a_byte_short_of_a_unit_rolls_up_instead_of_printing_1024() {
+        assert_eq!(bytes(1024 * 1024 - 1), "1.0 MiB");
+        assert_eq!(bytes(1023 * 1024), "1023 KiB");
+        assert_eq!(bytes(1024 * 1024 * 1024 - 1), "1.0 GiB");
+        assert_eq!(bytes(1024 - 1), "1023 B");
+    }
+
+    #[test]
+    fn an_unmeasured_figure_is_a_dash_and_a_measured_zero_is_zero() {
+        assert_eq!(measured(None), "—");
+        assert_eq!(measured(Some(-1)), "—");
+        assert_eq!(measured(Some(0)), "0 B");
+        assert_eq!(measured(Some(2048)), "2.0 KiB");
     }
 
     #[test]

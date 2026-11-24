@@ -6,6 +6,15 @@ use berth_engine::client::Client;
 use berth_engine::detail::ContainerDetail;
 use berth_engine::dto::{ContainerTop, FsChange, ImageLayer};
 
+/// The engine's inspect document for a container: the JSON exactly as the
+/// engine sent it, pretty-printed, and the typed facts berth reads from it.
+/// An Inspect tab must show what the engine said, not what berth modelled.
+#[derive(Clone, Debug)]
+pub struct Inspect {
+    pub json: String,
+    pub detail: ContainerDetail,
+}
+
 #[derive(Clone, Debug)]
 pub struct Request {
     pub socket: String,
@@ -21,7 +30,7 @@ pub struct Outcome {
     pub id: String,
     pub generation: u64,
     pub logs: Result<String, String>,
-    pub inspect: Result<ContainerDetail, String>,
+    pub inspect: Result<Inspect, String>,
     pub top: Option<ContainerTop>,
     pub changes: Vec<FsChange>,
 }
@@ -45,9 +54,17 @@ pub fn load(request: Request) -> Outcome {
             }
         })
         .map_err(|error| error.message());
-    let inspect = client.inspect(&request.id).map_err(|error| error.message());
+    let inspect = client
+        .inspect_document(&request.id)
+        .map(|document| Inspect {
+            detail: serde_json::from_value(document.clone()).unwrap_or_default(),
+            json: serde_json::to_string_pretty(&document).unwrap_or_default(),
+        })
+        .map_err(|error| error.message());
     let (top, changes) = if request.extras {
-        let is_running = inspect.as_ref().is_ok_and(|d| d.state.running);
+        let is_running = inspect
+            .as_ref()
+            .is_ok_and(|inspect| inspect.detail.state.running);
         let top = if is_running {
             client.container_top(&request.id).ok()
         } else {
@@ -82,44 +99,23 @@ pub fn load_image(socket: String, api: String, id: String, generation: u64) -> I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Read, Write};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use berth_engine::test_support::{MockEngine, Reply};
 
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-
-    fn frame(text: &str) -> Vec<u8> {
-        let mut out = vec![1, 0, 0, 0];
-        out.extend_from_slice(&(text.len() as u32).to_be_bytes());
-        out.extend_from_slice(text.as_bytes());
-        out
-    }
+    /// Field names Docker uses that berth's `ContainerDetail` doesn't model.
+    const UNSCHEMATIC: &str = r#""HostConfig":{"Privileged":true,"CapAdd":["NET_ADMIN"]}"#;
 
     #[test]
     fn reads_logs_and_inspect_and_names_the_id() {
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("berth-detail-{}-{id}.sock", std::process::id()));
-        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().expect("accept");
-                let mut request = [0u8; 2048];
-                let n = stream.read(&mut request).unwrap_or(0);
-                let text = String::from_utf8_lossy(&request[..n]);
-                let body: Vec<u8> = if text.contains("/logs") {
-                    frame("hello\n")
-                } else {
-                    br#"{"Id":"abc","Name":"/web","State":{"StartedAt":"2026-11-01T19:55:00Z"}}"#
-                        .to_vec()
-                };
-                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
-                let _ = stream.write_all(head.as_bytes());
-                let _ = stream.write_all(&body);
-            }
-        });
-
+        let engine = MockEngine::start();
+        engine
+            .on("/logs")
+            .reply(Reply::framed("hello\n"))
+            .on("/json")
+            .ok(format!(
+                r#"{{"Id":"abc","Name":"/web","State":{{"StartedAt":"2026-11-01T19:55:00Z"}},{UNSCHEMATIC}}}"#
+            ));
         let outcome = load(Request {
-            socket: path.to_string_lossy().into_owned(),
+            socket: engine.socket(),
             api: "v1.43".into(),
             id: "abc".into(),
             generation: 7,
@@ -129,7 +125,16 @@ mod tests {
         assert_eq!(outcome.id, "abc");
         assert_eq!(outcome.generation, 7);
         assert_eq!(outcome.logs.unwrap(), "hello\n");
-        let detail = outcome.inspect.expect("inspect");
-        assert_eq!(detail.name, "/web");
+        let inspect = outcome.inspect.expect("inspect");
+        // The typed facts are read from the document…
+        assert_eq!(inspect.detail.name, "/web");
+        assert!(inspect.detail.state.started_at.starts_with("2026-11-01"));
+        // …and the document is shown whole, including what berth doesn't model.
+        assert!(
+            inspect.json.contains("\"Privileged\": true"),
+            "{}",
+            inspect.json
+        );
+        assert!(inspect.json.contains("NET_ADMIN"), "{}", inspect.json);
     }
 }

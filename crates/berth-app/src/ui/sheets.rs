@@ -1,32 +1,28 @@
 //! Modal sheets: destructive confirmation, create volume/network, and prune.
 //! One sheet at a time; the backdrop owns every click outside the panel.
+//!
+//! A sheet owns the keyboard while it is open. Its controls focus through
+//! handles the app keeps, so that Tab crosses only them; see `focus.rs`.
 
 use berth_core::format;
-use berth_engine::prune::{self, Engine};
+use berth_ui::layout::{CARD_PADDING, CARD_RADIUS, DIALOG_BUTTON_WIDTH, SHEET_MAX_WIDTH};
 use berth_ui::theme::Tokens;
+use berth_ui::typography;
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, Role, div, px};
+use gpui::{AnyElement, Context, Div, FontWeight, Role, SharedString, div, px};
 
-use crate::app::{BerthApp, CreateKind, Pending};
+use crate::actions::{ContainerAction, Pending, Target};
+use crate::app::{BerthApp, CreateKind};
+use crate::jobs::mutation::PruneOptions;
+use crate::ui::kit::{Button, button, caption, checkbox};
+use crate::view::Sheet;
 
 pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Option<AnyElement> {
-    let (label, panel) = if let Some(pending) = &app.pending {
-        (
-            format!("{} {}?", pending.verb, pending.name),
-            confirm_panel(app, pending, tokens, cx),
-        )
-    } else if let Some(kind) = app.create_kind {
-        (
-            format!("New {}", kind.noun()),
-            create_panel(app, kind, tokens, cx),
-        )
-    } else if app.prune_open {
-        (
-            "Clean up unused data".to_owned(),
-            prune_panel(app, tokens, cx),
-        )
-    } else {
-        return None;
+    let sheet = app.view.sheet.as_ref()?;
+    let panel = match sheet {
+        Sheet::Confirm(pending) => confirm_panel(app, pending, tokens, cx),
+        Sheet::Create { kind, .. } => create_panel(app, *kind, tokens, cx),
+        Sheet::Prune(options) => prune_panel(app, options, tokens, cx),
     };
 
     Some(
@@ -37,7 +33,8 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
             .flex()
             .items_center()
             .justify_center()
-            .bg(tokens.text.alpha(0.38))
+            .bg(tokens.backdrop())
+            .on_scroll(|_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.on_dismiss(&berth_commands::app_actions::Dismiss, window, cx);
             }))
@@ -45,11 +42,12 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
                 div()
                     .id("sheet-panel")
                     .role(Role::Dialog)
-                    .aria_label(label)
+                    .aria_label(sheet.label())
+                    .on_scroll(|_, _, cx| cx.stop_propagation())
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .w(px(620.0))
-                    .p(px(16.0))
-                    .rounded(px(10.0))
+                    .w(px(SHEET_MAX_WIDTH))
+                    .p(px(CARD_PADDING))
+                    .rounded(px(CARD_RADIUS))
                     .bg(tokens.surface)
                     .border_1()
                     .border_color(tokens.border)
@@ -62,66 +60,128 @@ pub fn overlay(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Op
     )
 }
 
+/// A sheet's title. A dialog is the most important thing on screen while it
+/// is open, so its title is a card's title, not body text.
+fn sheet_title(text: impl Into<SharedString>, color: gpui::Hsla) -> Div {
+    div()
+        .text_size(px(typography::TITLE_SMALL))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(color)
+        .child(text.into())
+}
+
+/// A dialog's buttons: Cancel, then the way forward, on one baseline.
+fn dialog_buttons(cancel: Button, accept: Button) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .w_full()
+        .justify_end()
+        .gap(px(8.0))
+        .child(cancel)
+        .child(accept)
+}
+
+/// Action-specific label for the destructive button in a confirmation sheet.
+pub(crate) fn confirm_verb(pending: &Pending) -> &'static str {
+    match pending {
+        Pending::One(Target::Container { action, .. }) => action.label(),
+        Pending::One(Target::Removal { what, .. }) => what.verb(),
+        Pending::Batch { action, .. } => action.label(),
+        Pending::Engine { op, .. } => op.label(),
+    }
+}
+
+/// Explanation of what confirming `pending` will do, naming force-stop or the
+/// target engine's running containers where known.
+pub(crate) fn confirm_body(app: &BerthApp, pending: &Pending) -> String {
+    match pending {
+        Pending::Engine { kind, socket, .. } => {
+            let running = if app
+                .engine
+                .active_runtime()
+                .is_some_and(|runtime| runtime.socket == *socket)
+            {
+                Some(app.snapshot.running())
+            } else {
+                app.engine
+                    .runtimes
+                    .iter()
+                    .find(|runtime| runtime.socket == *socket && runtime.info_read)
+                    .map(|runtime| runtime.info.containers_running)
+            };
+            match running {
+                Some(count) => format!(
+                    "{} on {} will stop with the engine.",
+                    format::count(count, "running container", "running containers"),
+                    kind.label()
+                ),
+                None => format!(
+                    "Any running containers on {} will stop with the engine.",
+                    kind.label()
+                ),
+            }
+        }
+        Pending::One(Target::Container {
+            action: ContainerAction::Delete,
+            id,
+            ..
+        }) if app
+            .snapshot
+            .selected_container(id)
+            .is_some_and(|container| container.is_up()) =>
+        {
+            "This container is running and will be force-stopped before removal. This cannot be undone.".to_owned()
+        }
+        Pending::Batch {
+            action: ContainerAction::Delete,
+            ..
+        } if app.view.bulk_selected.iter().any(|id| {
+            app.snapshot
+                .selected_container(id)
+                .is_some_and(|container| container.is_up())
+        }) =>
+        {
+            "Running containers in this selection will be force-stopped before removal. This cannot be undone.".to_owned()
+        }
+        _ => "This cannot be undone.".to_owned(),
+    }
+}
+
 fn confirm_panel(
     app: &BerthApp,
     pending: &Pending,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Div {
-    let engine = pending.method == "ENGINE";
-    let title = format!("{} {}?", pending.verb, pending.name);
-    let body = if engine {
-        format!(
-            "Stopping or restarting this machine takes every running container on {} down with it.",
-            pending.name
-        )
-    } else {
-        "This cannot be undone.".to_owned()
-    };
+    let title = pending.title();
+    // Confirm waits for a running mutation, instead of closing the sheet and
+    // dropping the action when the request is refused.
+    let busy = app.mutating();
+    let body = confirm_body(app, pending);
+
+    let cancel = button("sheet-Cancel", "Cancel", tokens)
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.view.sheet_focus.cancel.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.resolve_pending(false, cx)));
+    // The way forward destroys something, so it is the destructive button.
+    let confirm = button("sheet-Confirm", confirm_verb(pending), tokens)
+        .danger()
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.view.sheet_focus.confirm.clone())
+        .description("Unavailable until the running engine operation finishes")
+        .disabled(busy)
+        .on_click(cx.listener(|this, _, _, cx| this.resolve_pending(true, cx)));
+
     div()
         .flex()
         .flex_col()
         .gap(px(8.0))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.danger_text())
-                .child(title),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(tokens.muted)
-                .child(body),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .w_full()
-                .justify_end()
-                .gap(px(8.0))
-                .child(button(
-                    "Cancel",
-                    false,
-                    tokens,
-                    cx.listener(|this, _, _, cx| this.resolve_pending(false, cx)),
-                ))
-                .child(button(
-                    "Confirm",
-                    true,
-                    tokens,
-                    cx.listener(|this, _, _, cx| this.resolve_pending(true, cx)),
-                )),
-        )
-        .when(app.mutating(), |this| {
-            this.child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(tokens.muted)
-                    .child("An engine operation is already running."),
-            )
+        .child(sheet_title(title, tokens.danger_text()))
+        .child(caption(body, tokens))
+        .child(dialog_buttons(cancel, confirm))
+        .when(busy, |this| {
+            this.child(caption("An engine operation is already running.", tokens))
         })
 }
 
@@ -131,279 +191,259 @@ fn create_panel(
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> Div {
-    let name = app.create_name.read(cx).text().to_owned();
-    let error = app
-        .create_attempted
-        .then(|| crate::app_forms::create_name_error(kind, &name, &app.snapshot.volumes))
-        .flatten();
+    let field_w = SHEET_MAX_WIDTH - 2.0 * CARD_PADDING;
+    app.view
+        .create_name
+        .update(cx, |input, _| input.set_width(field_w));
+    let name = app.view.create_name.read(cx).text().trim().to_owned();
+    // The sentence comes once Create was pressed with a name the rule
+    // refuses, and not before.
+    let error = match &app.view.sheet {
+        Some(Sheet::Create { attempted, .. }) if *attempted => {
+            crate::app_forms::create_name_error(kind, &name, &app.snapshot.volumes)
+        }
+        _ => None,
+    };
+
+    let cancel = button("sheet-Cancel", "Cancel", tokens)
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.view.sheet_focus.cancel.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)));
+    let create = button("sheet-Create", "Create", tokens)
+        .primary()
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.view.sheet_focus.create.clone())
+        .description("Enter a name first")
+        .disabled(name.is_empty())
+        .on_click(cx.listener(|this, _, _, cx| this.submit_create(cx)));
 
     let mut panel = div()
         .flex()
         .flex_col()
         .gap(px(8.0))
+        .child(sheet_title(format!("New {}", kind.noun()), tokens.text))
         .child(
             div()
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(tokens.text)
-                .child(format!("New {}", kind.noun())),
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .text_size(px(typography::LABEL))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(tokens.muted)
+                        .child("Name"),
+                )
+                .child(app.view.create_name.clone()),
         )
-        .child(app.create_name.clone());
+        .child(caption(
+            "2–128 letters, digits, dot, dash or underscore; starts with a letter or digit.",
+            tokens,
+        ));
     if let Some(error) = error {
         panel = panel.child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(typography::SECONDARY))
                 .text_color(tokens.danger_text())
                 .child(error),
         );
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .justify_end()
-            .gap(px(8.0))
-            .child(button(
-                "Cancel",
-                false,
-                tokens,
-                cx.listener(|this, _, _, cx| this.close_create(cx)),
-            ))
-            .child(button(
-                "Create",
-                true,
-                tokens,
-                cx.listener(|this, _, _, cx| this.submit_create(cx)),
-            )),
-    )
+    panel.child(dialog_buttons(cancel, create))
 }
 
-fn prune_panel(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> Div {
-    let engine = match app.engine.dialect {
-        berth_engine::discovery::Dialect::Podman => Engine::Podman,
-        _ => Engine::Docker,
-    };
-    let build_supported = prune::supported(prune::Kind::BuildCache, engine);
-    let build_on = prune::build_cache_enabled(app.prune_options.build_cache, engine);
-    let free = app
-        .snapshot
-        .df
-        .as_ref()
-        .map(|df| df.reclaimable_by_store())
-        .unwrap_or_default();
-    let selected = {
-        let mut total = 0i64;
-        if app.prune_options.containers {
-            total = total.saturating_add(free.containers);
-        }
-        if app.prune_options.images {
-            total = total.saturating_add(free.images);
-        }
-        if app.prune_options.volumes {
-            total = total.saturating_add(free.volumes);
-        }
-        if build_on {
-            total = total.saturating_add(free.build_cache);
-        }
-        total
-    };
+/// What a cleanup can remove, in the order the sheet lists it. A network is
+/// fourth: it has no size, so there is no figure to show for it.
+const PRUNE_LABELS: [&str; 5] = [
+    "Stopped containers",
+    "Unused images",
+    "Unused volumes",
+    "Unused networks",
+    "Build cache",
+];
+
+fn prune_panel(
+    app: &BerthApp,
+    options: &PruneOptions,
+    tokens: Tokens,
+    cx: &mut Context<BerthApp>,
+) -> Div {
+    let build_supported = app.prune_build_supported();
+    let selected = app.prune_selected_bytes(options);
+
+    let cancel = button("sheet-Cancel", "Cancel", tokens)
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.view.sheet_focus.cancel.clone())
+        .on_click(cx.listener(|this, _, _, cx| this.close_sheet(cx)));
+    let nothing_to_clean = app.prune_has_work(options) == Some(false);
+    // Cleaning up destroys, so it is the destructive button. It waits only
+    // while berth can see there is nothing ticked that would go.
+    let clean_up = button("sheet-Clean up", "Clean up", tokens)
+        .danger()
+        .width(px(DIALOG_BUTTON_WIDTH))
+        .focus(app.view.sheet_focus.clean_up.clone())
+        .description("Tick something there is left to clean up")
+        .disabled(nothing_to_clean)
+        .on_click(cx.listener(|this, _, _, cx| this.run_prune(cx)));
 
     let mut panel = div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
+        .gap(px(4.0))
         .child(
             div()
                 .flex()
                 .flex_row()
                 .w_full()
                 .items_center()
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(tokens.text)
-                        .child("Clean up unused data"),
-                )
+                .gap(px(8.0))
+                .child(sheet_title("Clean up unused data", tokens.text))
                 .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(tokens.muted)
-                        .child(format!("{} selected", format::bytes(selected.max(0) as u64))),
-                ),
+                .child(caption(
+                    format!(
+                        "{} selected",
+                        // Unknown is a dash, not zero.
+                        selected.map_or_else(|| "—".to_owned(), |bytes| format::measured(Some(bytes)))
+                    ),
+                    tokens,
+                )),
         )
-        .child(
-            div()
-                .text_size(px(11.5))
-                .text_color(tokens.muted)
-                .child(if build_supported {
-                    "Stopped containers, unused images and build cache. Volumes and networks are opt-in; this cannot be undone."
-                } else {
-                    "Stopped containers and unused images. Volumes and networks are opt-in; this cannot be undone."
-                }),
-        )
-        .child(option(
-            "Stopped containers",
-            free.containers,
-            app.prune_options.containers,
+        .child(caption(
+            if build_supported {
+                "Removes stopped containers, every image no container uses, and build cache. Volumes and networks are opt-in; this cannot be undone."
+            } else {
+                "Removes stopped containers and every image no container uses. Volumes and networks are opt-in; this cannot be undone."
+            },
             tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.containers = !this.prune_options.containers;
-                cx.notify();
-            }),
-        ))
-        .child(option(
-            "Unused images",
-            free.images,
-            app.prune_options.images,
-            tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.images = !this.prune_options.images;
-                cx.notify();
-            }),
-        ))
-        .child(option(
-            "Unused volumes",
-            free.volumes,
-            app.prune_options.volumes,
-            tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.volumes = !this.prune_options.volumes;
-                cx.notify();
-            }),
-        ))
-        .child(option(
-            "Unused networks",
-            -1,
-            app.prune_options.networks,
-            tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.networks = !this.prune_options.networks;
-                cx.notify();
-            }),
         ));
-    if build_supported {
-        panel = panel.child(option(
-            "Build cache",
-            free.build_cache,
-            build_on,
+    for (field, label) in PRUNE_LABELS.iter().enumerate() {
+        if field == 4 && !build_supported {
+            continue;
+        }
+        panel = panel.child(prune_option(
+            app,
+            field,
+            label,
+            app.prune_bytes(field),
+            app.prune_ticked(options, field),
             tokens,
-            cx.listener(|this, _, _, cx| {
-                this.prune_options.build_cache = !this.prune_options.build_cache;
-                cx.notify();
-            }),
+            cx,
         ));
     }
-    panel.child(
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .justify_end()
-            .gap(px(8.0))
-            .child(button(
-                "Cancel",
-                false,
-                tokens,
-                cx.listener(|this, _, _, cx| this.close_prune(cx)),
-            ))
-            .child(button(
-                "Clean up",
-                true,
-                tokens,
-                cx.listener(|this, _, _, cx| this.run_prune(cx)),
-            )),
-    )
+    if nothing_to_clean {
+        panel = panel.child(caption("Nothing ticked has data left to remove.", tokens));
+    }
+    panel.child(dialog_buttons(cancel, clean_up))
 }
 
-fn option(
+/// What an option amounts to: how many things, and how much data, as far as
+/// each is known.
+fn amount(count: Option<i64>, bytes: Option<i64>) -> String {
+    match (count, bytes.filter(|bytes| *bytes >= 0)) {
+        (Some(count), Some(bytes)) => {
+            format!("{count} · {}", format::measured(Some(bytes)))
+        }
+        (Some(count), None) => count.to_string(),
+        (None, Some(bytes)) => format::measured(Some(bytes)),
+        (None, None) => "—".to_owned(),
+    }
+}
+
+/// One kind of data a cleanup can remove, with what it amounts to.
+#[allow(clippy::too_many_arguments)]
+fn prune_option(
+    app: &BerthApp,
+    field: usize,
     label: &'static str,
-    amount: i64,
+    bytes: Option<i64>,
     on: bool,
     tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!("prune-option-{label}")))
-        .flex()
-        .flex_row()
-        .w_full()
-        .items_center()
-        .gap(px(8.0))
-        .h(px(24.0))
-        .role(Role::CheckBox)
-        .aria_label(label)
-        .aria_selected(on)
-        .on_click(on_click)
-        .child(
-            div()
-                .w(px(14.0))
-                .h(px(14.0))
-                .rounded(px(4.0))
-                .bg(if on { tokens.accent } else { tokens.track })
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(on, |this| {
-                    this.child(
-                        div()
-                            .text_size(px(9.0))
-                            .text_color(tokens.accent_text)
-                            .child("✓"),
-                    )
-                }),
-        )
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(tokens.text)
-                .child(label),
-        )
-        .child(div().flex_1())
-        .child(
-            div()
-                .text_size(px(11.0))
-                .text_color(tokens.muted)
-                .child(if amount < 0 {
-                    "—".to_owned()
-                } else {
-                    format::bytes(amount.max(0) as u64)
-                }),
-        )
+    cx: &mut Context<BerthApp>,
+) -> crate::ui::kit::Checkbox {
+    checkbox(
+        SharedString::from(format!("prune-option-{label}")),
+        label,
+        on,
+        tokens,
+    )
+    .figure(amount(app.prune_count(field), bytes))
+    .focus(app.view.sheet_focus.options[field].clone())
+    .on_click(cx.listener(move |this, _, _, cx| this.toggle_prune_option(field, cx)))
 }
 
-fn button(
-    label: &'static str,
-    primary: bool,
-    tokens: Tokens,
-    on_click: impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    div()
-        .id(gpui::SharedString::from(format!("sheet-button-{label}")))
-        .flex()
-        .items_center()
-        .justify_center()
-        .w(px(92.0))
-        .h(px(28.0))
-        .rounded(px(14.0))
-        .bg(if primary {
-            tokens.accent
-        } else {
-            tokens.surface_hover
-        })
-        .role(Role::Button)
-        .aria_label(label)
-        .on_click(on_click)
-        .child(
-            div()
-                .text_size(px(12.0))
-                .text_color(if primary {
-                    tokens.accent_text
-                } else {
-                    tokens.text
-                })
-                .child(label),
-        )
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::Removal;
+    use crate::jobs::engine_ops::EngineOp;
+    use berth_engine::discovery::{Kind, Runtime};
+    use berth_engine::dto::Info;
+    use gpui::TestAppContext;
+
+    #[test]
+    fn confirm_buttons_name_the_specific_action() {
+        assert_eq!(
+            confirm_verb(&Pending::One(Target::Container {
+                action: ContainerAction::Delete,
+                id: "a".into(),
+                name: "web".into(),
+            })),
+            "Delete"
+        );
+        assert_eq!(
+            confirm_verb(&Pending::One(Target::Removal {
+                what: Removal::Volume,
+                id: "v".into(),
+                name: "v".into(),
+            })),
+            "Remove"
+        );
+        assert_eq!(
+            confirm_verb(&Pending::Engine {
+                op: EngineOp::Stop,
+                kind: Kind::Lima,
+                socket: "/tmp/a.sock".into(),
+            }),
+            "Stop"
+        );
+    }
+
+    #[gpui::test]
+    fn confirm_body_warns_about_running_containers_and_target_engine(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, _| {
+            app.engine.runtimes.push(Runtime {
+                kind: Kind::Colima,
+                name: "Colima".into(),
+                socket: "/tmp/colima.sock".into(),
+                reachable: true,
+                info_read: true,
+                info: Info {
+                    containers_running: 5,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            // Running container delete warns about force-stop.
+            let body = confirm_body(
+                app,
+                &Pending::One(Target::Container {
+                    action: ContainerAction::Delete,
+                    id: "demo-1".into(),
+                    name: "berth-demo-web".into(),
+                }),
+            );
+            assert!(body.contains("force-stopped"), "{body}");
+
+            // Engine op on a non-active engine reads that engine's count (5), not active (2).
+            let body = confirm_body(
+                app,
+                &Pending::Engine {
+                    op: EngineOp::Stop,
+                    kind: Kind::Colima,
+                    socket: "/tmp/colima.sock".into(),
+                },
+            );
+            assert!(body.contains("5 running containers on Colima"), "{body}");
+        });
+    }
 }

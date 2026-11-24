@@ -22,5 +22,7 @@ actions!(
         Dismiss,
         SelectNext,
         SelectPrev,
+        FocusNext,
+        FocusPrevious,
     ]
 );

@@ -24,9 +24,11 @@ cargo check --workspace           # tight loop
 cargo run -p berth-app            # open the window
 cargo test --workspace            # unit + GPUI in-process
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --locked \
+    --features berth-app/test-driver -- -D warnings   # the fixture too, so the screenshot pass is linted
 ./tools/lines.py                  # 600-line rule
-cargo run -p berth-app --example screenshots   # headless PNGs in docs/ui/
+cargo run -p berth-app --example screenshots --features test-driver   # headless PNGs in docs/ui/
+cargo run -p berth-app --release --example perf --features test-driver # frame budget: 100 to 5,000 rows
 ./scripts/coverage.sh             # line coverage gate (85%)
 ```
 
@@ -46,11 +48,20 @@ BERTH_SOCKET=/path/to.sock cargo run -p berth-app
 - **Unknown is `—`, never `0`.** A partial stats sum says "partial sample". A
   failed list keeps the previous list, never an empty one.
 - **One mutation at a time.** Container actions, bulk, pull/run, prune and
-  engine machine commands share one slot. A second request is refused.
+  engine machine commands share one slot (`MutationSlot`, `slot.rs`), which
+  names what is running and when it was asked for. A second request is
+  refused, and the refusal says what it is waiting for.
 - **Generations guard every completion.** Discovery, refresh, detail, mutation
   and image tasks compare their generation before touching state.
 - **Selection is by id**, re-resolved after every commit. Never hold a pointer
   into a previous snapshot.
+- **One sheet at a time.** A sheet is a variant of `Sheet` (`view.rs`) and
+  holds what only it needs. `open_sheet` replaces whatever was open and
+  `close_sheet` is the one way out; no flag beside it says a sheet is open.
+- **Actions are typed.** `actions.rs` is the one place that knows the request
+  a container action or a removal makes, and `EngineOp` a machine command.
+  Nothing between a button and the engine passes a method, a path or a verb
+  as a string; `contract_tests` holds it.
 - **Tokens live in `berth-ui`.** A view must not invent a colour or a spacing
   value that the design contract already owns.
 - **Accessibility from day one.** Every control gets a role and a name. Tables
@@ -67,8 +78,21 @@ BERTH_SOCKET=/path/to.sock cargo run -p berth-app
   element, and `cx.bind_keys([KeyBinding::new("...", Action, Some("..."))])`.
 - `uniform_list` only for fixed-height rows. Use `list` or a custom element for
   variable heights.
+- A table is `DataTable` (`ui/data_table.rs`). Its columns are one spec
+  (title, width, alignment, sort, cell); header and rows are built from it.
+  Rows are a `uniform_list` that draws only what the window shows, and
+  `ListState::scroll` keeps the table's place. The `select*` methods call
+  `reveal`, so a row chosen from elsewhere is scrolled into view.
 - Store every `Task` and `Subscription` in the owning struct. Dropping one
   silently cancels the work or the observation.
+- A view added with `.child(entity)` is redrawn whenever its parent is. Only
+  `.cached(style)` keeps a view from one frame to the next until it is
+  notified, and it then takes its size from that style, not from what it
+  draws. The page and the inspector are kept this way (`subviews.rs`); the
+  shell redraws on every frame and draws nothing else.
+- `cx.notify()` on the shell redraws both corners. A change only one of them
+  shows is announced with `redraw_page` or `redraw_inspector`, and
+  `contract_tests` holds each corner to drawing from its own state.
 - Text shaping is UI-thread work. Shape only visible rows.
 - GPUI has no text-input widget, tray API, or SF Symbols. The plan budgets for
   all three.

@@ -1,160 +1,452 @@
-//! Overview cards: fleet activity, host split, engine facts and disk stores.
+//! Overview cards: the four series the history records, the host, and the
+//! engine's facts.
+//!
+//! A series card has the reference's anatomy: a tinted chip and a coloured
+//! label, a figure with a note beside it, and the well the series is drawn in.
 
 use berth_core::format;
-use berth_core::history::Which;
 use berth_ui::layout;
-use berth_ui::theme::Tokens;
+use berth_ui::theme::{TintKind, Tokens, tint};
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{Context, Div, FontWeight, Role, div, px};
+use gpui::{AnyElement, Context, Div, FontWeight, Hsla, div, px};
 
 use crate::app::{BerthApp, Tab};
 use crate::ui::graph;
+use crate::ui::kit::{Card, button, caption, card, card_title, icon_chip};
+use crate::ui::tabular;
 
-pub(crate) fn fleet_card(
-    app: &BerthApp,
-    tokens: Tokens,
-    width: f32,
-    complete: bool,
-    cpu: &str,
-    memory: &str,
-) -> Div {
-    let chart_w = ((width - 32.0 - 12.0) / 2.0).max(120.0);
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(10.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .gap(px(8.0))
-                .child(title("Fleet activity", tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(type_scale::META))
-                        .text_color(tokens.muted)
-                        .child("recent"),
-                ),
-        );
-    card = card.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_end()
-            .w_full()
-            .gap(px(14.0))
-            .child(
-                div()
-                    .text_size(px(34.0))
-                    .font_weight(FontWeight::BOLD)
-                    .font_features(crate::ui::tabular())
-                    .text_color(tokens.text)
-                    .child(app.snapshot.running().to_string()),
-            )
-            .child(div().flex().flex_col().gap(px(1.0)).pb(px(3.0)).child(
-                div().text_size(px(12.0)).text_color(tokens.text).child(
-                    if app.snapshot.running() == 1 {
-                        "container running"
-                    } else {
-                        "containers running"
-                    },
-                ),
-            ))
-            .child(div().flex_1())
-            .child(
-                div()
-                    .text_size(px(11.0))
-                    .text_color(if complete {
-                        tokens.muted
-                    } else {
-                        tokens.warning_text()
-                    })
-                    .child(if complete {
-                        "live sample".to_owned()
-                    } else {
-                        "partial sample".to_owned()
-                    }),
-            ),
-    );
-    card = card.child(
-        div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .gap(px(12.0))
-            .child(spark(
-                "CPU",
-                cpu,
-                app.engine.history.values(Which::Cpu).to_vec(),
-                tokens.accent_fill(),
-                tokens,
-                chart_w,
-                100.0,
-            ))
-            .child(spark(
-                "Memory",
-                memory,
-                app.engine.history.values(Which::Mem).to_vec(),
-                tokens.success,
-                tokens,
-                chart_w,
-                app.engine
-                    .active_runtime()
-                    .map(|runtime| runtime.info.mem_total.max(1) as f32)
-                    .unwrap_or(1.0),
-            )),
-    );
-    card.child(div().w_full().h(px(1.0)).bg(tokens.border))
-        .child(fleet_io(app, tokens))
+/// What a series card says about one series: its figure and the note beside
+/// it. `partial` colours the note as a warning: the figure is a lower bound.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Reading {
+    pub(crate) figure: String,
+    pub(crate) note: String,
+    pub(crate) partial: bool,
 }
 
-fn fleet_io(app: &BerthApp, tokens: Tokens) -> Div {
+/// What the CPU and memory cards say about the engine's sample.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Sample {
+    pub(crate) cpu: Reading,
+    pub(crate) memory: Reading,
+}
+
+/// The CPU and memory readings. A complete sample is stated plainly. A
+/// partial one is stated with how partial: the figure is what was measured,
+/// and the note says "partial sample · 49 of 50". An engine that is not
+/// answering, or has not answered yet, or measured nothing, is unknown.
+pub(crate) fn sample(
+    snapshot: &crate::state::Snapshot,
+    answering: bool,
+    cores: u32,
+    memory_ceiling: Option<u64>,
+) -> Sample {
+    let unknown = |note: String| Reading {
+        figure: "—".to_owned(),
+        note,
+        partial: false,
+    };
+    if !answering {
+        return Sample {
+            cpu: unknown(String::new()),
+            memory: unknown(String::new()),
+        };
+    }
+    let up = snapshot.running();
+    let cpu_note_full = format!("of {}", format::count(cores as usize, "core", "cores"));
+    let mem_note_full = memory_ceiling
+        .map(|total| format!("of {}", format::bytes(total)))
+        .unwrap_or_else(|| "engine total unknown".to_owned());
+    if up == 0 {
+        return Sample {
+            cpu: Reading {
+                figure: format::percent(0.0),
+                note: cpu_note_full,
+                partial: false,
+            },
+            memory: Reading {
+                figure: format::bytes(0),
+                note: mem_note_full,
+                partial: false,
+            },
+        };
+    }
+    let mut cpu_measured = 0usize;
+    let mut mem_measured = 0usize;
+    for (index, container) in snapshot.containers.iter().enumerate() {
+        if !container.is_up() {
+            continue;
+        }
+        let stat = snapshot.stat(index);
+        if stat.sampled && stat.cpu_known {
+            cpu_measured += 1;
+        }
+        if stat.sampled && stat.mem_known {
+            mem_measured += 1;
+        }
+    }
+    let cpu = if cpu_measured == 0 {
+        unknown(String::new())
+    } else {
+        let partial = cpu_measured < up;
+        Reading {
+            figure: snapshot
+                .measured_cpu(cores.max(1) as f32)
+                .map(|value| format::percent(value as f64))
+                .unwrap_or_else(|| "—".to_owned()),
+            note: if partial {
+                format!("partial sample · {cpu_measured} of {up}")
+            } else {
+                cpu_note_full
+            },
+            partial,
+        }
+    };
+    let memory = if mem_measured == 0 {
+        unknown(String::new())
+    } else {
+        let partial = mem_measured < up;
+        Reading {
+            figure: format::bytes(snapshot.container_memory()),
+            note: if partial {
+                format!("partial sample · {mem_measured} of {up}")
+            } else {
+                mem_note_full
+            },
+            partial,
+        }
+    };
+    Sample { cpu, memory }
+}
+
+/// What a card is drawn in: its icon, its name, and three colours, each the
+/// one job it is for. The label is text on the surface and takes a text
+/// colour; the chip is a wash of its tint; the graph takes the series' own.
+pub(crate) struct Series {
+    pub(crate) icon: &'static str,
+    pub(crate) label: &'static str,
+    tint: Hsla,
+    ink: Hsla,
+    line: Hsla,
+    /// What its ceiling is counted in, so that the well can name it.
+    unit: Unit,
+}
+
+/// What a series is measured in.
+#[derive(Clone, Copy)]
+pub(crate) enum Unit {
+    Percent,
+    Bytes,
+    Count,
+}
+
+impl Unit {
+    /// The ceiling's name, on the top edge of the well.
+    pub(crate) fn ceiling(self, ceiling: Option<f32>) -> Option<String> {
+        ceiling.map(|ceiling| match self {
+            Unit::Percent => "100%".to_owned(),
+            Unit::Bytes => format::bytes(ceiling as u64),
+            Unit::Count => format::count(ceiling as usize, "container", "containers"),
+        })
+    }
+}
+
+impl Series {
+    pub(crate) fn cpu(tokens: Tokens) -> Self {
+        Self {
+            icon: "containers",
+            label: "Containers · CPU",
+            tint: tint(tokens, TintKind::Containers),
+            ink: tokens.accent_text_pill(),
+            line: tokens.accent_fill(),
+            unit: Unit::Percent,
+        }
+    }
+
+    pub(crate) fn memory(tokens: Tokens) -> Self {
+        Self {
+            icon: "containers",
+            label: "Containers · Memory",
+            tint: tokens.success,
+            ink: tokens.success_text(),
+            line: tokens.success,
+            unit: Unit::Bytes,
+        }
+    }
+
+    pub(crate) fn running(tokens: Tokens) -> Self {
+        Self {
+            icon: "running",
+            label: "Containers running",
+            tint: tokens.warning_fill,
+            ink: tokens.warning_text(),
+            line: tokens.warning_fill,
+            unit: Unit::Count,
+        }
+    }
+
+    pub(crate) fn disk(tokens: Tokens) -> Self {
+        Self {
+            icon: "disk",
+            label: "Disk",
+            tint: tint(tokens, TintKind::Disk),
+            ink: tokens.text,
+            line: tokens.muted,
+            unit: Unit::Count,
+        }
+    }
+
+    /// The card with its series in the well. `ceiling` is the value the top
+    /// of the well stands for; `None` keeps the well empty rather than
+    /// drawing against a ceiling nobody knows.
+    pub(crate) fn card(
+        self,
+        reading: Reading,
+        values: Vec<f32>,
+        ceiling: Option<f32>,
+        width: f32,
+        tokens: Tokens,
+    ) -> Card {
+        let well = graph::cell_graph(
+            values,
+            self.line,
+            tokens,
+            ceiling,
+            layout::GRAPH_HEIGHT,
+            self.unit.ceiling(ceiling),
+        );
+        self.build_card(reading, well, Some("recent"), width, tokens)
+    }
+
+    /// The card with something else in its well: the disk card's split of
+    /// the stores. Static cards carry no `"recent"` time-series tag.
+    pub(crate) fn card_with(
+        self,
+        reading: Reading,
+        well: impl IntoElement,
+        width: f32,
+        tokens: Tokens,
+    ) -> Card {
+        self.build_card(reading, well, None, width, tokens)
+    }
+
+    fn build_card(
+        self,
+        reading: Reading,
+        well: impl IntoElement,
+        trailing: Option<&'static str>,
+        width: f32,
+        tokens: Tokens,
+    ) -> Card {
+        let partial = reading.partial;
+        let Self {
+            icon,
+            label,
+            tint,
+            ink,
+            line: _,
+            unit: _,
+        } = self;
+        card(tokens)
+            .w(px(width))
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .w_full()
+                    .gap(px(8.0))
+                    .child(icon_chip(icon, 12.0, tint, tokens, layout::CHIP))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
+                            .text_size(px(type_scale::TITLE_SMALL))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ink)
+                            .child(label),
+                    )
+                    .when_some(trailing, |this, tag| {
+                        this.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(type_scale::META))
+                                .text_color(tokens.muted)
+                                .child(tag),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_end()
+                    .w_full()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(type_scale::METRIC))
+                            .font_weight(FontWeight::BOLD)
+                            .font_features(tabular())
+                            .text_color(tokens.text)
+                            .child(reading.figure),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .justify_end()
+                            .overflow_hidden()
+                            .pb(px(3.0))
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(type_scale::SECONDARY))
+                                    .text_color(if partial {
+                                        tokens.warning_text()
+                                    } else {
+                                        tokens.muted
+                                    })
+                                    .child(reading.note),
+                            ),
+                    ),
+            )
+            .child(well)
+    }
+}
+
+/// The disk card's well: what the engine's stores hold, each as its share of
+/// the whole, in the disk page's colours. Empty when the figures haven't
+/// arrived.
+pub(crate) fn store_well(snapshot: &crate::state::Snapshot, tokens: Tokens) -> AnyElement {
+    let bar = match &snapshot.df {
+        Some(df) => {
+            let shares = df.shares();
+            graph::stacked_bar(
+                vec![
+                    (shares.images, tokens.accent_fill()),
+                    (shares.containers, tokens.success),
+                    (shares.volumes, tokens.store_volume()),
+                    (shares.build_cache, tokens.muted),
+                ],
+                tokens.track,
+            )
+            .into_any_element()
+        }
+        None => {
+            caption("The stores' figures arrive on the next slow pass.", tokens).into_any_element()
+        }
+    };
+    div()
+        .w_full()
+        .h(px(layout::GRAPH_HEIGHT))
+        .rounded(px(8.0))
+        .bg(tokens.well())
+        .border_1()
+        .border_color(tokens.well_border())
+        .p(px(14.0))
+        .flex()
+        .flex_col()
+        .justify_center()
+        .child(bar)
+        .into_any_element()
+}
+
+/// Network, disk and PIDs across the fleet, as totals since each container
+/// started: one line, no card of its own.
+pub(crate) fn io_strip(app: &BerthApp, tokens: Tokens) -> Div {
+    let answering = app.engine.last_update > 0
+        && app
+            .engine
+            .active_runtime()
+            .is_some_and(|runtime| runtime.reachable);
+    let (net, disk, pids) = io_figures(&app.snapshot, answering);
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .w_full()
+        .gap_x(px(24.0))
+        .gap_y(px(6.0))
+        .child(io_stat("Network", &net, tokens))
+        .child(io_stat("Disk", &disk, tokens))
+        .child(io_stat("PIDs", &pids, tokens))
+}
+
+/// Formatted `(network, disk, pids)` totals across running containers.
+/// Disconnected or unmeasured dimensions stay `—`, never `0`.
+pub(crate) fn io_figures(
+    snapshot: &crate::state::Snapshot,
+    answering: bool,
+) -> (String, String, String) {
+    if !answering {
+        return (
+            "↓ — · ↑ —".to_owned(),
+            "read — · wrote —".to_owned(),
+            "—".to_owned(),
+        );
+    }
+    if snapshot.running() == 0 {
+        return (
+            format!("↓ {} · ↑ {}", format::bytes(0), format::bytes(0)),
+            format!("read {} · wrote {}", format::bytes(0), format::bytes(0)),
+            "0".to_owned(),
+        );
+    }
     let mut net_rx = 0u64;
     let mut net_tx = 0u64;
     let mut blk_read = 0u64;
     let mut blk_write = 0u64;
     let mut pids = 0u32;
-    for sample in &app.snapshot.stats {
+    let (mut any_net, mut any_blk, mut any_pids) = (false, false, false);
+    for (index, container) in snapshot.containers.iter().enumerate() {
+        if !container.is_up() {
+            continue;
+        }
+        let sample = snapshot.stat(index);
         if !sample.sampled {
             continue;
         }
+        any_net = true;
         net_rx = net_rx.saturating_add(sample.net_rx);
         net_tx = net_tx.saturating_add(sample.net_tx);
-        blk_read = blk_read.saturating_add(sample.blk_read);
-        blk_write = blk_write.saturating_add(sample.blk_write);
-        pids = pids.saturating_add(sample.pids.unwrap_or(0));
+        if sample.blk_known {
+            any_blk = true;
+            blk_read = blk_read.saturating_add(sample.blk_read);
+            blk_write = blk_write.saturating_add(sample.blk_write);
+        }
+        if let Some(count) = sample.pids {
+            any_pids = true;
+            pids = pids.saturating_add(count);
+        }
     }
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .gap(px(24.0))
-        .child(io_stat(
-            "Network",
-            &format!("↓ {} · ↑ {}", format::bytes(net_rx), format::bytes(net_tx)),
-            tokens,
-        ))
-        .child(io_stat(
-            "Disk",
-            &format!(
-                "read {} · wrote {}",
-                format::bytes(blk_read),
-                format::bytes(blk_write)
-            ),
-            tokens,
-        ))
-        .child(io_stat("PIDs", &pids.to_string(), tokens))
+    let net = if any_net {
+        format!("↓ {} · ↑ {}", format::bytes(net_rx), format::bytes(net_tx))
+    } else {
+        "↓ — · ↑ —".to_owned()
+    };
+    let disk = if any_blk {
+        format!(
+            "read {} · wrote {}",
+            format::bytes(blk_read),
+            format::bytes(blk_write)
+        )
+    } else {
+        "read — · wrote —".to_owned()
+    };
+    let pids = if any_pids {
+        pids.to_string()
+    } else {
+        "—".to_owned()
+    };
+    (net, disk, pids)
 }
 
 fn io_stat(label: &'static str, value: &str, tokens: Tokens) -> Div {
@@ -163,181 +455,25 @@ fn io_stat(label: &'static str, value: &str, tokens: Tokens) -> Div {
         .flex_row()
         .items_center()
         .gap(px(6.0))
+        .child(caption(label, tokens))
         .child(
             div()
-                .text_size(px(10.5))
-                .text_color(tokens.muted)
-                .child(label),
-        )
-        .child(
-            div()
-                .text_size(px(11.0))
-                .font_features(crate::ui::tabular())
+                .text_size(px(type_scale::SECONDARY))
+                .font_features(tabular())
                 .text_color(tokens.text)
                 .child(value.to_owned()),
         )
 }
 
-fn spark(
-    label: &'static str,
-    value: &str,
-    values: Vec<f32>,
-    color: gpui::Hsla,
-    tokens: Tokens,
-    width: f32,
-    scale: f32,
-) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(4.0))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_end()
-                .w_full()
-                .gap(px(6.0))
-                .child(
-                    div()
-                        .text_size(px(type_scale::LABEL))
-                        .text_color(tokens.muted)
-                        .child(label),
-                )
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .font_features(crate::ui::tabular())
-                        .text_color(tokens.text)
-                        .child(value.to_owned()),
-                ),
-        )
-        .child(graph::cell_graph_with_height(
-            values,
-            color,
-            tokens.track,
-            scale,
-            false,
-            56.0,
-        ))
-}
-
-pub(crate) fn host_card(
-    app: &BerthApp,
-    tokens: Tokens,
-    width: f32,
-    containers_mem: Option<u64>,
-) -> Div {
-    let sample = &app.snapshot.host;
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(10.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .child(title("Host", tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .font_features(crate::ui::tabular())
-                        .text_color(tokens.muted)
-                        .child(format!(
-                            "CPU {}",
-                            if sample.cpu_known {
-                                format::percent(sample.cpu_percent as f64)
-                            } else {
-                                "—".to_owned()
-                            }
-                        )),
-                ),
-        );
-    if sample.mem_total == 0 {
-        return card.child(muted(
-            "Host memory is unavailable on this platform.",
-            tokens,
-        ));
-    }
-    card = card.child(
-        div()
-            .flex()
-            .flex_row()
-            .items_end()
-            .gap(px(8.0))
-            .child(
-                div()
-                    .text_size(px(26.0))
-                    .font_weight(FontWeight::BOLD)
-                    .font_features(crate::ui::tabular())
-                    .text_color(tokens.text)
-                    .child(format::bytes(sample.mem_used)),
-            )
-            .child(
-                div()
-                    .text_size(px(11.5))
-                    .text_color(tokens.muted)
-                    .pb(px(3.0))
-                    .child(format!("of {} in use", format::bytes(sample.mem_total))),
-            ),
-    );
-    let Some(containers_mem) = containers_mem else {
-        return card.child(muted(
-            "Containers — · per-container stats incomplete",
-            tokens,
-        ));
-    };
-    let used = sample.mem_used.max(1);
-    let in_containers = containers_mem.min(used);
-    let engine = sample.engine_rss.min(used.saturating_sub(in_containers));
-    let elsewhere = used.saturating_sub(in_containers).saturating_sub(engine);
-    let total = sample.mem_total.max(1) as f32;
-    let free = sample.mem_total.saturating_sub(used);
-    card = card
-        .child(graph::stacked_bar(
-            vec![
-                (in_containers as f32 / total, tokens.accent_fill()),
-                (engine as f32 / total, tokens.warning_fill),
-                (elsewhere as f32 / total, tokens.muted.alpha(0.55)),
-                (free as f32 / total, tokens.track),
-            ],
-            tokens.track,
-        ))
-        .child(div().w_full().h(px(1.0)).bg(tokens.border))
-        .child(host_split(
-            "containers",
-            in_containers,
-            used,
-            tokens.accent_fill(),
-            tokens,
-        ))
-        .child(host_split(
-            "engine helpers",
-            engine,
-            used,
-            tokens.warning_fill,
-            tokens,
-        ))
-        .child(host_split(
-            "elsewhere",
-            elsewhere,
-            used,
-            tokens.muted,
-            tokens,
-        ));
-    card
+/// The ceiling of the memory graph: the engine's `MemTotal`. `None` when the
+/// engine reported none, so the graph stays empty rather than filling against
+/// a ceiling of one byte.
+pub(crate) fn memory_ceiling(runtime: Option<&berth_engine::discovery::Runtime>) -> Option<f32> {
+    runtime
+        .filter(|runtime| runtime.info_read)
+        .map(|runtime| runtime.info.mem_total)
+        .filter(|total| *total > 0)
+        .map(|total| total as f32)
 }
 
 pub(crate) fn engine_card(
@@ -347,74 +483,45 @@ pub(crate) fn engine_card(
     info: &berth_engine::dto::Info,
     snapshot: &crate::state::Snapshot,
     cx: &mut Context<BerthApp>,
-) -> Div {
-    let mut card = div()
-        .flex()
-        .flex_col()
-        .w(px(width))
-        .gap(px(6.0))
-        .p(px(16.0))
-        .rounded(px(layout::CARD_RADIUS))
-        .bg(tokens.surface)
-        .border_1()
-        .border_color(tokens.border)
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .w_full()
-                .child(title("Engine", tokens))
-                .child(div().flex_1())
-                .child(
-                    div()
-                        .id("open-runtimes")
-                        .text_size(px(11.0))
-                        .text_color(tokens.muted)
-                        .role(Role::Button)
-                        .aria_label("Open Runtimes")
-                        .on_click(cx.listener(|this, _, _, cx| this.switch_to(Tab::Runtimes, cx)))
-                        .child("Runtimes →"),
-                ),
-        );
-    card = match runtime {
-        Some(runtime) if runtime.reachable => card
+) -> Card {
+    let mut card = card(tokens).w(px(width)).gap(px(6.0)).child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .w_full()
+            .child(card_title("Engine", tokens))
+            .child(div().flex_1())
             .child(
+                button("open-runtimes", "Runtimes →", tokens)
+                    .small()
+                    .ghost()
+                    .on_click(cx.listener(|this, _, _, cx| this.switch_to(Tab::Runtimes, cx))),
+            ),
+    );
+    card = match runtime {
+        Some(runtime) if runtime.reachable => {
+            let lines = engine_facts(runtime, info, snapshot);
+            let (first, rest) = lines.split_first().expect("the first line");
+            let (last, middle) = rest.split_last().expect("the last line");
+            let mut with_facts = card.child(
                 div()
-                    .text_size(px(12.5))
+                    .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.text)
-                    .child(format!(
-                        "{} {} · API {} · storage {}",
-                        runtime.kind.label(),
-                        runtime.version.version,
-                        runtime.version.api_version,
-                        info.driver
-                    )),
-            )
-            .child(muted(&format!("root {}", info.docker_root_dir), tokens))
-            .child(muted(
-                &format!(
-                    "{} · {}/{} · cgroups {}",
-                    info.operating_system, info.os_type, info.architecture, info.cgroup_version
-                ),
-                tokens,
-            ))
-            .child(div().w_full().h(px(1.0)).my(px(2.0)).bg(tokens.border))
-            .child(muted(
-                &format!(
-                    "{} · {} · {} · {}",
-                    format::count(snapshot.containers.len(), "container", "containers"),
-                    format::count(snapshot.images.len(), "image", "images"),
-                    format::count(snapshot.volumes.len(), "volume", "volumes"),
-                    format::count(snapshot.networks.len(), "network", "networks"),
-                ),
-                tokens,
-            )),
-        Some(_) => card.child(muted(
+                    .child(first.clone()),
+            );
+            for line in middle {
+                with_facts = with_facts.child(caption(line.clone(), tokens));
+            }
+            with_facts
+                .child(div().w_full().h(px(1.0)).my(px(2.0)).bg(tokens.border))
+                .child(caption(last.clone(), tokens))
+        }
+        Some(_) => card.child(caption(
             "Nothing is answering on the sockets berth knows. Open Runtimes to see what was tried.",
             tokens,
         )),
-        None => card.child(muted(
+        None => card.child(caption(
             "No engine selected. Open Runtimes to see what was found.",
             tokens,
         )),
@@ -427,89 +534,54 @@ pub(crate) fn engine_card(
             .justify_end()
             .pt(px(2.0))
             .child(
-                div()
-                    .id("overview-refresh")
-                    .flex()
-                    .items_center()
-                    .h(px(26.0))
-                    .px(px(10.0))
-                    .rounded(px(13.0))
-                    .bg(tokens.surface_hover)
-                    .hover(move |style| style.bg(tokens.accent.alpha(0.12)))
-                    .role(Role::Button)
-                    .aria_label("Refresh engine now")
-                    .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx)))
-                    .child(
-                        div()
-                            .text_size(px(11.5))
-                            .text_color(tokens.text)
-                            .child("Refresh now"),
-                    ),
+                button("overview-refresh", "Refresh now", tokens)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_now(cx))),
             ),
     )
 }
 
-pub(crate) fn title(text: &'static str, tokens: Tokens) -> Div {
-    div()
-        .text_size(px(12.5))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(tokens.text)
-        .child(text)
+/// An engine fact the engine did not give: unknown, and not blank.
+pub(crate) fn fact(value: &str) -> &str {
+    if value.is_empty() { "—" } else { value }
 }
 
-fn host_split(
-    label: &'static str,
-    bytes: u64,
-    used: u64,
-    color: gpui::Hsla,
-    tokens: Tokens,
-) -> Div {
-    let fraction = if used > 0 {
-        bytes as f32 / used as f32
+/// What the Engine card says about the engine: its kind, version and storage
+/// first; then what `/info` said, or that it said nothing; then what it holds.
+/// A fact the engine left empty is a dash, so no line is half empty.
+pub(crate) fn engine_facts(
+    runtime: &berth_engine::discovery::Runtime,
+    info: &berth_engine::dto::Info,
+    snapshot: &crate::state::Snapshot,
+) -> Vec<String> {
+    let mut lines = vec![format!(
+        "{} {} · API {} · storage {}",
+        runtime.kind.label(),
+        runtime.version.version,
+        runtime.version.api_version,
+        fact(&info.driver)
+    )];
+    if runtime.info_read {
+        lines.push(format!("root {}", fact(&info.docker_root_dir)));
+        lines.push(format!(
+            "{} · {}/{} · cgroups {}",
+            fact(&info.operating_system),
+            fact(&info.os_type),
+            fact(&info.architecture),
+            fact(&info.cgroup_version)
+        ));
     } else {
-        0.0
-    };
-    div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .gap(px(7.0))
-        .child(div().w(px(7.0)).h(px(7.0)).rounded(px(4.0)).bg(color))
-        .child(
-            div()
-                .text_size(px(11.0))
-                .text_color(tokens.muted)
-                .child(label),
-        )
-        .child(div().flex_1())
-        .child(
-            div()
-                .w(px(64.0))
-                .h(px(4.0))
-                .rounded(px(2.0))
-                .bg(tokens.track)
-                .child(
-                    div()
-                        .w(px((64.0 * fraction).max(if bytes > 0 { 2.0 } else { 0.0 })))
-                        .h(px(4.0))
-                        .rounded(px(2.0))
-                        .bg(color),
-                ),
-        )
-        .child(
-            div()
-                .w(px(82.0))
-                .text_size(px(11.0))
-                .font_features(crate::ui::tabular())
-                .text_color(tokens.text)
-                .child(format::bytes(bytes)),
-        )
+        lines.push("The engine's own facts were not read.".to_owned());
+    }
+    lines.push(format!(
+        "{} · {} · {} · {}",
+        format::count(snapshot.containers.len(), "container", "containers"),
+        format::count(snapshot.images.len(), "image", "images"),
+        format::count(snapshot.volumes.len(), "volume", "volumes"),
+        format::count(snapshot.networks.len(), "network", "networks"),
+    ));
+    lines
 }
 
-pub(crate) fn muted(text: &str, tokens: Tokens) -> Div {
-    div()
-        .text_size(px(12.0))
-        .text_color(tokens.muted)
-        .child(text.to_owned())
-}
+#[cfg(test)]
+#[path = "overview_cards_tests.rs"]
+mod tests;

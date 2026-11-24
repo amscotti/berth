@@ -2,9 +2,10 @@
 
 Living checklist for the Rust + GPUI rewrite. Product/behavior is in
 `docs/PRODUCT-SPEC.md`; the plan is `docs/GPUI-REBUILD.md`; the feature queue is
-`docs/PARITY-BACKLOG.md`.
+`docs/PARITY-BACKLOG.md`; the fix queue from the 2026-11-23 review is
+`docs/FIX-BACKLOG.md`.
 
-Last updated: 2026-11-07
+Last updated: 2026-11-23
 
 ## Completed
 
@@ -19,8 +20,9 @@ Last updated: 2026-11-07
 - [x] Inspector facts, logs, inspect JSON, terminal, open port
 - [x] Container actions, bulk, Compose start/stop, create, pull/run, prune
 - [x] Engine machine commands, settings persistence, tray title/menu
-- [x] Headless screenshots (10 views × 3 sizes light, 10 dark)
-- [x] 100-container perf: 13.9 ms/frame
+- [x] Headless screenshots (56 PNGs in `docs/ui/`: 10 views × 3 sizes light, 10 dark, plus sheets, inspector, bulk, focus, partial/missing states)
+- [x] Frame budget with a gate: ~0.6 ms a frame at 100 / 500 / 1,000 / 5,000
+  containers in release, against 33 ms (`examples/perf.rs`)
 - [x] Live probe and live action smoke against Docker 29.9.2
 - [x] Unsigned macOS `.app` bundle (`target/Berth.app`)
 
@@ -29,7 +31,13 @@ Last updated: 2026-11-07
 - [ ] Reopen a closed window from the tray (GPUI window hide/show adapter).
 - [ ] Feature-gated test driver + xa11y real-window E2E.
 - [ ] Linux X11/Wayland runtime smoke.
-- [ ] Virtualized tables (`uniform_list`) if the fleet grows past the tested 100.
-- [ ] Version: `0.0.0` until parity; tag `v0.1.0` after the remaining gaps.
+- [x] Virtualised tables (`uniform_list`): a frame costs the same at 5,000
+  containers as at 100, 0.66 ms in release
+- [ ] Version: `0.1.0` in `Cargo.toml`; tag `v0.1.0` after the remaining gaps.
 - [ ] Windows remains compile-only.
 - [ ] DMG / Developer ID / notarization are deliberate non-goals.
+
+## Review fixes
+
+The 2026-11-23 code and UX review is worked through in `docs/FIX-BACKLOG.md`,
+phase by phase. Track review work there, so each item has one home.

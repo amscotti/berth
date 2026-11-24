@@ -47,8 +47,8 @@ The live path was verified against Docker 29.9.2 on macOS.
 cargo run -p berth-app
 cargo run -p berth-app --example live_probe    # discovery + read a real engine
 cargo run -p berth-app --example live_actions  # disposable action smoke
-cargo run -p berth-app --example perf          # 100-container frame budget
-cargo run -p berth-app --example screenshots   # full visual matrix
+cargo run -p berth-app --release --example perf --features test-driver # 100 to 5,000-container frame budget
+cargo run -p berth-app --example screenshots --features test-driver    # full visual matrix
 ```
 
 `docs/PARITY-CHECKLIST.md` records the current verification status and known
@@ -103,6 +103,7 @@ and a Vulkan-capable driver.
 | `docs/TESTING.md` | test layers, driver, screenshots |
 | `docs/PARITY-BACKLOG.md` | feature matrix and next work |
 | `docs/PARITY-CHECKLIST.md` | verified parity and known gaps |
+| `docs/FIX-BACKLOG.md` | fix queue from the 2026-11-23 review, in phase order |
 | `docs/ACCESSIBILITY.md` | roles, labels and keyboard paths |
 | `docs/RELEASE.md` | unsigned build policy |
 | `AGENTS.md` | rules for working in this repo |

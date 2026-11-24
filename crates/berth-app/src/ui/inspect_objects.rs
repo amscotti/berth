@@ -2,14 +2,20 @@
 
 use berth_core::format;
 use berth_engine::dto::{Image, Network, Volume};
+use berth_ui::layout;
 use berth_ui::theme::Tokens;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
-use gpui::{Context, Div, FontWeight, IntoElement, Role, SharedString, div, px};
+use gpui::{Context, Div, FontWeight, IntoElement, SharedString, div, px};
 
-use super::inspect_shared::*;
-use super::table::pill;
+use super::data_table::pill;
+use super::inspect_shared::{
+    fact, fact_mono, inspector_button, inspector_delete, pane_shell, short_id,
+};
 use super::tabular;
+use crate::actions::{Pending, Removal, Target};
 use crate::app::BerthApp;
+use crate::ui::kit::link;
 
 pub(crate) fn image_pane(
     app: &BerthApp,
@@ -25,7 +31,7 @@ pub(crate) fn image_pane(
     };
     let mut pane = pane_shell(name, "Image inspector", width, tokens, cx)
         .child(fact("Repository", name, tokens))
-        .child(fact("ID", &short_id(&image.id), tokens))
+        .child(fact_mono("ID", &short_id(&image.id), tokens))
         .child(fact("Size", &format::bytes(image.size), tokens))
         .child(fact(
             "Created",
@@ -66,9 +72,13 @@ pub(crate) fn image_pane(
         pane = pane.child(list);
     }
 
-    pane = pane.child(section_title("Layers", app.image_layers.len(), tokens));
-    if app.image_layers.is_empty() {
-        let note = if app.image_layers_loading {
+    pane = pane.child(section_title(
+        "Layers",
+        app.inspector.image_layers.len(),
+        tokens,
+    ));
+    if app.inspector.image_layers.is_empty() {
+        let note = if app.inspector.image_layers_loading {
             "Reading image history…"
         } else {
             "Layer history loads from the live engine."
@@ -89,7 +99,7 @@ pub(crate) fn image_pane(
             .bg(tokens.background)
             .border_1()
             .border_color(tokens.border);
-        for layer in &app.image_layers {
+        for layer in &app.inspector.image_layers {
             let cmd = clean_layer_cmd(&layer.created_by);
             layers_well = layers_well.child(
                 div()
@@ -103,14 +113,14 @@ pub(crate) fn image_pane(
                             .flex_1()
                             .min_w(px(0.0))
                             .truncate()
-                            .text_size(px(10.5))
-                            .font_family("Menlo")
+                            .text_size(px(type_scale::MONO))
+                            .font_family(type_scale::MONO_FAMILY)
                             .text_color(tokens.text)
                             .child(cmd),
                     )
                     .child(
                         div()
-                            .text_size(px(10.5))
+                            .text_size(px(type_scale::LABEL))
                             .font_features(tabular())
                             .text_color(tokens.muted)
                             .child(if layer.size > 0 {
@@ -127,7 +137,8 @@ pub(crate) fn image_pane(
     let name = name.to_owned();
     let id = image.id.clone();
     let label = image.label().to_owned();
-    if app.image_layers.is_empty() {
+    let dangling = image.dangling();
+    if app.inspector.image_layers.is_empty() {
         pane = pane.child(div().flex_1());
     }
     pane.child(
@@ -136,28 +147,33 @@ pub(crate) fn image_pane(
             .flex_row()
             .w_full()
             .gap(px(6.0))
-            .child(verb_button(
-                "Run…",
-                tokens,
-                cx.listener({
-                    let label = label.clone();
-                    move |this, _, _, cx| {
-                        this.creation_open = true;
-                        this.run_image
-                            .update(cx, |input, cx| input.set_value(label.clone(), cx));
-                        cx.notify();
-                    }
-                }),
-            ))
-            .child(delete_button(
+            // A dangling image has no tag; don't prefill Run with "untagged".
+            .when(!dangling, |this| {
+                this.child(inspector_button(
+                    "Run…",
+                    tokens,
+                    cx.listener({
+                        let label = label.clone();
+                        move |this, _, _, cx| {
+                            this.view.creation_open = true;
+                            this.view
+                                .run_image
+                                .update(cx, |input, cx| input.set_value(label.clone(), cx));
+                            cx.notify();
+                        }
+                    }),
+                ))
+            })
+            .child(inspector_delete(
                 "Delete",
                 tokens,
                 cx.listener(move |this, _, _, cx| {
-                    this.confirm_action(
-                        "DELETE".into(),
-                        format!("/images/{}?force=1", berth_engine::client::encode(&id)),
-                        "Delete".into(),
-                        name.clone(),
+                    this.confirm(
+                        Pending::One(Target::Removal {
+                            what: Removal::Image,
+                            id: id.clone(),
+                            name: name.clone(),
+                        }),
                         cx,
                     );
                 }),
@@ -228,15 +244,16 @@ pub(crate) fn volume_pane(
     }
 
     let name = volume.name.clone();
-    pane.child(div().flex_1()).child(delete_button(
+    pane.child(div().flex_1()).child(inspector_delete(
         "Remove",
         tokens,
         cx.listener(move |this, _, _, cx| {
-            this.confirm_action(
-                "DELETE".into(),
-                format!("/volumes/{}", berth_engine::client::encode(&name)),
-                "Remove".into(),
-                name.clone(),
+            this.confirm(
+                Pending::One(Target::Removal {
+                    what: Removal::Volume,
+                    id: name.clone(),
+                    name: name.clone(),
+                }),
                 cx,
             );
         }),
@@ -253,10 +270,10 @@ pub(crate) fn network_pane(
 ) -> impl IntoElement {
     let mut pane = pane_shell(&network.name, "Network inspector", width, tokens, cx)
         .child(fact("Name", &network.name, tokens))
-        .child(fact("ID", &short_id(&network.id), tokens))
+        .child(fact_mono("ID", &short_id(&network.id), tokens))
         .child(fact(
             "Driver",
-            if network.driver == "null" {
+            if network.driver.is_empty() || network.driver == "null" {
                 "—"
             } else {
                 &network.driver
@@ -301,7 +318,7 @@ pub(crate) fn network_pane(
     if network.builtin() {
         pane = pane.child(
             div()
-                .text_size(px(11.5))
+                .text_size(px(type_scale::SECONDARY))
                 .text_color(tokens.muted)
                 .child("Built-in networks cannot be removed."),
         );
@@ -312,15 +329,16 @@ pub(crate) fn network_pane(
             network.id.clone()
         };
         let name = network.name.clone();
-        pane = pane.child(delete_button(
+        pane = pane.child(inspector_delete(
             "Remove",
             tokens,
             cx.listener(move |this, _, _, cx| {
-                this.confirm_action(
-                    "DELETE".into(),
-                    format!("/networks/{}", berth_engine::client::encode(&id)),
-                    "Remove".into(),
-                    name.clone(),
+                this.confirm(
+                    Pending::One(Target::Removal {
+                        what: Removal::Network,
+                        id: id.clone(),
+                        name: name.clone(),
+                    }),
                     cx,
                 );
             }),
@@ -338,47 +356,48 @@ fn linked_container_row(
     cx: &mut Context<BerthApp>,
 ) -> impl IntoElement {
     let click_id = id.to_owned();
-    div()
-        .id(SharedString::from(format!("linked-container-{id}")))
-        .flex()
-        .flex_row()
-        .items_center()
-        .w_full()
-        .h(px(28.0))
-        .px(px(8.0))
-        .gap(px(8.0))
-        .rounded(px(6.0))
-        .bg(tokens.background)
-        .border_1()
-        .border_color(tokens.border)
-        .hover(move |style| style.bg(tokens.surface_hover))
-        .role(Role::Button)
-        .aria_label(format!("Inspect container {name}"))
-        .on_click(cx.listener(move |this, _, _, cx| {
-            this.select_container_by_id(&click_id, cx);
-        }))
-        .child(
+    link(
+        SharedString::from(format!("linked-container-{id}")),
+        format!("Inspect container {name}"),
+        tokens,
+    )
+    .flex()
+    .flex_row()
+    .items_center()
+    .w_full()
+    .h(px(28.0))
+    .px(px(8.0))
+    .gap(px(8.0))
+    .rounded(px(layout::RADIUS_NESTED))
+    .bg(tokens.background)
+    .border_1()
+    .border_color(tokens.border)
+    .hover(move |style| style.bg(tokens.surface_hover))
+    .on_click(cx.listener(move |this, _, _, cx| {
+        this.select_container_by_id(&click_id, cx);
+    }))
+    .child(
+        div()
+            .truncate()
+            .text_size(px(type_scale::SECONDARY))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(tokens.text)
+            .child(name.to_owned()),
+    )
+    .when_some(detail, |this, detail| {
+        this.child(
             div()
+                .flex_1()
+                .min_w(px(0.0))
                 .truncate()
-                .text_size(px(11.5))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(tokens.text)
-                .child(name.to_owned()),
+                .text_size(px(type_scale::MONO))
+                .font_family(type_scale::MONO_FAMILY)
+                .text_color(tokens.muted)
+                .child(detail.to_owned()),
         )
-        .when_some(detail, |this, detail| {
-            this.child(
-                div()
-                    .flex_1()
-                    .min_w(px(0.0))
-                    .truncate()
-                    .text_size(px(10.5))
-                    .font_family("Menlo")
-                    .text_color(tokens.muted)
-                    .child(detail.to_owned()),
-            )
-        })
-        .when(detail.is_none(), |this| this.child(div().flex_1()))
-        .child(pill(state, tokens))
+    })
+    .when(detail.is_none(), |this| this.child(div().flex_1()))
+    .child(pill(state, tokens))
 }
 
 fn section_title(title: &'static str, count: usize, tokens: Tokens) -> Div {
@@ -390,23 +409,23 @@ fn section_title(title: &'static str, count: usize, tokens: Tokens) -> Div {
         .gap(px(6.0))
         .child(
             div()
-                .text_size(px(11.0))
+                .text_size(px(type_scale::LABEL))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(tokens.muted)
                 .child(title),
         )
         .child(
             div()
-                .text_size(px(10.5))
+                .text_size(px(type_scale::LABEL))
                 .font_features(tabular())
-                .text_color(tokens.muted.alpha(0.75))
+                .text_color(tokens.faint())
                 .child(format!("({count})")),
         )
 }
 
 fn muted_note(text: &str, tokens: Tokens) -> Div {
     div()
-        .text_size(px(11.0))
+        .text_size(px(type_scale::LABEL))
         .text_color(tokens.muted)
         .child(text.to_owned())
 }

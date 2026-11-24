@@ -50,21 +50,52 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
 
-      - name: Clippy
+      - name: Clippy (with test-driver)
+        run: cargo clippy --workspace --all-targets --locked --features berth-app/test-driver -- -D warnings
+
+      - name: Clippy (default features)
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: Build
         run: cargo build --workspace --locked
 
+      - name: Release check (no fixture)
+        run: cargo check --release -p berth-app --locked
+
       - name: Tests
         run: |
           # GPUI window tests need the macOS test platform. Linux runs the
-          # engine, domain, view-model and non-window app tests.
+          # four non-UI crates plus every non-GPUI unit test in berth-app,
+          # skipping #[gpui::test] functions dynamically so newly added window
+          # tests cannot silently break the Linux filter.
           if [ "$RUNNER_OS" = "macOS" ]; then
             cargo test --workspace --locked
+            cargo test -p berth-app --features test-driver --locked
           else
-            timeout 900 cargo test --workspace --locked -- \
-              --skip gpui_tests --skip app_render::tests
+            cargo test -p berth-core -p berth-engine -p berth-ui -p berth-commands --locked
+            gpui_skips=()
+            while IFS= read -r arg; do
+              gpui_skips+=("$arg")
+            done < <(python3 - <<'PY'
+          import pathlib, re, sys
+          names = set()
+          for path in sorted(pathlib.Path("crates/berth-app/src").rglob("*.rs")):
+              lines = path.read_text(encoding="utf-8").splitlines()
+              for i, line in enumerate(lines):
+                  if re.search(r"#\[gpui::test\b", line):
+                      for j in range(i + 1, min(i + 12, len(lines))):
+                          m = re.search(r"\bfn\s+([A-Za-z0-9_]+)", lines[j])
+                          if m:
+                              names.add(m.group(1))
+                              break
+          if not names:
+              sys.exit("expected #[gpui::test] functions in crates/berth-app/src")
+          for name in sorted(names):
+              print("--skip")
+              print(f"::{name}")
+          PY
+            )
+            timeout 900 cargo test -p berth-app --locked -- "${gpui_skips[@]}"
           fi
 
       - name: Line rule
@@ -83,7 +114,7 @@ jobs:
           key: macos-gpui-${{ hashFiles('Cargo.lock') }}
 
       - name: Render the shell
-        run: cargo run -p berth-app --example screenshots
+        run: cargo run -p berth-app --example screenshots --features test-driver
 
       - name: Upload screenshots
         uses: actions/upload-artifact@v4

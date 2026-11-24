@@ -1,23 +1,48 @@
-//! A small single-line text field.
+//! A single-line text field.
 //!
 //! GPUI ships the input-handler trait but no field widget. berth needs search,
 //! socket and form fields, so this is the shared primitive: a byte buffer with
 //! a cursor and anchor, real text input for IME, and the chrome the design
 //! contract uses.
+//!
+//! Where the characters are comes from the text system (`input_text.rs`). So a
+//! click puts the caret where it looks like it should, a drag selects what it
+//! looks like it should, the caret stays in view however long the text is, and
+//! an IME candidate window sits on its own text.
 
+use std::cell::Cell;
 use std::ops::Range;
+use std::rc::Rc;
 
 use berth_core::TextBuffer;
+use berth_ui::layout;
+use berth_ui::theme::Tokens;
+use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{
-    App, Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, EventEmitter,
-    FocusHandle, Focusable, IntoElement, KeyDownEvent, Pixels, Point, Render, SharedString,
-    UTF16Selection, Window, canvas, div, px,
+    App, Bounds, ContentMask, Context, DispatchPhase, ElementInputHandler, EventEmitter,
+    FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, SharedString, Window, canvas, div, fill, point, px, size,
 };
+
+use self::text::{Line, PAD, reveal, text_clip, text_origin};
+use super::kit::button;
+
+#[path = "input_handler.rs"]
+mod handler;
+#[cfg(test)]
+#[path = "input_tests.rs"]
+mod tests;
+#[path = "input_text.rs"]
+mod text;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum InputEvent {
+    /// The text changed, whether by the user or the app.
     Changed,
+    /// The user changed the text themselves. Sent together with `Changed`,
+    /// so a subscriber can tell an edit from the app filling a field in.
+    Edited,
     Submitted,
     Cancelled,
 }
@@ -29,9 +54,23 @@ pub struct InputState {
     placeholder: SharedString,
     focus_handle: FocusHandle,
     width: f32,
-    height: f32,
-    font_size: f32,
     marked: Option<Range<usize>>,
+    /// How far the text is pushed left, so the caret stays in view.
+    scroll: f32,
+    /// Where the field was last drawn from. The platform asks where a point
+    /// in the window falls in the text, and only the frame knows that.
+    drawn_from: Rc<Cell<Pixels>>,
+    /// The button is held on the field, and the selection follows the pointer.
+    dragging: bool,
+}
+
+impl InputState {
+    /// A field is a control of the usual height, set in the secondary size.
+    const HEIGHT: f32 = layout::CONTROL;
+    const FONT: f32 = type_scale::SECONDARY;
+    /// What the clear button takes off the end of a field that has text: its
+    /// own width, and room either side.
+    const CLEAR_ROOM: f32 = layout::CONTROL_SMALL + 2.0 * 6.0;
 }
 
 impl EventEmitter<InputEvent> for InputState {}
@@ -41,11 +80,12 @@ impl InputState {
         Self {
             buffer: TextBuffer::default(),
             placeholder: placeholder.into(),
-            focus_handle: cx.focus_handle(),
+            focus_handle: cx.focus_handle().tab_stop(true),
             width,
-            height: 28.0,
-            font_size: 12.5,
             marked: None,
+            scroll: 0.0,
+            drawn_from: Rc::new(Cell::new(px(0.0))),
+            dragging: false,
         }
     }
 
@@ -53,26 +93,23 @@ impl InputState {
         self.buffer.text()
     }
 
-    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }
 
-    #[allow(dead_code)]
+    /// The app filling the field in. There is nothing to undo back to.
     pub fn set_value(&mut self, value: impl Into<String>, cx: &mut Context<Self>) {
         self.buffer.set_value(value);
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
 
-    #[allow(dead_code)]
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.buffer.clear();
         cx.emit(InputEvent::Changed);
         cx.notify();
     }
 
-    #[allow(dead_code)]
     pub fn focus_handle(&self) -> FocusHandle {
         self.focus_handle.clone()
     }
@@ -87,6 +124,50 @@ impl InputState {
         }
     }
 
+    /// Where the caret is, in bytes into the text.
+    #[cfg(test)]
+    pub(crate) fn cursor(&self) -> usize {
+        self.buffer.cursor()
+    }
+
+    /// What is selected, in bytes, or `None`.
+    #[cfg(test)]
+    pub(crate) fn selection(&self) -> Option<(usize, usize)> {
+        self.buffer.selection()
+    }
+
+    /// Where the field was last drawn from.
+    #[cfg(test)]
+    pub(crate) fn drawn_from(&self) -> gpui::Pixels {
+        self.drawn_from.get()
+    }
+
+    /// How far the text is pushed left.
+    #[cfg(test)]
+    pub(crate) fn scroll(&self) -> f32 {
+        self.scroll
+    }
+
+    /// Tell the platform and the page that the text is different.
+    fn text_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.marked = None;
+        window.notify_text_input_changed(&self.focus_handle);
+        self.edited(cx);
+    }
+
+    /// Tell the platform and the page that the selection is different.
+    fn selection_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.notify_text_selection_changed(&self.focus_handle);
+        cx.notify();
+    }
+
+    /// Announce an edit made by the user.
+    fn edited(&mut self, cx: &mut Context<Self>) {
+        cx.emit(InputEvent::Edited);
+        cx.emit(InputEvent::Changed);
+        cx.notify();
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let modifiers = event.keystroke.modifiers;
@@ -97,48 +178,64 @@ impl InputState {
             "backspace" if command => {
                 self.buffer.home(true);
                 self.buffer.backspace();
-                cx.emit(InputEvent::Changed);
             }
             "backspace" if modifiers.alt => {
                 self.buffer.move_word_left(true);
                 self.buffer.backspace();
-                cx.emit(InputEvent::Changed);
             }
             "backspace" => {
                 self.buffer.backspace();
-                cx.emit(InputEvent::Changed);
             }
             "delete" => {
                 self.buffer.delete();
-                cx.emit(InputEvent::Changed);
             }
-            "left" if command => self.buffer.home(extend),
-            "right" if command => self.buffer.end(extend),
-            "left" if modifiers.alt => self.buffer.move_word_left(extend),
-            "right" if modifiers.alt => self.buffer.move_word_right(extend),
-            "left" => self.buffer.move_left(extend),
-            "right" => self.buffer.move_right(extend),
-            "home" => self.buffer.home(extend),
-            "end" => self.buffer.end(extend),
-            "a" if command => self.buffer.select_all(),
+            // Cursor movement and selection never change the text: only repaint
+            // and notify the platform's selection handler, never emit Edited.
+            "left" | "right" | "home" | "end" | "a" if key != "a" || command => {
+                match key {
+                    "left" if command => self.buffer.home(extend),
+                    "right" if command => self.buffer.end(extend),
+                    "left" if modifiers.alt => self.buffer.move_word_left(extend),
+                    "right" if modifiers.alt => self.buffer.move_word_right(extend),
+                    "left" => self.buffer.move_left(extend),
+                    "right" => self.buffer.move_right(extend),
+                    "home" => self.buffer.home(extend),
+                    "end" => self.buffer.end(extend),
+                    _ => self.buffer.select_all(),
+                }
+                self.selection_changed(window, cx);
+                return;
+            }
             "c" if command => {
                 if let Some(text) = self.buffer.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
                 }
                 return;
             }
             "x" if command => {
                 if let Some(text) = self.buffer.selected_text() {
-                    cx.write_to_clipboard(ClipboardItem::new_string(text.to_owned()));
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
                     self.buffer.insert("");
-                    cx.emit(InputEvent::Changed);
+                    self.text_changed(window, cx);
                 }
+                return;
             }
             "v" if command => {
                 if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                     self.buffer.insert(&text);
-                    cx.emit(InputEvent::Changed);
+                    self.text_changed(window, cx);
                 }
+                return;
+            }
+            // Back through what was typed, and forward again. Cmd+Z and
+            // Cmd+Shift+Z on a Mac; Ctrl+Z and Ctrl+Y elsewhere.
+            "z" if command => {
+                self.step_back(modifiers.shift, window, cx);
+                return;
+            }
+            "y" if modifiers.control && !modifiers.platform => {
+                self.step_back(true, window, cx);
+                return;
             }
             "enter" => {
                 if self.marked.take().is_some() {
@@ -159,25 +256,90 @@ impl InputState {
             _ => return,
         }
 
+        self.text_changed(window, cx);
+    }
+
+    /// Undo the last step, or redo one with `forward`.
+    fn step_back(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let stepped = if forward {
+            self.buffer.redo()
+        } else {
+            self.buffer.undo()
+        };
+        if !stepped {
+            return;
+        }
         self.marked = None;
         window.notify_text_input_changed(&self.focus_handle);
-        cx.notify();
+        self.edited(cx);
     }
 
-    fn focus_and_place_caret(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// The byte offset whose caret is nearest to `x`, a point in the window
+    /// over a field drawn inside `bounds`.
+    fn offset_at(&self, x: Pixels, bounds: Bounds<Pixels>, window: &Window) -> usize {
+        let line = Line::new(self.buffer.text(), gpui::black(), window);
+        let into_text = f32::from(x) - f32::from(bounds.left()) - PAD + self.scroll;
+        line.offset_at(into_text)
+    }
+
+    /// A press on the field. The caret goes where the pointer is; a second
+    /// press in the same place selects the word under it.
+    fn press(
+        &mut self,
+        x: Pixels,
+        extend: bool,
+        bounds: Bounds<Pixels>,
+        clicks: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.focus_handle.focus(window, cx);
-        self.buffer.end(false);
-        cx.notify();
+        self.buffer
+            .set_cursor(self.offset_at(x, bounds, window), extend);
+        if clicks == 2 {
+            self.select_word();
+        }
+        self.dragging = true;
+        self.selection_changed(window, cx);
     }
 
-    fn visual_parts(&self) -> (&str, &str, &str) {
-        let text = self.buffer.text();
-        if let Some((start, end)) = self.buffer.selection() {
-            (&text[..start], &text[start..end], &text[end..])
-        } else {
-            let cursor = self.buffer.cursor().min(text.len());
-            (&text[..cursor], "", &text[cursor..])
+    /// The pointer moved while the button is held: the selection follows it.
+    fn drag_to(
+        &mut self,
+        x: Pixels,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.dragging {
+            return;
         }
+        let offset = self.offset_at(x, bounds, window);
+        if offset != self.buffer.cursor() {
+            self.buffer.set_cursor(offset, true);
+            self.selection_changed(window, cx);
+        }
+    }
+
+    /// Select the word the caret is in. A word is letters, digits and `_`.
+    fn select_word(&mut self) {
+        let text = self.buffer.text();
+        let word = |character: char| character.is_alphanumeric() || character == '_';
+        let at = self.buffer.cursor();
+        let start = text[..at]
+            .char_indices()
+            .rev()
+            .take_while(|(_, character)| word(*character))
+            .last()
+            .map_or(at, |(byte, _)| byte);
+        let end = at
+            + text[at..]
+                .char_indices()
+                .take_while(|(_, character)| word(*character))
+                .last()
+                .map_or(0, |(byte, character)| byte + character.len_utf8());
+        self.buffer.set_cursor(start, false);
+        self.buffer.set_cursor(end, true);
     }
 }
 
@@ -189,24 +351,43 @@ impl Focusable for InputState {
 
 impl Render for InputState {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // The tokens are resolved by the root; the field reads the current
-        // window appearance so it stays correct without a second observer.
-        let tokens = berth_ui::theme::for_appearance(window.appearance());
+        // The root publishes its tokens for entities that render on their
+        // own. Reading the window's appearance here would ignore an
+        // Appearance choice that differs from the system's.
+        let tokens = berth_ui::theme::ActiveTokens::get(window, cx);
         let focused = self.focus_handle.is_focused(window);
-        let empty = self.buffer.is_empty();
-        let (before, selected, after) = self.visual_parts();
+        let text = self.buffer.text().to_owned();
+        let empty = text.is_empty();
+        let line = if empty {
+            Line::new(&self.placeholder, tokens.muted, window)
+        } else {
+            Line::new(&text, tokens.text, window)
+        };
+        // The text has the field to itself, less its padding, and less the
+        // clear button while there is something to clear.
+        let clear_room = if empty { 0.0 } else { Self::CLEAR_ROOM };
+        let visible = (self.width - 2.0 - 2.0 * PAD - clear_room).max(0.0);
+        let caret_x = line.x_of(self.buffer.cursor());
+        self.scroll = reveal(self.scroll, caret_x, line.width(), visible);
+
+        let selection = self.buffer.selection();
+        let scroll = self.scroll;
         let entity = cx.entity();
         let focus = self.focus_handle.clone();
+        let drawn_from = self.drawn_from.clone();
 
-        let mut field = div()
+        let field = div()
             .id(("input", cx.entity_id().as_u64()))
+            .debug_selector({
+                let placeholder = self.placeholder.clone();
+                move || format!("input-{placeholder}")
+            })
+            .relative()
             .flex()
-            .flex_row()
             .items_center()
             .w(px(self.width))
-            .h(px(self.height))
-            .px(px(9.0))
-            .rounded(px(6.0))
+            .h(px(Self::HEIGHT))
+            .rounded(px(layout::RADIUS_NESTED))
             .bg(tokens.surface)
             .border_1()
             .border_color(if focused {
@@ -220,322 +401,147 @@ impl Render for InputState {
             .role(gpui::Role::TextInput)
             .aria_label(self.placeholder.to_string())
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.focus_and_place_caret(window, cx);
-            }));
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, cx| {
+                        // The canvas covers the field, so its bounds are the
+                        // field's: the handler answers for the whole of it.
+                        window.handle_input(
+                            &focus,
+                            ElementInputHandler::new(bounds, entity.clone()),
+                            cx,
+                        );
+                        drawn_from.set(bounds.left());
+                        paint_text(
+                            bounds, &line, selection, caret_x, scroll, focused, !empty, tokens,
+                            window, cx,
+                        );
+                        listen_to_the_pointer(bounds, entity.clone(), window);
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            );
 
         if empty {
-            if focused {
-                field = field.child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(self.font_size + 2.0))
-                        .bg(tokens.accent),
-                );
-            }
-            field = field.child(
-                div()
-                    .text_size(px(self.font_size))
-                    .text_color(tokens.muted)
-                    .child(self.placeholder.clone()),
-            );
+            field
         } else {
-            if !before.is_empty() {
-                field = field.child(
-                    div()
-                        .text_size(px(self.font_size))
-                        .text_color(tokens.text)
-                        .child(before.to_owned()),
-                );
-            }
-            if !selected.is_empty() {
-                field = field.child(
-                    div().rounded(px(2.0)).bg(tokens.accent.alpha(0.24)).child(
-                        div()
-                            .text_size(px(self.font_size))
-                            .text_color(tokens.text)
-                            .child(selected.to_owned()),
+            // The clear button is a control of its own: Tab reaches it, Enter
+            // or Space presses it, and it gives the field focus back.
+            field.child(
+                div()
+                    .absolute()
+                    .right(px(6.0))
+                    .top_0()
+                    .bottom_0()
+                    .flex()
+                    .items_center()
+                    .child(
+                        button(("input-clear", cx.entity_id().as_u64()), "Clear", tokens)
+                            .small()
+                            .icon("xmark")
+                            .icon_only()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                // The press is for the button, not the field.
+                                cx.stop_propagation();
+                                this.clear(cx);
+                                this.focus(window, cx);
+                                window.notify_text_input_changed(&this.focus_handle);
+                            })),
                     ),
-                );
-            }
-            if focused {
-                field = field.child(
-                    div()
-                        .w(px(1.5))
-                        .h(px(self.font_size + 2.0))
-                        .bg(tokens.accent),
-                );
-            }
-            if !after.is_empty() {
-                field = field.child(
-                    div()
-                        .text_size(px(self.font_size))
-                        .text_color(tokens.text)
-                        .child(after.to_owned()),
-                );
-            }
-        }
-
-        // The canvas is an invisible overlay that installs the text-input
-        // handler with the field's real bounds. Without it, typed characters
-        // and IME never reach `EntityInputHandler`.
-        field.child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, cx| {
-                    window.handle_input(
-                        &focus,
-                        ElementInputHandler::new(bounds, entity.clone()),
-                        cx,
-                    );
-                },
             )
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full(),
-        )
-    }
-}
-
-impl EntityInputHandler for InputState {
-    fn text_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        adjusted_range: &mut Option<Range<usize>>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<String> {
-        let text = self.buffer.text();
-        let start = utf16_to_byte(text, range_utf16.start);
-        let end = utf16_to_byte(text, range_utf16.end);
-        adjusted_range.replace(byte_to_utf16(text, start)..byte_to_utf16(text, end));
-        Some(text[start..end].to_owned())
-    }
-
-    fn selected_text_range(
-        &mut self,
-        _ignore_disabled_input: bool,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<UTF16Selection> {
-        let text = self.buffer.text();
-        let (start, end) = self
-            .buffer
-            .selection()
-            .unwrap_or((self.buffer.cursor(), self.buffer.cursor()));
-        Some(UTF16Selection {
-            range: byte_to_utf16(text, start)..byte_to_utf16(text, end),
-            reversed: self
-                .buffer
-                .anchor()
-                .is_some_and(|anchor| anchor > self.buffer.cursor()),
-        })
-    }
-
-    fn marked_text_range(
-        &self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Range<usize>> {
-        self.marked.as_ref().map(|range| {
-            let text = self.buffer.text();
-            byte_to_utf16(text, range.start)..byte_to_utf16(text, range.end)
-        })
-    }
-
-    fn unmark_text(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.marked = None;
-        cx.notify();
-    }
-
-    fn replace_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let buffer_text = self.buffer.text().to_owned();
-        if let Some(range) = range {
-            let start = utf16_to_byte(&buffer_text, range.start);
-            let end = utf16_to_byte(&buffer_text, range.end);
-            self.buffer.set_cursor(start, false);
-            self.buffer.set_cursor(end, true);
         }
-        self.buffer.insert(text);
-        self.marked = None;
-        window.notify_text_input_changed(&self.focus_handle);
-        cx.emit(InputEvent::Changed);
-        cx.notify();
-    }
-
-    fn replace_and_mark_text_in_range(
-        &mut self,
-        range: Option<Range<usize>>,
-        new_text: &str,
-        _new_selected_range: Option<Range<usize>>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.replace_text_in_range(range, new_text, window, cx);
-        self.marked =
-            Some(self.buffer.cursor().saturating_sub(new_text.len())..self.buffer.cursor());
-        cx.notify();
-    }
-
-    fn bounds_for_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        element_bounds: Bounds<Pixels>,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<Bounds<Pixels>> {
-        let text = self.buffer.text();
-        let start = utf16_to_byte(text, range_utf16.start);
-        let end = utf16_to_byte(text, range_utf16.end);
-        let char_width = self.font_size * 0.58;
-        let prefix_chars = text[..start].chars().count();
-        let span_chars = text[start..end].chars().count().max(1);
-        let x = element_bounds.left() + px(9.0) + px(prefix_chars as f32 * char_width);
-        let width = px(span_chars as f32 * char_width);
-        Some(Bounds::new(
-            Point::new(x, element_bounds.top()),
-            gpui::size(width, element_bounds.size.height),
-        ))
-    }
-
-    fn character_index_for_point(
-        &mut self,
-        point: Point<Pixels>,
-        window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        let _ = window;
-        let text = self.buffer.text();
-        let char_width = self.font_size * 0.58;
-        let x = (f32::from(point.x) - 9.0).max(0.0);
-        let index = ((x / char_width).round()).max(0.0) as usize;
-        Some(byte_to_utf16(text, snap_to_char_boundary(text, index)))
-    }
-
-    fn set_selected_text_range(
-        &mut self,
-        range_utf16: Range<usize>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let text = self.buffer.text().to_owned();
-        let start = utf16_to_byte(&text, range_utf16.start);
-        let end = utf16_to_byte(&text, range_utf16.end);
-        self.buffer.set_cursor(start, false);
-        self.buffer.set_cursor(end, true);
-        window.notify_text_selection_changed(&self.focus_handle);
-        cx.notify();
-    }
-
-    fn text_length_utf16(
-        &mut self,
-        _window: &mut Window,
-        _cx: &mut Context<Self>,
-    ) -> Option<usize> {
-        Some(self.buffer.text().encode_utf16().count())
     }
 }
 
-fn utf16_to_byte(text: &str, utf16: usize) -> usize {
-    if utf16 == 0 {
-        return 0;
-    }
-    let mut seen = 0;
-    for (byte, ch) in text.char_indices() {
-        if seen >= utf16 {
-            return byte;
+/// Draw a field's line: the selection, then the caret, then the text over both,
+/// clipped before the clear button so long text never paints through it.
+#[allow(clippy::too_many_arguments)]
+fn paint_text(
+    bounds: Bounds<Pixels>,
+    line: &Line,
+    selection: Option<(usize, usize)>,
+    caret_x: f32,
+    scroll: f32,
+    focused: bool,
+    has_clear: bool,
+    tokens: Tokens,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let origin = text_origin(bounds, scroll);
+    let from = origin.x;
+    let clip = text_clip(bounds, has_clear, InputState::CLEAR_ROOM);
+    window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+        if let Some((start, end)) = selection {
+            let x = from + px(line.x_of(start));
+            let width = px(line.x_of(end) - line.x_of(start));
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x, bounds.top() + px(5.0)),
+                    size(width, bounds.size.height - px(10.0)),
+                ),
+                tokens.text_selection(),
+            ));
         }
-        seen += ch.len_utf16();
-    }
-    text.len()
-}
-
-fn byte_to_utf16(text: &str, byte: usize) -> usize {
-    text[..byte.min(text.len())].encode_utf16().count()
-}
-
-fn snap_to_char_boundary(text: &str, char_index: usize) -> usize {
-    text.char_indices()
-        .nth(char_index)
-        .map_or(text.len(), |(byte, _)| byte)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn utf16_round_trips_over_multibyte_text() {
-        let text = "aに😀b";
-        for (byte, _) in text.char_indices() {
-            let utf16 = byte_to_utf16(text, byte);
-            assert_eq!(utf16_to_byte(text, utf16), byte);
+        if focused {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(from + px(caret_x), bounds.top() + px(6.0)),
+                    size(px(1.5), bounds.size.height - px(12.0)),
+                ),
+                tokens.accent,
+            ));
         }
-        assert_eq!(utf16_to_byte(text, 999), text.len());
-    }
-
-    #[test]
-    fn snapping_uses_a_grapheme_boundary() {
-        let text = "aにb";
-        assert_eq!(snap_to_char_boundary(text, 0), 0);
-        assert_eq!(snap_to_char_boundary(text, 1), 1);
-        assert_eq!(snap_to_char_boundary(text, 2), 4);
-        assert_eq!(snap_to_char_boundary(text, 99), text.len());
-    }
+        line.paint(origin, bounds.size.height, window, cx);
+    });
 }
 
-#[cfg(test)]
-mod gpui_tests {
-    use super::*;
-    use gpui::TestAppContext;
-
-    #[gpui::test]
-    fn typed_characters_reach_the_buffer(cx: &mut TestAppContext) {
-        let (input, cx) = cx.add_window_view(|window, cx| {
-            let state = InputState::new("Search containers", 190.0, cx);
-            state.focus_handle.focus(window, cx);
-            state
-        });
-        cx.run_until_parked();
-        cx.simulate_input("nginx");
-        assert_eq!(
-            input.read_with(&*cx, |input, _| input.text().to_owned()),
-            "nginx"
-        );
-        cx.simulate_keystrokes("backspace");
-        assert_eq!(
-            input.read_with(&*cx, |input, _| input.text().to_owned()),
-            "ngin"
-        );
-        cx.simulate_keystrokes("left left");
-        cx.simulate_input("X");
-        assert_eq!(
-            input.read_with(&*cx, |input, _| input.text().to_owned()),
-            "ngXin"
-        );
-    }
-
-    #[gpui::test]
-    fn command_a_selects_and_typing_replaces(cx: &mut TestAppContext) {
-        let (input, cx) = cx.add_window_view(|window, cx| {
-            let state = InputState::new("Search", 190.0, cx);
-            state.focus_handle.focus(window, cx);
-            state
-        });
-        cx.run_until_parked();
-        cx.simulate_input("alpine");
-        cx.simulate_keystrokes("cmd-a");
-        cx.simulate_input("nginx");
-        assert_eq!(
-            input.read_with(&*cx, |input, _| input.text().to_owned()),
-            "nginx"
-        );
-    }
+/// Answer the pointer over a field drawn inside `bounds`: a press puts the
+/// caret down, a held button drags the selection, letting go ends the drag.
+fn listen_to_the_pointer(
+    bounds: Bounds<Pixels>,
+    entity: gpui::Entity<InputState>,
+    window: &mut Window,
+) {
+    window.on_mouse_event({
+        let entity = entity.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble
+                && event.button == MouseButton::Left
+                && bounds.contains(&event.position)
+                // Something drawn over the field, such as its clear button,
+                // has taken the press.
+                && !window.default_prevented()
+            {
+                entity.update(cx, |this, cx| {
+                    this.press(
+                        event.position.x,
+                        event.modifiers.shift,
+                        bounds,
+                        event.click_count,
+                        window,
+                        cx,
+                    )
+                });
+            }
+        }
+    });
+    // The drag is followed wherever the pointer goes, on the field or off it.
+    window.on_mouse_event({
+        let entity = entity.clone();
+        move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase == DispatchPhase::Bubble {
+                entity.update(cx, |this, cx| {
+                    this.drag_to(event.position.x, bounds, window, cx)
+                });
+            }
+        }
+    });
+    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+        if phase == DispatchPhase::Bubble {
+            entity.update(cx, |this, _| this.dragging = false);
+        }
+    });
 }
