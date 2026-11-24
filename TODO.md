@@ -20,9 +20,9 @@ Last updated: 2026-11-23
 - [x] Inspector facts, logs, inspect JSON, terminal, open port
 - [x] Container actions, bulk, Compose start/stop, create, pull/run, prune
 - [x] Engine machine commands, settings persistence, tray title/menu
-- [x] Headless screenshots (10 views × 3 sizes light, 10 dark)
-- [x] Frame budget with a gate: 1.3 / 5.3 / 10.3 ms a frame at 100 / 500 /
-  1,000 containers in release, against 33 ms (`examples/perf.rs`)
+- [x] Headless screenshots (56 PNGs in `docs/ui/`: 10 views × 3 sizes light, 10 dark, plus sheets, inspector, bulk, focus, partial/missing states)
+- [x] Frame budget with a gate: ~0.6 ms a frame at 100 / 500 / 1,000 / 5,000
+  containers in release, against 33 ms (`examples/perf.rs`)
 - [x] Live probe and live action smoke against Docker 29.9.2
 - [x] Unsigned macOS `.app` bundle (`target/Berth.app`)
 
@@ -33,7 +33,7 @@ Last updated: 2026-11-23
 - [ ] Linux X11/Wayland runtime smoke.
 - [x] Virtualised tables (`uniform_list`): a frame costs the same at 5,000
   containers as at 100, 0.66 ms in release
-- [ ] Version: `0.0.0` until parity; tag `v0.1.0` after the remaining gaps.
+- [ ] Version: `0.1.0` in `Cargo.toml`; tag `v0.1.0` after the remaining gaps.
 - [ ] Windows remains compile-only.
 - [ ] DMG / Developer ID / notarization are deliberate non-goals.
 

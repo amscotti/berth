@@ -24,7 +24,7 @@ cargo check --workspace           # tight loop
 cargo run -p berth-app            # open the window
 cargo test --workspace            # unit + GPUI in-process
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --locked -- \
+cargo clippy --workspace --all-targets --locked \
     --features berth-app/test-driver -- -D warnings   # the fixture too, so the screenshot pass is linted
 ./tools/lines.py                  # 600-line rule
 cargo run -p berth-app --example screenshots --features test-driver   # headless PNGs in docs/ui/

@@ -1,6 +1,6 @@
 //! Headless render of every page, light and dark.
 //!
-//!   cargo run -p berth-app --example screenshots
+//!   cargo run -p berth-app --example screenshots --features test-driver
 //!
 //! Writes PNGs to `docs/ui/`. This is the review path while the views are
 //! being built; the real golden matrix becomes a serial CI job.

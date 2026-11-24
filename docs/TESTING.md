@@ -207,7 +207,7 @@ accessibility; the driver proves exact state transitions and waits.
 
 ## 8. L6 — live engine
 
-`scripts/smoke-live.sh` on a disposable engine:
+`scripts/smoke-live.sh` (planned — not yet created; currently exercised manually via `examples/live_probe.rs` and `examples/live_actions.rs`) on a disposable engine:
 
 1. list containers/images/volumes/networks; one stats sample;
 2. start/stop/restart/pause/resume/delete a test container;

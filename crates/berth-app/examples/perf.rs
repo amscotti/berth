@@ -8,6 +8,10 @@
 //!
 //! The figure is the middle one of a few frames, after the first ones have
 //! loaded the fonts. It is a figure for the machine it ran on.
+//!
+//! The 100-container screenshot is written to the system temp directory by
+//! default so running the gate never dirties the working tree; set
+//! `BERTH_PERF_WRITE_PNG=1` to update `docs/ui/perf-100-containers.png`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,8 +90,14 @@ fn measure(cx: &mut HeadlessAppContext, count: usize) -> anyhow::Result<Duration
         })?);
     }
     if count == ROWS[0] {
-        cx.capture_screenshot(handle.into())?
-            .save("docs/ui/perf-100-containers.png")?;
+        let path = if std::env::var_os("BERTH_PERF_WRITE_PNG").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            std::path::PathBuf::from("docs/ui/perf-100-containers.png")
+        } else {
+            std::env::temp_dir().join("berth-perf-100-containers.png")
+        };
+        cx.capture_screenshot(handle.into())?.save(&path)?;
     }
     frames[WARM_UP..].sort();
     Ok(frames[WARM_UP + MEASURED / 2])
