@@ -69,9 +69,11 @@ pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u
             .flex()
             .flex_row()
             .items_end()
+            .w_full()
             .gap(px(8.0))
             .child(
                 div()
+                    .flex_shrink_0()
                     .text_size(px(type_scale::METRIC))
                     .font_weight(FontWeight::BOLD)
                     .font_features(tabular())
@@ -80,6 +82,9 @@ pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u
             )
             .child(
                 div()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
                     .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.muted)
                     .pb(px(3.0))
@@ -117,7 +122,10 @@ pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u
                 (used as f32 / total, tokens.elsewhere()),
                 (free as f32 / total, tokens.track),
             ],
-            "Containers — · per-container stats incomplete".to_owned(),
+            format!(
+                "containers — · engine helpers {} · per-container stats incomplete",
+                format::bytes(sample.engine_rss.min(used))
+            ),
         ),
     };
     card.child(graph::stacked_bar(segments, tokens.track))
@@ -172,10 +180,18 @@ fn host_spark(
                 .items_end()
                 .w_full()
                 .gap(px(6.0))
-                .child(caption(label, tokens))
-                .child(div().flex_1())
                 .child(
                     div()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(type_scale::LABEL))
+                        .text_color(tokens.muted)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
                         .text_size(px(type_scale::SECONDARY))
                         .font_weight(FontWeight::SEMIBOLD)
                         .font_features(tabular())

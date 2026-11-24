@@ -7,7 +7,7 @@ use gpui::{AnyElement, Context, SharedString, div, px};
 
 use crate::app::{BerthApp, DetailKind, SearchKind};
 use crate::ui::data_table::{Column, DataTable, RowKey, text_cell};
-use crate::ui::page::{empty_state, page_header};
+use crate::ui::page::{empty_state, no_search_results, page_header};
 
 pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -71,10 +71,12 @@ pub fn volumes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> An
         return content.into_any_element();
     }
     if shown.is_empty() {
-        content = content.child(empty_state(
-            &format!("No results for “{}”", app.query(SearchKind::Volumes)),
+        content = content.child(no_search_results(
+            app.query(SearchKind::Volumes),
             "Clear the search to see every volume.",
+            SearchKind::Volumes,
             tokens,
+            cx,
         ));
         return content.into_any_element();
     }

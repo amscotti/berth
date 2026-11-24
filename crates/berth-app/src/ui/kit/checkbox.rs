@@ -136,6 +136,12 @@ impl IntoElement for Checkbox {
                     .w(px(14.0))
                     .h(px(14.0))
                     .rounded(px(4.0))
+                    .border_1()
+                    .border_color(if self.checked {
+                        tokens.accent
+                    } else {
+                        tokens.checkbox_border()
+                    })
                     .bg(if self.checked {
                         tokens.accent
                     } else {

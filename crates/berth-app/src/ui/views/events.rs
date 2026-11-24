@@ -7,8 +7,8 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, SharedString, div, px};
 
 use crate::app::{BerthApp, SearchKind};
-use crate::ui::data_table::{Column, DataTable, RowKey, pill, text_cell};
-use crate::ui::page::{empty_state, page_header};
+use crate::ui::data_table::{Column, DataTable, RowKey, pill_cell, text_cell};
+use crate::ui::page::{empty_state, no_search_results, page_header};
 
 pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -55,10 +55,12 @@ pub fn events(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         return content.into_any_element();
     }
     if shown.is_empty() {
-        content = content.child(empty_state(
-            &format!("No results for “{}”", app.query(SearchKind::Events)),
+        content = content.child(no_search_results(
+            app.query(SearchKind::Events),
             "Clear the search to see every event.",
+            SearchKind::Events,
             tokens,
+            cx,
         ));
         return content.into_any_element();
     }
@@ -149,11 +151,11 @@ fn kind_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthA
 fn action_cell(
     app: &mut BerthApp,
     ix: usize,
-    _width: f32,
+    width: f32,
     _cx: &mut Context<BerthApp>,
 ) -> AnyElement {
     let event = &app.snapshot.events[ix];
-    pill(&event.action, app.tokens).into_any_element()
+    pill_cell(&event.action, width, app.tokens).into_any_element()
 }
 
 fn actor_cell(

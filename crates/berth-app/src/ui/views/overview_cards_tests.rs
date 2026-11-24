@@ -133,3 +133,81 @@ fn an_engine_that_said_nothing_about_itself_gets_one_line_not_three_empty_ones()
         "root /var/lib/docker"
     );
 }
+
+#[test]
+fn zero_running_containers_is_zero_when_connected_and_unknown_when_disconnected() {
+    let empty = crate::state::Snapshot::default();
+    let connected = sample(&empty, true, 4, Some(4000));
+    assert_eq!(connected.cpu.figure, "0.0%");
+    assert_eq!(connected.memory.figure, "0 B");
+    assert!(!connected.cpu.partial && !connected.memory.partial);
+
+    let offline = sample(&empty, false, 4, Some(4000));
+    assert_eq!(offline.cpu.figure, "—");
+    assert_eq!(offline.memory.figure, "—");
+}
+
+#[test]
+fn missing_cpu_does_not_blank_out_known_memory() {
+    let snap = crate::state::Snapshot {
+        containers: vec![berth_engine::dto::Container {
+            state: "running".into(),
+            ..Default::default()
+        }],
+        stats: vec![berth_engine::stats::Sample {
+            sampled: true,
+            cpu_known: false,
+            mem_known: true,
+            mem: 2048,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let reading = sample(&snap, true, 4, Some(4096));
+    assert_eq!(reading.cpu.figure, "—");
+    assert_eq!(reading.memory.figure, "2.0 KiB");
+    assert_eq!(reading.memory.note, "of 4.0 KiB");
+}
+
+#[test]
+fn io_strip_shows_dashes_when_offline_or_unmeasured() {
+    let snap = crate::state::Snapshot {
+        containers: vec![berth_engine::dto::Container {
+            state: "running".into(),
+            ..Default::default()
+        }],
+        stats: vec![berth_engine::stats::Sample {
+            sampled: true,
+            net_rx: 512,
+            net_tx: 256,
+            blk_known: false,
+            pids: None,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        io_figures(&snap, false),
+        (
+            "↓ — · ↑ —".to_owned(),
+            "read — · wrote —".to_owned(),
+            "—".to_owned()
+        )
+    );
+    assert_eq!(
+        io_figures(&snap, true),
+        (
+            "↓ 512 B · ↑ 256 B".to_owned(),
+            "read — · wrote —".to_owned(),
+            "—".to_owned()
+        )
+    );
+    assert_eq!(
+        io_figures(&crate::state::Snapshot::default(), true),
+        (
+            "↓ 0 B · ↑ 0 B".to_owned(),
+            "read 0 B · wrote 0 B".to_owned(),
+            "0".to_owned()
+        )
+    );
+}

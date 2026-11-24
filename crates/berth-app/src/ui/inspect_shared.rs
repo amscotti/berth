@@ -115,6 +115,34 @@ pub(crate) fn fact(label: &'static str, value: &str, tokens: Tokens) -> Div {
         )
 }
 
+/// A fact whose value is an identifier or path, set in the monospace family.
+pub(crate) fn fact_mono(label: &'static str, value: &str, tokens: Tokens) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w_full()
+        .gap(px(layout::ROW_GAP))
+        .child(
+            div()
+                .w(px(layout::FACT_LABEL))
+                .text_size(px(type_scale::LABEL))
+                .text_color(tokens.muted)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w(px(0.0))
+                .text_size(px(type_scale::MONO))
+                .font_family(type_scale::MONO_FAMILY)
+                .font_features(tabular())
+                .text_color(tokens.text)
+                .truncate()
+                .child(value.to_owned()),
+        )
+}
+
 /// The panel: its title, a close, a rule, and then whatever page is showing.
 pub(crate) fn pane_shell(
     name: &str,

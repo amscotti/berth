@@ -106,7 +106,7 @@ pub(crate) fn disk_card(
         card = card.child(
             div().flex().flex_row().w_full().justify_end().child(
                 // Opening the cleanup asks first; it destroys nothing itself.
-                button("overview-cleanup", "Clean up unused", tokens)
+                button("overview-cleanup", "Clean up unused…", tokens)
                     .on_click(cx.listener(|this, _, _, cx| this.open_prune(cx))),
             ),
         );

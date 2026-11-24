@@ -287,3 +287,58 @@ fn the_platform_reads_and_sets_the_selection_in_its_own_units(cx: &mut TestAppCo
         })
     });
 }
+
+#[gpui::test]
+fn cursor_navigation_does_not_emit_edited_or_changed(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let (input, cx) = field("alpha beta", cx);
+    let events: Rc<RefCell<Vec<super::InputEvent>>> = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let _sub = cx.update(|_, cx| {
+        cx.subscribe(&input, move |_, event: &super::InputEvent, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+
+    cx.simulate_keystrokes("left right home end cmd-a alt-left alt-right");
+    cx.run_until_parked();
+    assert!(
+        events.borrow().is_empty(),
+        "cursor navigation must not emit Edited/Changed: {:?}",
+        events.borrow()
+    );
+    // An actual edit still emits Edited and Changed.
+    cx.simulate_keystrokes("backspace");
+    cx.run_until_parked();
+    assert!(
+        events.borrow().contains(&super::InputEvent::Edited)
+            && events.borrow().contains(&super::InputEvent::Changed),
+        "deleting text emits Edited and Changed: {:?}",
+        events.borrow()
+    );
+}
+
+#[test]
+fn text_paint_origin_and_clip_match_padding_scroll_and_clear_button() {
+    let bounds = gpui::Bounds::new(point(px(10.0), px(20.0)), gpui::size(px(190.0), px(28.0)));
+    assert_eq!(
+        super::text::text_origin(bounds, 0.0),
+        point(px(10.0 + super::text::PAD), px(20.0))
+    );
+    assert_eq!(
+        super::text::text_origin(bounds, 24.0),
+        point(px(10.0 + super::text::PAD - 24.0), px(20.0))
+    );
+    let clip_empty = super::text::text_clip(bounds, false, InputState::CLEAR_ROOM);
+    let clip_filled = super::text::text_clip(bounds, true, InputState::CLEAR_ROOM);
+    assert!(
+        clip_filled.right() < clip_empty.right(),
+        "clear button reserves right-hand space so text never paints through it"
+    );
+    assert_eq!(
+        clip_filled.right(),
+        bounds.right() - px(InputState::CLEAR_ROOM)
+    );
+}

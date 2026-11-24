@@ -53,40 +53,71 @@ pub(crate) fn sample(
             memory: unknown(String::new()),
         };
     }
-    let coverage = snapshot.coverage();
-    if coverage.measured == 0 {
+    let up = snapshot.running();
+    let cpu_note_full = format!("of {}", format::count(cores as usize, "core", "cores"));
+    let mem_note_full = memory_ceiling
+        .map(|total| format!("of {}", format::bytes(total)))
+        .unwrap_or_else(|| "engine total unknown".to_owned());
+    if up == 0 {
         return Sample {
-            cpu: unknown(String::new()),
-            memory: unknown(String::new()),
+            cpu: Reading {
+                figure: format::percent(0.0),
+                note: cpu_note_full,
+                partial: false,
+            },
+            memory: Reading {
+                figure: format::bytes(0),
+                note: mem_note_full,
+                partial: false,
+            },
         };
     }
-    let (cpu_note, memory_note, partial) = if coverage.measured < coverage.up {
-        let note = format!("partial sample · {}", coverage.said());
-        (note.clone(), note, true)
+    let mut cpu_measured = 0usize;
+    let mut mem_measured = 0usize;
+    for (index, container) in snapshot.containers.iter().enumerate() {
+        if !container.is_up() {
+            continue;
+        }
+        let stat = snapshot.stat(index);
+        if stat.sampled && stat.cpu_known {
+            cpu_measured += 1;
+        }
+        if stat.sampled && stat.mem_known {
+            mem_measured += 1;
+        }
+    }
+    let cpu = if cpu_measured == 0 {
+        unknown(String::new())
     } else {
-        (
-            format!("of {}", format::count(cores as usize, "core", "cores")),
-            memory_ceiling
-                .map(|total| format!("of {}", format::bytes(total)))
-                .unwrap_or_else(|| "engine total unknown".to_owned()),
-            false,
-        )
-    };
-    Sample {
-        cpu: Reading {
+        let partial = cpu_measured < up;
+        Reading {
             figure: snapshot
                 .measured_cpu(cores.max(1) as f32)
                 .map(|value| format::percent(value as f64))
                 .unwrap_or_else(|| "—".to_owned()),
-            note: cpu_note,
+            note: if partial {
+                format!("partial sample · {cpu_measured} of {up}")
+            } else {
+                cpu_note_full
+            },
             partial,
-        },
-        memory: Reading {
+        }
+    };
+    let memory = if mem_measured == 0 {
+        unknown(String::new())
+    } else {
+        let partial = mem_measured < up;
+        Reading {
             figure: format::bytes(snapshot.container_memory()),
-            note: memory_note,
+            note: if partial {
+                format!("partial sample · {mem_measured} of {up}")
+            } else {
+                mem_note_full
+            },
             partial,
-        },
-    }
+        }
+    };
+    Sample { cpu, memory }
 }
 
 /// What a card is drawn in: its icon, its name, and three colours, each the
@@ -185,15 +216,26 @@ impl Series {
             layout::GRAPH_HEIGHT,
             self.unit.ceiling(ceiling),
         );
-        self.card_with(reading, well, width, tokens)
+        self.build_card(reading, well, Some("recent"), width, tokens)
     }
 
     /// The card with something else in its well: the disk card's split of
-    /// the stores.
+    /// the stores. Static cards carry no `"recent"` time-series tag.
     pub(crate) fn card_with(
         self,
         reading: Reading,
         well: impl IntoElement,
+        width: f32,
+        tokens: Tokens,
+    ) -> Card {
+        self.build_card(reading, well, None, width, tokens)
+    }
+
+    fn build_card(
+        self,
+        reading: Reading,
+        well: impl IntoElement,
+        trailing: Option<&'static str>,
         width: f32,
         tokens: Tokens,
     ) -> Card {
@@ -219,18 +261,23 @@ impl Series {
                     .child(icon_chip(icon, 12.0, tint, tokens, layout::CHIP))
                     .child(
                         div()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .truncate()
                             .text_size(px(type_scale::TITLE_SMALL))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ink)
                             .child(label),
                     )
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .text_size(px(type_scale::META))
-                            .text_color(tokens.muted)
-                            .child("recent"),
-                    ),
+                    .when_some(trailing, |this, tag| {
+                        this.child(
+                            div()
+                                .flex_shrink_0()
+                                .text_size(px(type_scale::META))
+                                .text_color(tokens.muted)
+                                .child(tag),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -241,23 +288,33 @@ impl Series {
                     .gap(px(8.0))
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(px(type_scale::METRIC))
                             .font_weight(FontWeight::BOLD)
                             .font_features(tabular())
                             .text_color(tokens.text)
                             .child(reading.figure),
                     )
-                    .child(div().flex_1())
                     .child(
                         div()
-                            .text_size(px(type_scale::SECONDARY))
-                            .text_color(if partial {
-                                tokens.warning_text()
-                            } else {
-                                tokens.muted
-                            })
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex()
+                            .justify_end()
+                            .overflow_hidden()
                             .pb(px(3.0))
-                            .child(reading.note),
+                            .child(
+                                div()
+                                    .min_w(px(0.0))
+                                    .truncate()
+                                    .text_size(px(type_scale::SECONDARY))
+                                    .text_color(if partial {
+                                        tokens.warning_text()
+                                    } else {
+                                        tokens.muted
+                                    })
+                                    .child(reading.note),
+                            ),
                     ),
             )
             .child(well)
@@ -304,21 +361,12 @@ pub(crate) fn store_well(snapshot: &crate::state::Snapshot, tokens: Tokens) -> A
 /// Network, disk and PIDs across the fleet, as totals since each container
 /// started: one line, no card of its own.
 pub(crate) fn io_strip(app: &BerthApp, tokens: Tokens) -> Div {
-    let mut net_rx = 0u64;
-    let mut net_tx = 0u64;
-    let mut blk_read = 0u64;
-    let mut blk_write = 0u64;
-    let mut pids = 0u32;
-    for sample in &app.snapshot.stats {
-        if !sample.sampled {
-            continue;
-        }
-        net_rx = net_rx.saturating_add(sample.net_rx);
-        net_tx = net_tx.saturating_add(sample.net_tx);
-        blk_read = blk_read.saturating_add(sample.blk_read);
-        blk_write = blk_write.saturating_add(sample.blk_write);
-        pids = pids.saturating_add(sample.pids.unwrap_or(0));
-    }
+    let answering = app.engine.last_update > 0
+        && app
+            .engine
+            .active_runtime()
+            .is_some_and(|runtime| runtime.reachable);
+    let (net, disk, pids) = io_figures(&app.snapshot, answering);
     div()
         .flex()
         .flex_row()
@@ -327,21 +375,78 @@ pub(crate) fn io_strip(app: &BerthApp, tokens: Tokens) -> Div {
         .w_full()
         .gap_x(px(24.0))
         .gap_y(px(6.0))
-        .child(io_stat(
-            "Network",
-            &format!("↓ {} · ↑ {}", format::bytes(net_rx), format::bytes(net_tx)),
-            tokens,
-        ))
-        .child(io_stat(
-            "Disk",
-            &format!(
-                "read {} · wrote {}",
-                format::bytes(blk_read),
-                format::bytes(blk_write)
-            ),
-            tokens,
-        ))
-        .child(io_stat("PIDs", &pids.to_string(), tokens))
+        .child(io_stat("Network", &net, tokens))
+        .child(io_stat("Disk", &disk, tokens))
+        .child(io_stat("PIDs", &pids, tokens))
+}
+
+/// Formatted `(network, disk, pids)` totals across running containers.
+/// Disconnected or unmeasured dimensions stay `—`, never `0`.
+pub(crate) fn io_figures(
+    snapshot: &crate::state::Snapshot,
+    answering: bool,
+) -> (String, String, String) {
+    if !answering {
+        return (
+            "↓ — · ↑ —".to_owned(),
+            "read — · wrote —".to_owned(),
+            "—".to_owned(),
+        );
+    }
+    if snapshot.running() == 0 {
+        return (
+            format!("↓ {} · ↑ {}", format::bytes(0), format::bytes(0)),
+            format!("read {} · wrote {}", format::bytes(0), format::bytes(0)),
+            "0".to_owned(),
+        );
+    }
+    let mut net_rx = 0u64;
+    let mut net_tx = 0u64;
+    let mut blk_read = 0u64;
+    let mut blk_write = 0u64;
+    let mut pids = 0u32;
+    let (mut any_net, mut any_blk, mut any_pids) = (false, false, false);
+    for (index, container) in snapshot.containers.iter().enumerate() {
+        if !container.is_up() {
+            continue;
+        }
+        let sample = snapshot.stat(index);
+        if !sample.sampled {
+            continue;
+        }
+        any_net = true;
+        net_rx = net_rx.saturating_add(sample.net_rx);
+        net_tx = net_tx.saturating_add(sample.net_tx);
+        if sample.blk_known {
+            any_blk = true;
+            blk_read = blk_read.saturating_add(sample.blk_read);
+            blk_write = blk_write.saturating_add(sample.blk_write);
+        }
+        if let Some(count) = sample.pids {
+            any_pids = true;
+            pids = pids.saturating_add(count);
+        }
+    }
+    let net = if any_net {
+        format!("↓ {} · ↑ {}", format::bytes(net_rx), format::bytes(net_tx))
+    } else {
+        "↓ — · ↑ —".to_owned()
+    };
+    let disk = if any_blk {
+        format!(
+            "read {} · wrote {}",
+            format::bytes(blk_read),
+            format::bytes(blk_write)
+        )
+    } else {
+        "read — · wrote —".to_owned()
+    };
+    let pids = if any_pids {
+        pids.to_string()
+    } else {
+        "—".to_owned()
+    };
+    (net, disk, pids)
 }
 
 fn io_stat(label: &'static str, value: &str, tokens: Tokens) -> Div {

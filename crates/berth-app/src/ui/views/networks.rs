@@ -7,7 +7,7 @@ use gpui::{AnyElement, Context, SharedString, div, px};
 
 use crate::app::{BerthApp, DetailKind, SearchKind};
 use crate::ui::data_table::{Column, DataTable, RowKey, text_cell};
-use crate::ui::page::{empty_state, page_header};
+use crate::ui::page::{empty_state, no_search_results, page_header};
 
 pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -70,10 +70,12 @@ pub fn networks(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         return content.into_any_element();
     }
     if shown.is_empty() {
-        content = content.child(empty_state(
-            &format!("No results for “{}”", app.query(SearchKind::Networks)),
+        content = content.child(no_search_results(
+            app.query(SearchKind::Networks),
             "Clear the search to see every network.",
+            SearchKind::Networks,
             tokens,
+            cx,
         ));
         return content.into_any_element();
     }
@@ -165,7 +167,7 @@ fn driver_cell(
     _cx: &mut Context<BerthApp>,
 ) -> AnyElement {
     let network = &app.snapshot.networks[ix];
-    let text = if network.driver.is_empty() {
+    let text = if network.driver.is_empty() || network.driver == "null" {
         "—".to_owned()
     } else {
         network.driver.clone()

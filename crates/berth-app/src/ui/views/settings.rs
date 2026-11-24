@@ -44,17 +44,14 @@ pub fn settings(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
                     tokens,
                 ))
                 .child(caption(
-                    "The last complete snapshot stays on screen while a worker refreshes the next one, so the tables and graphs neither blank nor freeze. Container CPU and memory use the same two-sample window as `docker stats`.",
+                    "The last complete snapshot stays on screen while a worker refreshes the next one, so the tables and graphs neither blank nor freeze. Container CPU and memory use the same two-sample window as docker stats.",
                     tokens,
                 )),
         );
 
     let appearance = card(tokens)
         .child(card_title("Appearance", tokens))
-        .child(caption(
-            "System follows this machine's desktop. The choice is remembered between launches.",
-            tokens,
-        ))
+        .child(caption("System follows this machine's desktop.", tokens))
         .child(
             div()
                 .id("appearance-choices")
@@ -81,7 +78,7 @@ pub fn settings(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
                 ),
         )
         .child(caption(
-            "Changes apply immediately and are remembered.",
+            "Changes apply immediately and are remembered between launches.",
             tokens,
         ))
         .w(px(col_w));

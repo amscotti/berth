@@ -37,13 +37,65 @@ pub fn cell_graph(
         .bg(tokens.well())
         .border_1()
         .border_color(tokens.well_border())
-        .p(px(INSET))
         .overflow_hidden()
-        .relative();
+        .relative()
+        .child(
+            canvas(
+                |_, _, _| (),
+                move |bounds, _, window, _| {
+                    let inner_w = f32::from(bounds.size.width) - 2.0 * INSET;
+                    let inner_h = f32::from(bounds.size.height) - 2.0 * INSET;
+                    if inner_w <= 0.0 || inner_h <= 0.0 {
+                        return;
+                    }
+                    let cols = (((inner_w + PITCH - DOT) / PITCH).floor() as usize).max(1);
+                    let rows = (((inner_h + PITCH - DOT) / PITCH).floor() as usize).max(1);
+                    let dot = |col: usize, step: usize| {
+                        let x = f32::from(bounds.left()) + INSET + col as f32 * PITCH;
+                        let y = f32::from(bounds.top()) + INSET + (rows - 1 - step) as f32 * PITCH;
+                        Bounds::new(Point::new(px(x), px(y)), size(px(DOT), px(DOT)))
+                    };
+                    // An unknown ceiling: the well stays empty.
+                    let Some(value_span) = span else {
+                        return;
+                    };
+
+                    for col in 0..cols {
+                        for step in 0..rows {
+                            window.paint_quad(fill(dot(col, step), tokens.track));
+                        }
+                    }
+
+                    let start = values.len().saturating_sub(cols);
+                    let filled: Vec<usize> = values[start..]
+                        .iter()
+                        .map(|value| steps(*value, value_span, rows))
+                        .collect();
+                    // Right-align partial histories so newest samples sit at the
+                    // right edge of the lattice.
+                    let offset = column_offset(cols, filled.len());
+                    for (i, &height) in filled.iter().enumerate() {
+                        for step in 0..height.min(rows) {
+                            window.paint_quad(fill(dot(offset + i, step), color));
+                        }
+                    }
+                    // The highest column, and the newest where several are as
+                    // high: the one to read the peak off.
+                    if let Some(col) = peak(&filled)
+                        && filled[col] > 0
+                    {
+                        let bounds = dot(offset + col, filled[col] - 1);
+                        window.paint_quad(fill(bounds, color));
+                        window.paint_quad(outline(bounds, tokens.text, BorderStyle::Solid));
+                    }
+                },
+            )
+            .size_full(),
+        );
     if let (Some(label), Some(_)) = (label, span) {
         well = well.child(
-            // On the well's own colour, so that it sits over the lattice and
-            // not in it.
+            // Mounted after the canvas so it paints over the lattice rather
+            // than behind its dots.
             div()
                 .absolute()
                 .top(px(2.0))
@@ -57,56 +109,13 @@ pub fn cell_graph(
                 .child(label),
         );
     }
-    well.child(
-        canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
-                let inner_w = f32::from(bounds.size.width) - 2.0 * INSET;
-                let inner_h = f32::from(bounds.size.height) - 2.0 * INSET;
-                if inner_w <= 0.0 || inner_h <= 0.0 {
-                    return;
-                }
-                let cols = (((inner_w + PITCH - DOT) / PITCH).floor() as usize).max(1);
-                let rows = (((inner_h + PITCH - DOT) / PITCH).floor() as usize).max(1);
-                let dot = |col: usize, step: usize| {
-                    let x = f32::from(bounds.left()) + INSET + col as f32 * PITCH;
-                    let y = f32::from(bounds.top()) + INSET + (rows - 1 - step) as f32 * PITCH;
-                    Bounds::new(Point::new(px(x), px(y)), size(px(DOT), px(DOT)))
-                };
-                // An unknown ceiling: the well stays empty.
-                let Some(value_span) = span else {
-                    return;
-                };
+    well
+}
 
-                for col in 0..cols {
-                    for step in 0..rows {
-                        window.paint_quad(fill(dot(col, step), tokens.track));
-                    }
-                }
-
-                let start = values.len().saturating_sub(cols);
-                let filled: Vec<usize> = values[start..]
-                    .iter()
-                    .map(|value| steps(*value, value_span, rows))
-                    .collect();
-                for (col, &height) in filled.iter().enumerate() {
-                    for step in 0..height.min(rows) {
-                        window.paint_quad(fill(dot(col, step), color));
-                    }
-                }
-                // The highest column, and the newest where several are as
-                // high: the one to read the peak off.
-                if let Some(col) = peak(&filled)
-                    && filled[col] > 0
-                {
-                    let bounds = dot(col, filled[col] - 1);
-                    window.paint_quad(fill(bounds, color));
-                    window.paint_quad(outline(bounds, tokens.text, BorderStyle::Solid));
-                }
-            },
-        )
-        .size_full(),
-    )
+/// First lattice column for a history of `samples` points inside `cols` slots,
+/// pinning the newest reading to the right edge.
+fn column_offset(cols: usize, samples: usize) -> usize {
+    cols.saturating_sub(samples)
 }
 
 /// How many steps of the lattice a value fills. Anything above zero shows at
@@ -190,5 +199,13 @@ mod tests {
         assert_eq!(value_span(Some(-1.0)), None);
         assert_eq!(value_span(Some(f32::NAN)), None);
         assert_eq!(value_span(Some(f32::INFINITY)), None);
+    }
+
+    #[test]
+    fn partial_histories_align_newest_sample_to_the_right() {
+        assert_eq!(column_offset(40, 24), 16);
+        assert_eq!(column_offset(40, 40), 0);
+        assert_eq!(column_offset(40, 60), 0);
+        assert_eq!(column_offset(40, 1), 39);
     }
 }

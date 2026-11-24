@@ -9,9 +9,9 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, SharedString, div, px};
 
 use crate::app::{BerthApp, Filter, SearchKind};
-use crate::ui::data_table::{Column, DataTable, RowKey, pill, text_cell};
+use crate::ui::data_table::{Column, DataTable, RowKey, pill_cell, text_cell};
 use crate::ui::kit::{Button, button, caption, checkbox};
-use crate::ui::page::{empty_state, page_header};
+use crate::ui::page::{empty_state, no_search_results, page_header};
 use crate::ui::row_actions::action_cell;
 use crate::ui::tabular;
 
@@ -22,7 +22,11 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
         app,
         widths,
         Some(SearchKind::Containers),
-        Some("Select"),
+        Some(if app.view.bulk_enabled {
+            "Done"
+        } else {
+            "Select"
+        }),
         cx,
     );
     let content = div().flex().flex_col().w_full().flex_1().min_h(px(0.0));
@@ -49,23 +53,37 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
 
     let rows = app.visible_rows();
     if rows.is_empty() {
-        let message = if !app.query(SearchKind::Containers).is_empty() {
-            format!("No results for “{}”", app.query(SearchKind::Containers))
+        let query = app.query(SearchKind::Containers);
+        let empty = if !query.is_empty() {
+            no_search_results(
+                query,
+                "Clear the filter or search to see every container.",
+                SearchKind::Containers,
+                tokens,
+                cx,
+            )
         } else {
-            match app.view.filter {
-                Filter::Stopped => "No stopped containers — All shows every container".to_owned(),
-                Filter::Running => "No running containers — All shows every container".to_owned(),
-                Filter::All => "No containers".to_owned(),
-            }
-        };
-        return content
-            .child(page)
-            .child(empty_state(
-                &message,
+            let message = match app.view.filter {
+                Filter::Stopped => "No stopped containers — All shows every container",
+                Filter::Running => "No running containers — All shows every container",
+                Filter::All => "No containers",
+            };
+            let mut box_el = empty_state(
+                message,
                 "Clear the filter or search to see every container.",
                 tokens,
-            ))
-            .into_any_element();
+            );
+            if app.view.filter != Filter::All {
+                box_el =
+                    box_el.child(div().pt(px(6.0)).child(
+                        button("empty-show-all", "Show all", tokens).on_click(
+                            cx.listener(|this, _, _, cx| this.set_filter(Filter::All, cx)),
+                        ),
+                    ));
+            }
+            box_el
+        };
+        return content.child(page).child(empty).into_any_element();
     }
 
     let mut table = DataTable::new(
@@ -77,9 +95,10 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
         open_row,
     )
     .header_label("Containers table header")
-    .focus(app.view.table_focus.clone());
-    // Bulk mode borrows room from the name column for a checkbox; it does not
-    // widen the row.
+    .focus(app.view.table_focus.clone())
+    .hairline();
+    // Bulk mode borrows room from the name column for a checkbox and its
+    // column gap; it does not widen the row.
     let name = if app.view.bulk_enabled {
         table = table.column(Column::plain(
             "bulk",
@@ -88,7 +107,7 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
             false,
             bulk_cell,
         ));
-        columns.name - layout::BULK_COLUMN
+        (columns.name - layout::BULK_COLUMN - layout::ROW_GAP).max(40.0)
     } else {
         columns.name
     };
@@ -156,7 +175,7 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
             ports_cell,
         ));
     }
-    let mut table = table.column(Column::plain(
+    let table = table.column(Column::plain(
         "actions",
         "ACTIONS",
         columns.actions,
@@ -165,10 +184,7 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
     ));
 
     let header = table.header(app, tokens, cx);
-    if app.view.bulk_enabled {
-        table = table.above(bulk_bar(app, tokens, cx));
-    }
-    let table = table.body(
+    let body = table.body(
         rows,
         layout::ROW_CONTAINER,
         &app.view.lists[SearchKind::Containers as usize].scroll,
@@ -177,8 +193,9 @@ pub fn containers(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) ->
     );
     content
         .child(page)
+        .children(app.view.bulk_enabled.then(|| bulk_bar(app, tokens, cx)))
         .child(header)
-        .child(table)
+        .child(body)
         .into_any_element()
 }
 
@@ -249,12 +266,17 @@ fn name_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthA
 fn status_cell(
     app: &mut BerthApp,
     ix: usize,
-    _width: f32,
+    width: f32,
     _cx: &mut Context<BerthApp>,
 ) -> AnyElement {
     let tokens = app.tokens;
     let container = &app.snapshot.containers[ix];
-    pill(container.health().unwrap_or(&container.state), tokens).into_any_element()
+    pill_cell(
+        container.health().unwrap_or(&container.state),
+        width,
+        tokens,
+    )
+    .into_any_element()
 }
 
 fn cpu_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {

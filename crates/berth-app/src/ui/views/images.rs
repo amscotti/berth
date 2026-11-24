@@ -10,10 +10,10 @@ use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, Role, SharedString, div, px};
 
 use crate::app::{BerthApp, DetailKind, SearchKind};
-use crate::ui::data_table::{Column, DataTable, RowKey, pill, text_cell};
+use crate::ui::data_table::{Column, DataTable, RowKey, mono_cell, pill_cell, text_cell};
 use crate::ui::inspect_shared::short_id;
 use crate::ui::kit::{button, card};
-use crate::ui::page::{empty_state, page_header};
+use crate::ui::page::{empty_state, no_search_results, page_header};
 
 pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyElement {
     let tokens = app.tokens;
@@ -52,7 +52,7 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         .flex_1()
         .min_h(px(0.0))
         .child(header)
-        .child(creation_card(app, tokens, cx));
+        .child(creation_card(app, widths, tokens, cx));
 
     if app.snapshot.images.is_empty() {
         content = content.child(empty_state(
@@ -63,10 +63,12 @@ pub fn images(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> Any
         return content.into_any_element();
     }
     if shown.is_empty() {
-        content = content.child(empty_state(
-            &format!("No results for “{}”", app.query(SearchKind::Images)),
+        content = content.child(no_search_results(
+            app.query(SearchKind::Images),
             "Clear the search to see every image.",
+            SearchKind::Images,
             tokens,
+            cx,
         ));
         return content.into_any_element();
     }
@@ -169,7 +171,7 @@ fn repository_cell(
 
 fn id_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
     let image = &app.snapshot.images[ix];
-    text_cell(short_id(&image.id), width, false, app.tokens).into_any_element()
+    mono_cell(short_id(&image.id), width, false, app.tokens).into_any_element()
 }
 
 fn size_cell(app: &mut BerthApp, ix: usize, width: f32, _cx: &mut Context<BerthApp>) -> AnyElement {
@@ -212,16 +214,17 @@ fn in_use_cell(
 fn status_cell(
     app: &mut BerthApp,
     ix: usize,
-    _width: f32,
+    width: f32,
     _cx: &mut Context<BerthApp>,
 ) -> AnyElement {
     let image = &app.snapshot.images[ix];
-    pill(
+    pill_cell(
         if image.dangling() {
             "dangling"
         } else {
             "ready"
         },
+        width,
         app.tokens,
     )
     .into_any_element()
@@ -235,8 +238,14 @@ fn image_matches(image: &Image, query: &str) -> bool {
 
 /// "Get and run images": a card that folds down to its heading, and opens on
 /// the two forms.
-fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> AnyElement {
+fn creation_card(
+    app: &BerthApp,
+    widths: Widths,
+    tokens: Tokens,
+    cx: &mut Context<BerthApp>,
+) -> AnyElement {
     let open = app.view.creation_open;
+    let hovered = tokens.surface_hover;
     let mut card = card(tokens).mb(px(layout::CARD_GAP)).child(
         // The heading opens and closes the forms. To assistive technology
         // it says which way it is.
@@ -247,10 +256,12 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
             .w_full()
             .gap(px(layout::ROW_GAP))
             .px(px(6.0))
+            .py(px(4.0))
             // The hairline that the focus ring is drawn in.
             .border_1()
             .border_color(tokens.invisible())
             .rounded(px(layout::RADIUS_ROW))
+            .hover(move |style| style.bg(hovered))
             .role(Role::DisclosureTriangle)
             .aria_label("Get and run images")
             .aria_expanded(open)
@@ -270,9 +281,9 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
                     .text_size(px(type_scale::SECONDARY))
                     .text_color(tokens.muted)
                     .child(if open {
-                        "Collapse"
+                        "Collapse ▴"
                     } else {
-                        "Pull an image, or run one"
+                        "Pull an image, or run one ▾"
                     }),
             ),
     );
@@ -280,21 +291,34 @@ fn creation_card(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
         return card.into_any_element();
     }
 
+    // Fit every field to the card's inner width so nothing overflows at 960×600
+    // or while the inspector is open.
+    let inner = (widths.content - 2.0 * layout::CARD_PADDING).max(200.0);
+    let pull_w = (inner - 84.0).clamp(160.0, 560.0);
+    let pair_w = ((inner - layout::ROW_GAP) / 2.0).clamp(150.0, 320.0);
+    let env_w = inner.min(650.0);
+    app.view.pull_input.update(cx, |i, _| i.set_width(pull_w));
+    app.view.run_image.update(cx, |i, _| i.set_width(pair_w));
+    app.view.run_name.update(cx, |i, _| i.set_width(pair_w));
+    app.view.run_ports.update(cx, |i, _| i.set_width(pair_w));
+    app.view.run_volumes.update(cx, |i, _| i.set_width(pair_w));
+    app.view.run_env.update(cx, |i, _| i.set_width(env_w));
+
     let pull_failure = app
         .view
         .pull_attempted
-        .then(|| validation::pull(app.view.pull_input.read(cx).text()))
+        .then(|| validation::pull(app.view.pull_input.read(cx).text().trim()))
         .flatten();
     let run_failure = app
         .view
         .run_attempted
         .then(|| {
             validation::run(
-                app.view.run_image.read(cx).text(),
-                app.view.run_name.read(cx).text(),
-                app.view.run_ports.read(cx).text(),
-                app.view.run_volumes.read(cx).text(),
-                app.view.run_env.read(cx).text(),
+                app.view.run_image.read(cx).text().trim(),
+                app.view.run_name.read(cx).text().trim(),
+                app.view.run_ports.read(cx).text().trim(),
+                app.view.run_volumes.read(cx).text().trim(),
+                app.view.run_env.read(cx).text().trim(),
             )
         })
         .flatten();

@@ -1,5 +1,5 @@
-//! The right-hand inspector. M0 shows the selected container's facts; logs,
-//! actions and the raw inspect document arrive in M4.
+//! The right-hand inspector: container facts, config, runtime processes/diff,
+//! live-polled logs, raw inspect JSON, and image/volume/network details.
 
 use berth_core::format;
 use berth_engine::detail::up_seconds;
@@ -113,30 +113,37 @@ pub(crate) fn container_pane(
         return pane;
     }
 
-    pane = pane
+    let mut facts_box = div()
+        .id("inspector-facts-scroll")
+        .flex()
+        .flex_col()
+        .w_full()
+        .max_h(px(210.0))
+        .overflow_y_scroll()
+        .gap(px(3.0))
         .child(fact("Image", &container.image, tokens))
         .child(fact("State", &container.state, tokens))
         .child(fact("Status", &container.status, tokens));
     if let Some(health) = container.health() {
-        pane = pane.child(fact("Health", health, tokens));
+        facts_box = facts_box.child(fact("Health", health, tokens));
     }
     if let Some(project) = container.project() {
-        pane = pane.child(fact("Project", project, tokens));
+        facts_box = facts_box.child(fact("Project", project, tokens));
     }
     if let Some(service) = container.service() {
-        pane = pane.child(fact("Service", service, tokens));
+        facts_box = facts_box.child(fact("Service", service, tokens));
     }
     if let Some(facts) = &app.inspector.inspect_facts {
         if let Some(started) = facts.started_at {
-            pane = pane.child(fact(
+            facts_box = facts_box.child(fact(
                 "Started",
                 &format::started(started, format::now()),
                 tokens,
             ));
         }
-        pane = pane.child(fact("Restarts", &facts.restarts.to_string(), tokens));
+        facts_box = facts_box.child(fact("Restarts", &facts.restarts.to_string(), tokens));
         if let Some(policy) = &facts.restart_policy {
-            pane = pane.child(fact("Policy", policy, tokens));
+            facts_box = facts_box.child(fact("Policy", policy, tokens));
         }
         if let Some(code) = facts.exit_code {
             let label = if facts.oom_killed {
@@ -144,20 +151,20 @@ pub(crate) fn container_pane(
             } else {
                 code.to_string()
             };
-            pane = pane.child(fact("Exit", &label, tokens));
+            facts_box = facts_box.child(fact("Exit", &label, tokens));
         } else if facts.oom_killed {
-            pane = pane.child(fact("Exit", "OOM killed", tokens));
+            facts_box = facts_box.child(fact("Exit", "OOM killed", tokens));
         }
         if let Some(probe) = &facts.health_log {
-            pane = pane.child(fact("Probe", probe, tokens));
+            facts_box = facts_box.child(fact("Probe", probe, tokens));
         }
     } else if app.inspector.logs_loading {
-        pane = pane.child(fact("Started", "Reading…", tokens));
+        facts_box = facts_box.child(fact("Started", "Reading…", tokens));
     } else if let Some(seconds) = up_seconds(&container.status) {
-        pane = pane.child(fact("Up", &format::duration(seconds), tokens));
+        facts_box = facts_box.child(fact("Up", &format::duration(seconds), tokens));
     }
     if container.is_up() {
-        pane = pane
+        facts_box = facts_box
             .child(fact(
                 "CPU",
                 &if stat.sampled && stat.cpu_known {
@@ -213,7 +220,7 @@ pub(crate) fn container_pane(
                 tokens,
             ));
         if let Some(pids) = stat.pids {
-            pane = pane.child(fact("PIDs", &pids.to_string(), tokens));
+            facts_box = facts_box.child(fact("PIDs", &pids.to_string(), tokens));
         }
     }
     let ports = container.published_ports();
@@ -271,14 +278,15 @@ pub(crate) fn container_pane(
                     ),
             );
         }
-        pane = pane.child(row);
+        facts_box = facts_box.child(row);
     }
+    pane = pane.child(facts_box);
 
     let name = container.name().to_owned();
     let id = container.id.clone();
     let actions = container.actions();
-    // What the state allows, in the order a person reaches for it, then the
-    // actions that need no particular state.
+    // What the state allows, in the order a person reaches for it (matching
+    // container rows: Stop before Restart), then state-independent actions.
     pane = pane.child(
         div()
             .flex()
@@ -295,11 +303,11 @@ pub(crate) fn container_pane(
             .when(actions.start, |this| {
                 this.child(lifecycle(ContainerAction::Start, &id, &name, tokens, cx))
             })
-            .when(actions.restart, |this| {
-                this.child(lifecycle(ContainerAction::Restart, &id, &name, tokens, cx))
-            })
             .when(actions.stop, |this| {
                 this.child(lifecycle(ContainerAction::Stop, &id, &name, tokens, cx))
+            })
+            .when(actions.restart, |this| {
+                this.child(lifecycle(ContainerAction::Restart, &id, &name, tokens, cx))
             })
             .when(actions.terminal, |this| {
                 this.child(inspector_button(
@@ -385,7 +393,7 @@ pub(crate) fn container_pane(
                     if this.inspector.logs_follow {
                         this.reload_detail(cx);
                     }
-                    cx.notify();
+                    this.redraw_inspector(cx);
                 }),
             ))
             .child(inspector_toggle(
@@ -408,7 +416,7 @@ pub(crate) fn container_pane(
             .flex_col()
             .w_full()
             .flex_1()
-            .min_h(px(0.0))
+            .min_h(px(120.0))
             .overflow_y_scroll()
             .p(px(8.0))
             .rounded(px(layout::RADIUS_WELL))
@@ -420,7 +428,7 @@ pub(crate) fn container_pane(
             .on_scroll(cx.listener(|this, event: &ScrollEvent, _, cx| {
                 if event.delta.pixel_delta(px(1.0)).y > px(0.0) && this.inspector.logs_follow {
                     this.inspector.logs_follow = false;
-                    cx.notify();
+                    this.redraw_inspector(cx);
                 }
             }))
             .child(
@@ -543,6 +551,22 @@ mod tests {
         assert!(
             !app.read_with(&*cx, |app, _| app.inspector.logs_follow),
             "scrolling up pauses Follow"
+        );
+    }
+
+    #[gpui::test]
+    fn the_log_well_keeps_room_at_the_minimum_window_height(cx: &mut TestAppContext) {
+        let (app, cx) = crate::testkit::fixture(cx);
+        app.update(cx, |app, cx| app.select(0, cx));
+        cx.simulate_resize(gpui::size(px(960.0), px(600.0)));
+        crate::testkit::redraw(cx);
+        let well = cx
+            .debug_bounds("log-well")
+            .expect("the log well was laid out");
+        assert!(
+            f32::from(well.size.height) >= 120.0,
+            "the log well stayed visible at 960×600: {:?}",
+            well.size.height
         );
     }
 }

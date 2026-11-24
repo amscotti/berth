@@ -18,17 +18,21 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     let tokens = app.tokens;
     let header = page_header(app, widths, None, None, cx);
     let Some(df) = &app.snapshot.df else {
+        let (heading, detail) = if !app.snapshot.df_error.is_empty() {
+            ("Could not read disk usage", app.snapshot.df_error.as_str())
+        } else {
+            (
+                "No disk figures yet",
+                "The engine's /system/df is read on its own slower cadence.",
+            )
+        };
         return div()
             .flex()
             .flex_col()
             .w_full()
             .flex_1()
             .child(header)
-            .child(empty_state(
-                "No disk figures yet",
-                "The engine's /system/df is read on its own slower cadence.",
-                tokens,
-            ))
+            .child(empty_state(heading, detail, tokens))
             .into_any_element();
     };
 
@@ -39,9 +43,11 @@ pub fn disk(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> AnyEl
     let metrics = div()
         .flex()
         .flex_row()
+        .flex_wrap()
         .w_full()
         .items_end()
-        .gap(px(28.0))
+        .gap_x(px(28.0))
+        .gap_y(px(10.0))
         .pb(px(12.0))
         .child(metric("IMAGES", figure(Store::Images), tokens))
         .child(metric("CONTAINERS", figure(Store::Containers), tokens))

@@ -239,7 +239,9 @@ pub(crate) enum Health {
 }
 
 pub(crate) fn health(app: &BerthApp, connected: bool, reading: bool) -> Health {
-    if !app.engine.error.is_empty() {
+    if !connected && !reading && app.engine.client.is_none() {
+        Health::NotAnswering
+    } else if !app.engine.error.is_empty() {
         Health::Warning(app.engine.error.clone())
     } else if reading {
         Health::Reading

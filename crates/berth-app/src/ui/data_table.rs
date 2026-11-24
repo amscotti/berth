@@ -122,8 +122,6 @@ pub(crate) struct DataTable {
     focus: Option<FocusHandle>,
     /// Whether the table keeps a hairline for its focus ring to be drawn in.
     hairline: bool,
-    /// What sits above the rows, inside the table.
-    above: Option<AnyElement>,
 }
 
 impl DataTable {
@@ -146,7 +144,6 @@ impl DataTable {
             open,
             focus: None,
             hairline: false,
-            above: None,
         }
     }
 
@@ -169,11 +166,6 @@ impl DataTable {
 
     pub(crate) fn hairline(mut self) -> Self {
         self.hairline = true;
-        self
-    }
-
-    pub(crate) fn above(mut self, above: impl IntoElement) -> Self {
-        self.above = Some(above.into_any_element());
         self
     }
 
@@ -229,7 +221,6 @@ impl DataTable {
             open,
             focus,
             hairline,
-            above,
             ..
         } = self;
         let row_height = px(height);
@@ -317,7 +308,6 @@ impl DataTable {
             .min_h(px(0.0))
             .role(Role::Table)
             .aria_label(label)
-            .children(above)
             .child(div().flex_1().min_h(px(height * LEAST_ROWS)).child(list))
             .into_any_element()
     }
@@ -441,8 +431,41 @@ pub(crate) fn text_cell(text: String, width: f32, align_end: bool, tokens: Token
     cell
 }
 
+pub(crate) fn mono_cell(text: String, width: f32, align_end: bool, tokens: Tokens) -> Div {
+    let mut cell = div().flex().flex_row().items_center().w(px(width)).child(
+        div()
+            .text_size(px(type_scale::MONO))
+            .font_family(type_scale::MONO_FAMILY)
+            .font_features(tabular())
+            .text_color(tokens.text)
+            .truncate()
+            .child(text),
+    );
+    if align_end {
+        cell = cell.justify_end().pr(px(layout::CELL_PADDING_END));
+    }
+    cell
+}
+
+/// A status or action pill inside a fixed-width table column, so columns to
+/// its right stay aligned with their headers regardless of pill text width.
+pub(crate) fn pill_cell(state: &str, width: f32, tokens: Tokens) -> Div {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .w(px(width))
+        .overflow_hidden()
+        .child(pill(state, tokens))
+}
+
 pub(crate) fn pill(state: &str, tokens: Tokens) -> Div {
     let color = status_color(tokens, state);
+    let bg = if color == tokens.danger_text() {
+        tokens.danger_wash()
+    } else {
+        tokens.pill_wash(color)
+    };
     div()
         .flex()
         .items_center()
@@ -450,7 +473,7 @@ pub(crate) fn pill(state: &str, tokens: Tokens) -> Div {
         .h(px(layout::PILL_HEIGHT))
         .px(px(layout::PILL_PADDING))
         .rounded(px(layout::PILL_HEIGHT / 2.0))
-        .bg(tokens.pill_wash(color))
+        .bg(bg)
         .child(
             div()
                 .text_size(px(type_scale::LABEL))
@@ -462,11 +485,13 @@ pub(crate) fn pill(state: &str, tokens: Tokens) -> Div {
 
 pub(crate) fn status_color(tokens: Tokens, state: &str) -> Hsla {
     match state {
-        "running" | "healthy" => tokens.success_text(),
+        "running" | "healthy" | "ready" | "start" | "unpause" => tokens.success_text(),
         "exited" | "stopped" => tokens.muted_text_pill(),
-        "paused" | "restarting" | "starting" => tokens.warning_text(),
-        "dead" | "unhealthy" => tokens.danger_text(),
-        "created" => tokens.accent_text_pill(),
+        "paused" | "restarting" | "starting" | "dangling" | "stop" | "restart" => {
+            tokens.warning_text()
+        }
+        "dead" | "unhealthy" | "die" | "oom" | "kill" | "destroy" => tokens.danger_text(),
+        "created" | "create" | "pull" => tokens.accent_text_pill(),
         _ => tokens.muted_text_pill(),
     }
 }
@@ -485,5 +510,18 @@ mod tests {
         // Whatever its position, the open row is the selected one.
         assert_eq!(shade(0, true), Shade::Selected);
         assert_eq!(shade(3, true), Shade::Selected);
+    }
+
+    #[test]
+    fn status_pills_distinguish_image_and_event_semantics() {
+        for tokens in [berth_ui::theme::light(), berth_ui::theme::dark()] {
+            assert_ne!(
+                status_color(tokens, "ready"),
+                status_color(tokens, "dangling")
+            );
+            assert_ne!(status_color(tokens, "start"), status_color(tokens, "die"));
+            assert_eq!(status_color(tokens, "oom"), tokens.danger_text());
+            assert_eq!(status_color(tokens, "kill"), tokens.danger_text());
+        }
     }
 }

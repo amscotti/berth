@@ -1,5 +1,6 @@
 //! Runtimes: the sockets berth found, and the one it is reading.
 
+use berth_core::format;
 use berth_engine::discovery::{Kind, Runtime};
 use berth_ui::layout::{self, Widths};
 use berth_ui::theme::{TintKind, Tokens, tint};
@@ -23,7 +24,7 @@ pub fn runtimes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         .gap(px(10.0))
         .child(header);
 
-    content = content.child(custom_socket(app, tokens, cx));
+    content = content.child(custom_socket(app, widths, tokens, cx));
     if app.engine.runtimes.is_empty() {
         content = content.child(empty_state(
             if app.engine.loading {
@@ -37,13 +38,23 @@ pub fn runtimes(app: &BerthApp, widths: Widths, cx: &mut Context<BerthApp>) -> A
         return content.into_any_element();
     }
 
-    for (index, runtime) in app.engine.runtimes.iter().enumerate() {
-        content = content.child(runtime_card(app, index, runtime, tokens, cx));
+    for (runtime_idx, runtime) in app.engine.runtimes.iter().enumerate() {
+        content = content.child(runtime_card(app, runtime_idx, runtime, tokens, cx));
     }
     content.into_any_element()
 }
 
-fn custom_socket(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> impl IntoElement {
+fn custom_socket(
+    app: &BerthApp,
+    widths: Widths,
+    tokens: Tokens,
+    cx: &mut Context<BerthApp>,
+) -> impl IntoElement {
+    let socket_w = (widths.content - 2.0 * layout::CARD_PADDING - 104.0).clamp(180.0, 420.0);
+    app.view
+        .socket_input
+        .update(cx, |input, _| input.set_width(socket_w));
+    let empty = app.view.socket_input.read(cx).text().trim().is_empty();
     card(tokens)
         .child(card_header(
             "Custom socket",
@@ -61,6 +72,8 @@ fn custom_socket(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
                 .child(
                     button("connect-socket", "Connect", tokens)
                         .primary()
+                        .disabled(empty)
+                        .description("Enter a socket path first")
                         .on_click(cx.listener(|this, _, _, cx| {
                             let path = this.view.socket_input.read(cx).text().trim().to_owned();
                             if !path.is_empty() {
@@ -81,12 +94,12 @@ fn custom_socket(app: &BerthApp, tokens: Tokens, cx: &mut Context<BerthApp>) -> 
 /// buttons inside it aren't buttons inside a button.
 fn runtime_card(
     app: &BerthApp,
-    index: usize,
+    runtime_idx: usize,
     runtime: &Runtime,
     tokens: Tokens,
     cx: &mut Context<BerthApp>,
 ) -> impl IntoElement {
-    let active = app.engine.active_index() == Some(index);
+    let active = app.engine.active_index() == Some(runtime_idx);
     let tint = tint(tokens, TintKind::Runtimes);
     // The active engine's card is tinted, and its buttons are drawn for that.
     let ground = if active {
@@ -110,12 +123,12 @@ fn runtime_card(
             .into_any_element()
     } else if runtime.reachable {
         button(
-            SharedString::from(format!("runtime-use-{index}")),
+            SharedString::from(format!("runtime-use-{runtime_idx}")),
             "Use this engine",
             tokens,
         )
         .small()
-        .on_click(cx.listener(move |this, _, _, cx| this.select_runtime(index, cx)))
+        .on_click(cx.listener(move |this, _, _, cx| this.select_runtime(runtime_idx, cx)))
         .into_any_element()
     } else {
         div().into_any_element()
@@ -165,12 +178,15 @@ fn runtime_card(
                 .child(runtime.socket.clone()),
         );
     if runtime.reachable {
+        let containers = if runtime.info_read {
+            format::count(runtime.info.containers_running, "container", "containers")
+        } else {
+            "containers —".to_owned()
+        };
         card = card.child(caption(
             format!(
-                "v{} · API {} · {} containers",
-                runtime.version.version,
-                runtime.version.api_version,
-                runtime.info.containers_running
+                "v{} · API {} · {containers}",
+                runtime.version.version, runtime.version.api_version
             ),
             tokens,
         ));
@@ -184,8 +200,8 @@ fn runtime_card(
     }
     if ops_supported(runtime.kind) {
         let mut row = div().flex().flex_row().gap(px(6.0)).pt(px(2.0));
-        for (index, op) in machine_ops(runtime).iter().enumerate() {
-            row = row.child(machine_button(*op, index, runtime, ground, tokens, cx));
+        for &op in machine_ops(runtime) {
+            row = row.child(machine_button(op, runtime_idx, runtime, ground, tokens, cx));
         }
         card = card.child(row);
     }
@@ -210,11 +226,17 @@ pub(crate) fn machine_ops(runtime: &Runtime) -> &'static [EngineOp] {
     }
 }
 
+/// Unique element id for one machine button, scoped by runtime index so two
+/// VM cards never collide.
+pub(crate) fn machine_button_id(runtime_idx: usize, op: EngineOp) -> SharedString {
+    SharedString::from(format!("runtime-{runtime_idx}-op-{}", op.word()))
+}
+
 /// A machine command. Stopping a machine takes every container on it down,
 /// so it is drawn as the destructive action it is.
 fn machine_button(
     op: EngineOp,
-    index: usize,
+    runtime_idx: usize,
     runtime: &Runtime,
     on: gpui::Hsla,
     tokens: Tokens,
@@ -222,12 +244,7 @@ fn machine_button(
 ) -> Button {
     let kind = runtime.kind;
     let socket = runtime.socket.clone();
-    let button = button(
-        SharedString::from(format!("runtime-op-{index}-{}", op.word())),
-        op.label(),
-        tokens,
-    )
-    .small();
+    let button = button(machine_button_id(runtime_idx, op), op.label(), tokens).small();
     let button = if op == EngineOp::Stop {
         // A wash is a tint of what it is on, and on the active engine's card
         // that isn't a plain card.
@@ -257,5 +274,17 @@ mod tests {
         // Not a machine at all.
         runtime.kind = Kind::Dockerd;
         assert!(machine_ops(&runtime).is_empty());
+    }
+
+    #[test]
+    fn two_vm_cards_get_distinct_machine_button_ids() {
+        assert_ne!(
+            machine_button_id(0, EngineOp::Stop),
+            machine_button_id(1, EngineOp::Stop)
+        );
+        assert_ne!(
+            machine_button_id(0, EngineOp::Stop),
+            machine_button_id(0, EngineOp::Restart)
+        );
     }
 }

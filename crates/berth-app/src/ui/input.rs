@@ -20,12 +20,12 @@ use berth_ui::theme::Tokens;
 use berth_ui::typography as type_scale;
 use gpui::prelude::*;
 use gpui::{
-    App, Bounds, Context, DispatchPhase, ElementInputHandler, EventEmitter, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
-    Render, SharedString, Window, canvas, div, fill, point, px, size,
+    App, Bounds, ContentMask, Context, DispatchPhase, ElementInputHandler, EventEmitter,
+    FocusHandle, Focusable, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Render, SharedString, Window, canvas, div, fill, point, px, size,
 };
 
-use self::text::{Line, PAD, reveal};
+use self::text::{Line, PAD, reveal, text_clip, text_origin};
 use super::kit::button;
 
 #[path = "input_handler.rs"]
@@ -189,15 +189,23 @@ impl InputState {
             "delete" => {
                 self.buffer.delete();
             }
-            "left" if command => self.buffer.home(extend),
-            "right" if command => self.buffer.end(extend),
-            "left" if modifiers.alt => self.buffer.move_word_left(extend),
-            "right" if modifiers.alt => self.buffer.move_word_right(extend),
-            "left" => self.buffer.move_left(extend),
-            "right" => self.buffer.move_right(extend),
-            "home" => self.buffer.home(extend),
-            "end" => self.buffer.end(extend),
-            "a" if command => self.buffer.select_all(),
+            // Cursor movement and selection never change the text: only repaint
+            // and notify the platform's selection handler, never emit Edited.
+            "left" | "right" | "home" | "end" | "a" if key != "a" || command => {
+                match key {
+                    "left" if command => self.buffer.home(extend),
+                    "right" if command => self.buffer.end(extend),
+                    "left" if modifiers.alt => self.buffer.move_word_left(extend),
+                    "right" if modifiers.alt => self.buffer.move_word_right(extend),
+                    "left" => self.buffer.move_left(extend),
+                    "right" => self.buffer.move_right(extend),
+                    "home" => self.buffer.home(extend),
+                    "end" => self.buffer.end(extend),
+                    _ => self.buffer.select_all(),
+                }
+                self.selection_changed(window, cx);
+                return;
+            }
             "c" if command => {
                 if let Some(text) = self.buffer.selected_text() {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.to_owned()));
@@ -406,7 +414,8 @@ impl Render for InputState {
                         );
                         drawn_from.set(bounds.left());
                         paint_text(
-                            bounds, &line, selection, caret_x, scroll, focused, tokens, window, cx,
+                            bounds, &line, selection, caret_x, scroll, focused, !empty, tokens,
+                            window, cx,
                         );
                         listen_to_the_pointer(bounds, entity.clone(), window);
                     },
@@ -429,40 +438,25 @@ impl Render for InputState {
                     .flex()
                     .items_center()
                     .child(
-                        button(
-                            ("input-clear", cx.entity_id().as_u64()),
-                            format!("Clear {}", lower_first(&self.placeholder)),
-                            tokens,
-                        )
-                        .small()
-                        .icon("xmark")
-                        .icon_only()
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            // The press is for the button, not the field.
-                            cx.stop_propagation();
-                            this.clear(cx);
-                            this.focus(window, cx);
-                            window.notify_text_input_changed(&this.focus_handle);
-                        })),
+                        button(("input-clear", cx.entity_id().as_u64()), "Clear", tokens)
+                            .small()
+                            .icon("xmark")
+                            .icon_only()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                // The press is for the button, not the field.
+                                cx.stop_propagation();
+                                this.clear(cx);
+                                this.focus(window, cx);
+                                window.notify_text_input_changed(&this.focus_handle);
+                            })),
                     ),
             )
         }
     }
 }
 
-/// `"Search containers"` as it would read after "Clear": `"search containers"`.
-fn lower_first(words: &str) -> String {
-    let mut words = words.to_owned();
-    if let Some(first) = words.get_mut(0..1) {
-        // Only an ASCII letter is safe to lower one byte at a time.
-        if first.is_ascii() {
-            first.make_ascii_lowercase();
-        }
-    }
-    words
-}
-
-/// Draw a field's line: the selection, then the caret, then the text over both.
+/// Draw a field's line: the selection, then the caret, then the text over both,
+/// clipped before the clear button so long text never paints through it.
 #[allow(clippy::too_many_arguments)]
 fn paint_text(
     bounds: Bounds<Pixels>,
@@ -471,32 +465,37 @@ fn paint_text(
     caret_x: f32,
     scroll: f32,
     focused: bool,
+    has_clear: bool,
     tokens: Tokens,
     window: &mut Window,
     cx: &mut App,
 ) {
-    let from = bounds.left() + px(PAD) - px(scroll);
-    if let Some((start, end)) = selection {
-        let x = from + px(line.x_of(start));
-        let width = px(line.x_of(end) - line.x_of(start));
-        window.paint_quad(fill(
-            Bounds::new(
-                point(x, bounds.top() + px(5.0)),
-                size(width, bounds.size.height - px(10.0)),
-            ),
-            tokens.text_selection(),
-        ));
-    }
-    if focused {
-        window.paint_quad(fill(
-            Bounds::new(
-                point(from + px(caret_x), bounds.top() + px(6.0)),
-                size(px(1.5), bounds.size.height - px(12.0)),
-            ),
-            tokens.accent,
-        ));
-    }
-    line.paint(bounds.origin, bounds.size.height, window, cx);
+    let origin = text_origin(bounds, scroll);
+    let from = origin.x;
+    let clip = text_clip(bounds, has_clear, InputState::CLEAR_ROOM);
+    window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+        if let Some((start, end)) = selection {
+            let x = from + px(line.x_of(start));
+            let width = px(line.x_of(end) - line.x_of(start));
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(x, bounds.top() + px(5.0)),
+                    size(width, bounds.size.height - px(10.0)),
+                ),
+                tokens.text_selection(),
+            ));
+        }
+        if focused {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(from + px(caret_x), bounds.top() + px(6.0)),
+                    size(px(1.5), bounds.size.height - px(12.0)),
+                ),
+                tokens.accent,
+            ));
+        }
+        line.paint(origin, bounds.size.height, window, cx);
+    });
 }
 
 /// Answer the pointer over a field drawn inside `bounds`: a press puts the

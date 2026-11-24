@@ -168,6 +168,28 @@ fn warning_and_success_text_clear_their_pill_wash() {
             tokens.pill_wash(tokens.muted_text_pill()),
             4.5,
         );
+        readable(
+            name,
+            "danger pill",
+            tokens.danger_text(),
+            tokens.danger_wash(),
+            4.5,
+        );
+    }
+}
+
+#[test]
+fn unchecked_checkbox_border_clears_non_text_contrast() {
+    for (name, tokens) in themes() {
+        for (what, row) in ROWS {
+            readable(
+                name,
+                &format!("checkbox border on {what}"),
+                tokens.checkbox_border(),
+                row(tokens),
+                3.0,
+            );
+        }
     }
 }
 

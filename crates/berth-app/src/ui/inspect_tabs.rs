@@ -10,7 +10,7 @@ use gpui::{Context, Div, FontWeight, Role, SharedString, Stateful, div, px};
 use super::inspect_shared::{fact, inspector_quiet};
 use super::kit::button;
 use super::tabular;
-use crate::app::{BerthApp, Tab};
+use crate::app::{BerthApp, SearchKind, Tab};
 
 pub(crate) fn config_tab(
     app: &BerthApp,
@@ -163,6 +163,7 @@ pub(crate) fn config_tab(
                             .aria_label(format!("Inspect volume {vol_name}"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.view.tab = Tab::Volumes;
+                                this.clear_search(SearchKind::Volumes, cx);
                                 this.select_volume(&vol_name, cx);
                             }))
                     })
@@ -219,18 +220,24 @@ pub(crate) fn config_tab(
         .child(section_heading("Environment", env.len(), tokens))
         .child(div().flex_1());
     if !env.is_empty() {
+        let any_redacted = env.iter().any(|(_, _, secret)| *secret);
         let copy_env_text = env
             .iter()
             .map(|(k, v, _)| format!("{k}={v}"))
             .collect::<Vec<_>>()
             .join("\n");
+        let notice = if any_redacted {
+            "Environment copied · some env values redacted"
+        } else {
+            "Environment copied"
+        };
         env_header = env_header.child(inspector_quiet(
             "copy-env",
             "Copy .env",
             tokens,
             cx.listener(move |this, _, _, cx| {
                 cx.write_to_clipboard(gpui::ClipboardItem::new_string(copy_env_text.clone()));
-                this.notify("Environment copied · secrets redacted", false, cx);
+                this.notify(notice, false, cx);
             }),
         ));
     }

@@ -401,6 +401,12 @@ impl Tokens {
     pub fn disabled_opacity(self) -> f32 {
         wash::DISABLED
     }
+
+    /// The border of an unchecked checkbox, strong enough to clear WCAG
+    /// non-text contrast (3:1) against cards and table rows in both themes.
+    pub fn checkbox_border(self) -> Hsla {
+        self.muted
+    }
 }
 
 /// The tint a page's icon carries in the rail and its cards.

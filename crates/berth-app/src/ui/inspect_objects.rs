@@ -9,7 +9,9 @@ use gpui::prelude::*;
 use gpui::{Context, Div, FontWeight, IntoElement, SharedString, div, px};
 
 use super::data_table::pill;
-use super::inspect_shared::{fact, inspector_button, inspector_delete, pane_shell, short_id};
+use super::inspect_shared::{
+    fact, fact_mono, inspector_button, inspector_delete, pane_shell, short_id,
+};
 use super::tabular;
 use crate::actions::{Pending, Removal, Target};
 use crate::app::BerthApp;
@@ -29,7 +31,7 @@ pub(crate) fn image_pane(
     };
     let mut pane = pane_shell(name, "Image inspector", width, tokens, cx)
         .child(fact("Repository", name, tokens))
-        .child(fact("ID", &short_id(&image.id), tokens))
+        .child(fact_mono("ID", &short_id(&image.id), tokens))
         .child(fact("Size", &format::bytes(image.size), tokens))
         .child(fact(
             "Created",
@@ -135,6 +137,7 @@ pub(crate) fn image_pane(
     let name = name.to_owned();
     let id = image.id.clone();
     let label = image.label().to_owned();
+    let dangling = image.dangling();
     if app.inspector.image_layers.is_empty() {
         pane = pane.child(div().flex_1());
     }
@@ -144,20 +147,23 @@ pub(crate) fn image_pane(
             .flex_row()
             .w_full()
             .gap(px(6.0))
-            .child(inspector_button(
-                "Run…",
-                tokens,
-                cx.listener({
-                    let label = label.clone();
-                    move |this, _, _, cx| {
-                        this.view.creation_open = true;
-                        this.view
-                            .run_image
-                            .update(cx, |input, cx| input.set_value(label.clone(), cx));
-                        cx.notify();
-                    }
-                }),
-            ))
+            // A dangling image has no tag; don't prefill Run with "untagged".
+            .when(!dangling, |this| {
+                this.child(inspector_button(
+                    "Run…",
+                    tokens,
+                    cx.listener({
+                        let label = label.clone();
+                        move |this, _, _, cx| {
+                            this.view.creation_open = true;
+                            this.view
+                                .run_image
+                                .update(cx, |input, cx| input.set_value(label.clone(), cx));
+                            cx.notify();
+                        }
+                    }),
+                ))
+            })
             .child(inspector_delete(
                 "Delete",
                 tokens,
@@ -264,10 +270,10 @@ pub(crate) fn network_pane(
 ) -> impl IntoElement {
     let mut pane = pane_shell(&network.name, "Network inspector", width, tokens, cx)
         .child(fact("Name", &network.name, tokens))
-        .child(fact("ID", &short_id(&network.id), tokens))
+        .child(fact_mono("ID", &short_id(&network.id), tokens))
         .child(fact(
             "Driver",
-            if network.driver == "null" {
+            if network.driver.is_empty() || network.driver == "null" {
                 "—"
             } else {
                 &network.driver

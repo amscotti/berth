@@ -82,7 +82,11 @@ pub(crate) fn page_header_with(
     if let Some(kind) = search_kind {
         let search_width = if widths.content < 760.0 { 132.0 } else { 190.0 };
         if let Some(label) = action_label {
-            header = header.child(button("page-action", label, tokens).on_click(cx.listener(
+            let mut action = button("page-action", label, tokens);
+            if app.view.tab == Tab::Containers && app.view.bulk_enabled {
+                action = action.primary();
+            }
+            header = header.child(action.on_click(cx.listener(
                 |this, _, _, cx| match this.view.tab {
                     Tab::Containers => this.toggle_bulk(cx),
                     Tab::Volumes => this.open_create(crate::app::CreateKind::Volume, cx),
@@ -142,4 +146,21 @@ pub(crate) fn empty_state(heading: &str, detail: &str, tokens: Tokens) -> Div {
                 .text_color(tokens.muted)
                 .child(detail.to_owned()),
         )
+}
+
+/// Empty state for a table search that matched nothing, paired with a
+/// one-click "Clear search" action.
+pub(crate) fn no_search_results(
+    query: &str,
+    detail: &str,
+    kind: SearchKind,
+    tokens: Tokens,
+    cx: &mut Context<BerthApp>,
+) -> Div {
+    empty_state(&format!("No results for “{query}”"), detail, tokens).child(
+        div().pt(px(6.0)).child(
+            button("empty-clear-search", "Clear search", tokens)
+                .on_click(cx.listener(move |this, _, _, cx| this.clear_search(kind, cx))),
+        ),
+    )
 }

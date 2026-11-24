@@ -5,7 +5,9 @@
 //! window off its text, and left long text with its caret off the field.
 //! Everything here comes from the text system's own layout of the line.
 
-use gpui::{App, Font, Hsla, Pixels, Point, ShapedLine, TextAlign, TextRun, Window, px};
+use gpui::{
+    App, Bounds, Font, Hsla, Pixels, Point, ShapedLine, TextAlign, TextRun, Window, point, px, size,
+};
 
 use super::InputState;
 
@@ -76,6 +78,31 @@ impl Line {
                 .paint(origin, height, TextAlign::Left, None, window, cx);
         }
     }
+}
+
+/// Where the shaped line's origin sits, matching `offset_at` and `bounds_for_range`.
+pub(crate) fn text_origin(bounds: Bounds<Pixels>, scroll: f32) -> Point<Pixels> {
+    point(bounds.left() + px(PAD) - px(scroll), bounds.top())
+}
+
+/// The region inside `bounds` where text, selection and caret may paint:
+/// padded inside the border and clipped before the right-hand clear button.
+pub(crate) fn text_clip(
+    bounds: Bounds<Pixels>,
+    has_clear: bool,
+    clear_room: f32,
+) -> Bounds<Pixels> {
+    let left_pad = (PAD - 1.0).max(0.0);
+    let right_pad = if has_clear {
+        clear_room
+    } else {
+        (PAD - 2.0).max(0.0)
+    };
+    let width = (bounds.size.width - px(left_pad + right_pad)).max(px(0.0));
+    Bounds::new(
+        point(bounds.left() + px(left_pad), bounds.top()),
+        size(width, bounds.size.height),
+    )
 }
 
 /// How far the text is pushed left so that the caret stays in view.
