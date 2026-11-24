@@ -32,6 +32,27 @@ pub(crate) struct Series {
     tint: Hsla,
     ink: Hsla,
     line: Hsla,
+    /// What its ceiling is counted in, so that the well can name it.
+    unit: Unit,
+}
+
+/// What a series is measured in.
+#[derive(Clone, Copy)]
+pub(crate) enum Unit {
+    Percent,
+    Bytes,
+    Count,
+}
+
+impl Unit {
+    /// The ceiling's name, on the top edge of the well.
+    fn ceiling(self, ceiling: Option<f32>) -> Option<String> {
+        ceiling.map(|ceiling| match self {
+            Unit::Percent => "100%".to_owned(),
+            Unit::Bytes => format::bytes(ceiling as u64),
+            Unit::Count => format::count(ceiling as usize, "container", "containers"),
+        })
+    }
 }
 
 impl Series {
@@ -42,6 +63,7 @@ impl Series {
             tint: tint(tokens, TintKind::Containers),
             ink: tokens.accent_text_pill(),
             line: tokens.accent_fill(),
+            unit: Unit::Percent,
         }
     }
 
@@ -52,6 +74,7 @@ impl Series {
             tint: tokens.success,
             ink: tokens.success_text(),
             line: tokens.success,
+            unit: Unit::Bytes,
         }
     }
 
@@ -62,6 +85,7 @@ impl Series {
             tint: tokens.warning_fill,
             ink: tokens.warning_text(),
             line: tokens.warning_fill,
+            unit: Unit::Count,
         }
     }
 
@@ -72,6 +96,7 @@ impl Series {
             tint: tint(tokens, TintKind::Disk),
             ink: tokens.text,
             line: tokens.muted,
+            unit: Unit::Count,
         }
     }
 
@@ -86,7 +111,14 @@ impl Series {
         width: f32,
         tokens: Tokens,
     ) -> Card {
-        let well = graph::cell_graph(values, self.line, tokens, ceiling, layout::GRAPH_HEIGHT);
+        let well = graph::cell_graph(
+            values,
+            self.line,
+            tokens,
+            ceiling,
+            layout::GRAPH_HEIGHT,
+            self.unit.ceiling(ceiling),
+        );
         self.card_with(reading, well, width, tokens)
     }
 
@@ -105,6 +137,7 @@ impl Series {
             tint,
             ink,
             line: _,
+            unit: _,
         } = self;
         card(tokens)
             .w(px(width))
@@ -243,6 +276,7 @@ pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u
                 tokens,
                 Some(100.0),
                 44.0,
+                Unit::Percent.ceiling(Some(100.0)),
             ));
     }
     card = card.child(
@@ -315,6 +349,7 @@ pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u
                     history.values(Which::HostCpu).to_vec(),
                     tokens.elsewhere(),
                     Some(100.0),
+                    Unit::Percent,
                     tokens,
                 ))
                 .child(host_spark(
@@ -323,6 +358,7 @@ pub(crate) fn host_card(app: &BerthApp, tokens: Tokens, containers_mem: Option<u
                     history.values(Which::HostMem).to_vec(),
                     tokens.muted,
                     Some(total),
+                    Unit::Bytes,
                     tokens,
                 )),
         )
@@ -335,6 +371,7 @@ fn host_spark(
     values: Vec<f32>,
     color: Hsla,
     ceiling: Option<f32>,
+    unit: Unit,
     tokens: Tokens,
 ) -> Div {
     div()
@@ -361,7 +398,14 @@ fn host_spark(
                         .child(value),
                 ),
         )
-        .child(graph::cell_graph(values, color, tokens, ceiling, 44.0))
+        .child(graph::cell_graph(
+            values,
+            color,
+            tokens,
+            ceiling,
+            44.0,
+            unit.ceiling(ceiling),
+        ))
 }
 
 /// Network, disk and PIDs across the fleet, as totals since each container
