@@ -140,6 +140,32 @@ impl BerthApp {
             .on_action(cx.listener(Self::on_refresh))
             .on_action(cx.listener(Self::on_select_next))
             .on_action(cx.listener(Self::on_select_prev))
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.modified() || this.view.sheet.is_some() {
+                    return;
+                }
+                if event.keystroke.key == "space"
+                    && this.view.tab == Tab::Containers
+                    && this.view.bulk_enabled
+                    && (this.view.table_focus.is_focused(window)
+                        || this.view.focus_handle.is_focused(window))
+                {
+                    if let Some(id) = this.view.selected_id.clone() {
+                        this.bulk_toggle(&id, cx);
+                        cx.stop_propagation();
+                    }
+                } else if event.keystroke.key == "enter"
+                    && this.view.tab == Tab::Events
+                    && this.view.focus_handle.is_focused(window)
+                    && let Some(ix) = this.view.event_cursor
+                    && let Some(ev) = this.snapshot.events.get(ix)
+                    && ev.kind == "container"
+                {
+                    let id = ev.actor.id.clone();
+                    this.select_container_by_id(&id, cx);
+                    cx.stop_propagation();
+                }
+            }))
             .flex()
             .flex_row()
             .w_full()

@@ -143,6 +143,10 @@ pub struct EngineState {
     /// another one.
     pub identity: Option<String>,
     pub preferred_socket: Option<String>,
+    /// A custom socket explicitly requested via `use_socket`, consumed by the
+    /// next discovery pass so it takes precedence over both `BERTH_SOCKET` and
+    /// any currently connected engine.
+    pub requested_socket: Option<String>,
     pub loading: bool,
     pub error: String,
     pub last_update: i64,

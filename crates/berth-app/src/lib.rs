@@ -1,9 +1,6 @@
-//! berth's application shell.
-//!
-//! M0 opens one window with the design tokens, the rail, the page frame and a
-//! static containers table. The engine worker, refresh commit and inspector
-//! jobs land in later milestones; the shape of the shell is already the final
-//! one.
+//! berth's application shell: one GPUI window with the design tokens, rail,
+//! pages, virtualized tables, inspector, modal sheets, background engine
+//! workers and platform tray.
 
 mod actions;
 mod app;
@@ -113,8 +110,9 @@ fn open_main_window(cx: &mut App) {
         .update(cx, |app, window, cx| {
             let weak = cx.entity().downgrade();
             let subscription = window.observe_window_appearance(move |window, cx| {
-                let tokens = theme::for_appearance(window.appearance());
-                weak.update(cx, |app, cx| app.set_tokens(tokens, cx)).ok();
+                let appearance = window.appearance();
+                weak.update(cx, |app, cx| app.apply_window_appearance(appearance, cx))
+                    .ok();
             });
             app.set_appearance_subscription(subscription);
             // Where the window is left is where it opens next time: recorded

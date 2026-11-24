@@ -1,8 +1,5 @@
-//! The M0 shell: rail, page header, and a static containers table.
-//!
-//! Everything here is a GPUI view over `BerthApp`. The engine, refresh worker
-//! and real data arrive in M1; the geometry and tokens are already the ones the
-//! final app uses, so the table survives that transition.
+//! The application shell: view vocabulary, `BerthApp` state, and search
+//! predicates. Everything here backs the GPUI views in `ui/`.
 
 use std::sync::Arc;
 
@@ -215,6 +212,9 @@ impl Filter {
 pub struct BerthApp {
     pub(crate) tokens: Tokens,
     pub(crate) snapshot: SharedSnapshot,
+    /// Monotonic counter bumped whenever `snapshot` is replaced, so table row
+    /// caches invalidate without retaining old `Arc<Snapshot>`s.
+    pub(crate) snapshot_id: u64,
     /// The machine's own figures, from the last pass or the last host sample.
     pub(crate) host: HostSample,
     pub(crate) engine: EngineState,
@@ -306,6 +306,7 @@ impl BerthApp {
         let app = Self {
             tokens,
             snapshot: Arc::new(snapshot),
+            snapshot_id: 0,
             host: HostSample::default(),
             engine,
             appearance,
@@ -350,6 +351,13 @@ impl BerthApp {
         self._bounds_sub = Some(subscription);
     }
 
+    /// Swap the snapshot in one step and bump its monotonic id so cached
+    /// table rows re-evaluate without retaining old `Arc<Snapshot>`s.
+    pub(crate) fn set_snapshot(&mut self, snapshot: Snapshot) {
+        self.snapshot = Arc::new(snapshot);
+        self.snapshot_id = self.snapshot_id.wrapping_add(1);
+    }
+
     pub fn set_tokens(&mut self, tokens: Tokens, cx: &mut Context<Self>) {
         if self.tokens != tokens {
             self.tokens = tokens;
@@ -359,8 +367,20 @@ impl BerthApp {
         }
     }
 
+    /// Follow an OS appearance change only when the user chose `System`.
+    pub fn apply_window_appearance(
+        &mut self,
+        appearance: gpui::WindowAppearance,
+        cx: &mut Context<Self>,
+    ) {
+        if self.appearance == Appearance::System {
+            self.set_tokens(berth_ui::theme::for_appearance(appearance), cx);
+        }
+    }
+
     /// Empty a table's search field.
     pub(crate) fn clear_search(&mut self, kind: SearchKind, cx: &mut Context<Self>) {
+        self.view.lists[kind as usize].query.clear();
         self.view.lists[kind as usize]
             .search
             .update(cx, |input, cx| input.clear(cx));
@@ -379,6 +399,7 @@ impl BerthApp {
     pub(crate) fn switch_to(&mut self, tab: Tab, cx: &mut Context<Self>) {
         if self.view.tab != tab {
             self.view.tab = tab;
+            self.view.event_cursor = None;
             self.clear_selection(cx);
         }
     }

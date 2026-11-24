@@ -13,6 +13,14 @@ fn first_port(container: &berth_engine::dto::Container) -> u16 {
         .map_or(u16::MAX, |binding| binding.port)
 }
 
+fn network_key(network: &berth_engine::dto::Network) -> &str {
+    if network.id.is_empty() {
+        network.name.as_str()
+    } else {
+        network.id.as_str()
+    }
+}
+
 impl BerthApp {
     // --- actions -----------------------------------------------------------
 
@@ -166,28 +174,91 @@ impl BerthApp {
     }
 
     fn step_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        if self.view.tab == Tab::Containers {
-            let rows = self.visible_rows();
-            if rows.is_empty() {
-                return;
+        let step = |current: Option<usize>, len: usize| match current {
+            Some(pos) => (pos as isize + delta).clamp(0, len as isize - 1) as usize,
+            None if delta >= 0 => 0,
+            None => len - 1,
+        };
+        match self.view.tab {
+            Tab::Containers => {
+                let rows = self.visible_rows();
+                if rows.is_empty() {
+                    return;
+                }
+                let current = self.view.selected_id.as_deref().and_then(|id| {
+                    rows.iter()
+                        .position(|&ix| self.snapshot.containers[ix].id == id)
+                });
+                self.select(rows[step(current, rows.len())], cx);
             }
-            let current = self.view.selected_id.as_deref().and_then(|id| {
-                rows.iter()
-                    .position(|&ix| self.snapshot.containers[ix].id == id)
-            });
-            let next = match current {
-                Some(pos) => (pos as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
-                None if delta >= 0 => 0,
-                None => rows.len() - 1,
-            };
-            self.select(rows[next], cx);
+            Tab::Images => {
+                let rows = self.visible_images();
+                if rows.is_empty() {
+                    return;
+                }
+                let current = self.view.selected_id.as_deref().and_then(|id| {
+                    rows.iter()
+                        .position(|&ix| self.snapshot.images[ix].id == id)
+                });
+                let ix = rows[step(current, rows.len())];
+                let (id, label) = {
+                    let image = &self.snapshot.images[ix];
+                    (image.id.clone(), image.label().to_owned())
+                };
+                self.select_image(&id, &label, cx);
+            }
+            Tab::Volumes => {
+                let rows = self.visible_volumes();
+                if rows.is_empty() {
+                    return;
+                }
+                let current = self.view.selected_id.as_deref().and_then(|id| {
+                    rows.iter()
+                        .position(|&ix| self.snapshot.volumes[ix].name == id)
+                });
+                let name = self.snapshot.volumes[rows[step(current, rows.len())]]
+                    .name
+                    .clone();
+                self.select_volume(&name, cx);
+            }
+            Tab::Networks => {
+                let rows = self.visible_networks();
+                if rows.is_empty() {
+                    return;
+                }
+                let current = self.view.selected_id.as_deref().and_then(|id| {
+                    rows.iter()
+                        .position(|&ix| network_key(&self.snapshot.networks[ix]) == id)
+                });
+                let ix = rows[step(current, rows.len())];
+                let (key, name) = {
+                    let net = &self.snapshot.networks[ix];
+                    (network_key(net).to_owned(), net.name.clone())
+                };
+                self.select_network(&key, &name, cx);
+            }
+            Tab::Events => {
+                let rows = self.visible_events();
+                if rows.is_empty() {
+                    return;
+                }
+                let current = self
+                    .view
+                    .event_cursor
+                    .and_then(|cur| rows.iter().position(|&ix| ix == cur));
+                let ix = rows[step(current, rows.len())];
+                self.view.event_cursor = Some(ix);
+                self.reveal(SearchKind::Events, ix);
+                self.redraw_page(cx);
+            }
+            _ => {}
         }
     }
 
     pub(crate) fn on_dismiss(&mut self, _: &Dismiss, window: &mut Window, cx: &mut Context<Self>) {
         // The sheet first, whichever it is.
-        if self.view.sheet.take().is_some() {
-            cx.notify();
+        if self.view.sheet.is_some() {
+            self.close_sheet(cx);
             return;
         }
         for search in self.view.lists.iter().map(|list| &list.search) {
@@ -223,11 +294,12 @@ impl BerthApp {
         cx: &mut Context<Self>,
     ) {
         self.appearance = appearance;
-        self.tokens = match appearance {
+        let tokens = match appearance {
             Appearance::Light => berth_ui::theme::light(),
             Appearance::Dark => berth_ui::theme::dark(),
             Appearance::System => berth_ui::theme::for_appearance(window.appearance()),
         };
+        self.set_tokens(tokens, cx);
         self.save_settings(cx);
         cx.notify();
     }
@@ -239,25 +311,19 @@ impl BerthApp {
         if !runtime.reachable {
             return;
         }
-        self.engine.install(&runtime);
         self.engine.preferred_socket = Some(runtime.socket.clone());
-        self.refresh_task = None;
-        self.refresh_wanted = false;
-        self.clear_selection(cx);
-        let mut snapshot = (*self.snapshot).clone();
-        snapshot.events.clear();
-        snapshot.df = None;
-        snapshot.df_at = 0;
-        snapshot.df_error.clear();
-        self.snapshot = std::sync::Arc::new(snapshot);
+        self.switch_engine(&runtime, cx);
         self.save_settings(cx);
-        self.start_refresh(cx);
         cx.notify();
     }
 
     pub(crate) fn use_socket(&mut self, path: &str, cx: &mut Context<Self>) {
-        let path = path.strip_prefix("unix://").unwrap_or(path);
+        let path = path.strip_prefix("unix://").unwrap_or(path).trim();
+        if path.is_empty() {
+            return;
+        }
         self.engine.preferred_socket = Some(path.to_owned());
+        self.engine.requested_socket = Some(path.to_owned());
         self.save_settings(cx);
         self.start_discovery(cx);
     }
@@ -271,7 +337,11 @@ impl BerthApp {
 
     pub(crate) fn refresh_now(&mut self, cx: &mut Context<Self>) {
         self.engine.df_at = 0;
-        self.start_refresh(cx);
+        if self.engine.client.is_none() {
+            self.start_discovery(cx);
+        } else {
+            self.start_refresh(cx);
+        }
         cx.notify();
     }
 
@@ -316,7 +386,7 @@ impl BerthApp {
     ) -> Vec<usize> {
         let list = &self.view.lists[table as usize];
         list.kept.rows(
-            &self.snapshot,
+            self.snapshot_id,
             &list.query,
             list.sort,
             self.view.filter,
@@ -388,6 +458,123 @@ impl BerthApp {
                 };
                 if asc { ord } else { ord.reverse() }
             });
+            rows
+        })
+    }
+
+    pub(crate) fn visible_images(&self) -> Vec<usize> {
+        self.rows_of(SearchKind::Images, || {
+            let query = self.query(SearchKind::Images).to_ascii_lowercase();
+            let (col, asc) = self.sort_for(SearchKind::Images as usize);
+            let mut rows: Vec<usize> = self
+                .snapshot
+                .images
+                .iter()
+                .enumerate()
+                .filter(|(_, img)| {
+                    query.is_empty()
+                        || img.label().to_ascii_lowercase().contains(&query)
+                        || img.id.to_ascii_lowercase().contains(&query)
+                })
+                .map(|(ix, _)| ix)
+                .collect();
+            rows.sort_by(|&a, &b| {
+                let (a, b) = (&self.snapshot.images[a], &self.snapshot.images[b]);
+                let ord = match col {
+                    1 => a.id.cmp(&b.id),
+                    2 => a.size.cmp(&b.size),
+                    3 => a.created.cmp(&b.created),
+                    4 => a.dangling().cmp(&b.dangling()),
+                    _ => a.label().cmp(b.label()),
+                };
+                if asc { ord } else { ord.reverse() }
+            });
+            rows
+        })
+    }
+
+    pub(crate) fn visible_volumes(&self) -> Vec<usize> {
+        self.rows_of(SearchKind::Volumes, || {
+            let query = self.query(SearchKind::Volumes).to_ascii_lowercase();
+            let (col, asc) = self.sort_for(SearchKind::Volumes as usize);
+            let mut rows: Vec<usize> = self
+                .snapshot
+                .volumes
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| {
+                    query.is_empty()
+                        || v.name.to_ascii_lowercase().contains(&query)
+                        || v.driver.to_ascii_lowercase().contains(&query)
+                        || v.mountpoint.to_ascii_lowercase().contains(&query)
+                })
+                .map(|(ix, _)| ix)
+                .collect();
+            rows.sort_by(|&a, &b| {
+                let (a, b) = (&self.snapshot.volumes[a], &self.snapshot.volumes[b]);
+                let (ua, ub) = (a.usage_data.as_ref(), b.usage_data.as_ref());
+                let ord = match col {
+                    1 => a.driver.cmp(&b.driver),
+                    2 => ua.map_or(-1, |u| u.size).cmp(&ub.map_or(-1, |u| u.size)),
+                    3 => ua
+                        .map_or(-1, |u| u.ref_count)
+                        .cmp(&ub.map_or(-1, |u| u.ref_count)),
+                    4 => a.mountpoint.cmp(&b.mountpoint),
+                    _ => a.name.cmp(&b.name),
+                };
+                if asc { ord } else { ord.reverse() }
+            });
+            rows
+        })
+    }
+
+    pub(crate) fn visible_networks(&self) -> Vec<usize> {
+        self.rows_of(SearchKind::Networks, || {
+            let query = self.query(SearchKind::Networks).to_ascii_lowercase();
+            let (col, asc) = self.sort_for(SearchKind::Networks as usize);
+            let mut rows: Vec<usize> = self
+                .snapshot
+                .networks
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| {
+                    query.is_empty()
+                        || n.name.to_ascii_lowercase().contains(&query)
+                        || n.driver.to_ascii_lowercase().contains(&query)
+                        || n.scope.to_ascii_lowercase().contains(&query)
+                })
+                .map(|(ix, _)| ix)
+                .collect();
+            rows.sort_by(|&a, &b| {
+                let (a, b) = (&self.snapshot.networks[a], &self.snapshot.networks[b]);
+                let ord = match col {
+                    1 => a.driver.cmp(&b.driver),
+                    2 => a.scope.cmp(&b.scope),
+                    3 => self
+                        .snapshot
+                        .network_counts
+                        .get(&a.name)
+                        .cmp(&self.snapshot.network_counts.get(&b.name)),
+                    _ => a.name.cmp(&b.name),
+                };
+                if asc { ord } else { ord.reverse() }
+            });
+            rows
+        })
+    }
+
+    pub(crate) fn visible_events(&self) -> Vec<usize> {
+        self.rows_of(SearchKind::Events, || {
+            let query = self.query(SearchKind::Events).to_ascii_lowercase();
+            let mut rows: Vec<usize> = self
+                .snapshot
+                .events
+                .iter()
+                .enumerate()
+                .filter(|(_, ev)| ev.matches(&query))
+                .map(|(ix, _)| ix)
+                .collect();
+            rows.sort_by_key(|&ix| std::cmp::Reverse(self.snapshot.events[ix].time_nano));
             rows
         })
     }

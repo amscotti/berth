@@ -123,20 +123,9 @@ impl BerthApp {
     }
 
     pub(crate) fn open_port(&mut self, host: &str, port: u16, cx: &mut Context<Self>) {
-        let host = if host.is_empty() || host == "0.0.0.0" || host == "::" {
-            "localhost"
-        } else {
-            host
-        };
-        let scheme = if port == 443 || port == 8443 {
-            "https"
-        } else {
-            "http"
-        };
-        let url = if host.contains(':') {
-            format!("{scheme}://[{host}]:{port}")
-        } else {
-            format!("{scheme}://{host}:{port}")
+        let Some(url) = port_url(host, port) else {
+            self.notify("Could not open port: invalid host address", true, cx);
+            return;
         };
         cx.open_url(&url);
     }
@@ -297,6 +286,7 @@ impl BerthApp {
             .map(|row| row.name().to_owned())
             .unwrap_or_default();
         self.view.detail_kind = DetailKind::Container;
+        let _ = self.visible_rows();
         self.reveal(SearchKind::Containers, ix);
         self.start_detail(cx);
         cx.notify();
@@ -324,6 +314,7 @@ impl BerthApp {
             }));
         }
         if let Some(ix) = self.snapshot.images.iter().position(|image| image.id == id) {
+            let _ = self.visible_images();
             self.reveal(SearchKind::Images, ix);
         }
         cx.notify();
@@ -340,6 +331,7 @@ impl BerthApp {
             .iter()
             .position(|volume| volume.name == name)
         {
+            let _ = self.visible_volumes();
             self.reveal(SearchKind::Volumes, ix);
         }
         cx.notify();
@@ -359,6 +351,7 @@ impl BerthApp {
             }
         });
         if let Some(ix) = ix {
+            let _ = self.visible_networks();
             self.reveal(SearchKind::Networks, ix);
         }
         cx.notify();
@@ -367,6 +360,7 @@ impl BerthApp {
     pub(crate) fn clear_selection(&mut self, cx: &mut Context<Self>) {
         self.view.selected_id = None;
         self.view.selected_name.clear();
+        self.view.event_cursor = None;
         self.inspector.tab = InspectorTab::Facts;
         self.inspector.logs_text.clear();
         self.inspector.logs_loading = false;
@@ -383,11 +377,58 @@ impl BerthApp {
     }
 }
 
+/// Build the browser URL for a published port, validating the engine-supplied
+/// host before interpolating it.
+pub(crate) fn port_url(host: &str, port: u16) -> Option<String> {
+    if port == 0 {
+        return None;
+    }
+    let trimmed = host.trim();
+    let candidate = if trimmed.is_empty() || trimmed == "0.0.0.0" || trimmed == "::" {
+        "localhost"
+    } else {
+        trimmed
+    };
+    let scheme = if port == 443 || port == 8443 {
+        "https"
+    } else {
+        "http"
+    };
+    let unbracketed = candidate
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(candidate);
+    if let Ok(ip) = unbracketed.parse::<std::net::IpAddr>() {
+        return Some(match ip {
+            std::net::IpAddr::V4(v4) => format!("{scheme}://{v4}:{port}"),
+            std::net::IpAddr::V6(v6) => format!("{scheme}://[{v6}]:{port}"),
+        });
+    }
+    if valid_hostname(candidate) {
+        Some(format!("{scheme}://{candidate}:{port}"))
+    } else {
+        None
+    }
+}
+
+fn valid_hostname(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::{Task, TestAppContext};
-    use std::sync::Arc;
 
     fn outcome(id: &str, generation: u64) -> detail::Outcome {
         detail::Outcome {
@@ -414,7 +455,7 @@ mod tests {
             let generation = app.inspector.detail_generation;
 
             // The container goes away under the read, as a delete makes it.
-            app.snapshot = Arc::new(crate::state::Snapshot::empty());
+            app.set_snapshot(crate::state::Snapshot::empty());
             app.reconcile_selection();
             assert!(app.view.selected_id.is_none());
 

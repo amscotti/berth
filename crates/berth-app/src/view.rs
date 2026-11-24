@@ -7,7 +7,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use gpui::prelude::*;
 use gpui::{Entity, FocusHandle, ScrollHandle, Subscription, Task, UniformListScrollHandle};
@@ -16,7 +15,6 @@ use crate::actions::Pending;
 use crate::app::{BerthApp, CreateKind, DetailKind, Filter, SearchKind, Tab, Toast};
 use crate::focus::SheetFocus;
 use crate::jobs::mutation::PruneOptions;
-use crate::state::SharedSnapshot;
 use crate::ui::input::{InputEvent, InputState};
 
 /// One table's own state: its search field, what was typed into it, and how
@@ -45,8 +43,9 @@ pub(crate) struct ListState {
 pub(crate) struct Kept(RefCell<Option<Worked>>);
 
 struct Worked {
-    /// The snapshot, by identity.
-    from: SharedSnapshot,
+    /// The snapshot's monotonic id, so unvisited tables never retain stale
+    /// `Arc<Snapshot>` allocations.
+    snapshot_id: u64,
     /// The query, lowercased.
     query: String,
     sort: (usize, bool),
@@ -59,7 +58,7 @@ impl Kept {
     /// out when anything they depend on has changed, and only then.
     pub(crate) fn rows(
         &self,
-        from: &SharedSnapshot,
+        snapshot_id: u64,
         query: &str,
         sort: (usize, bool),
         filter: Filter,
@@ -68,7 +67,7 @@ impl Kept {
         {
             let worked = self.0.borrow();
             if let Some(worked) = worked.as_ref()
-                && Arc::ptr_eq(&worked.from, from)
+                && worked.snapshot_id == snapshot_id
                 && query.eq_ignore_ascii_case(&worked.query)
                 && worked.sort == sort
                 && worked.filter == filter
@@ -78,7 +77,7 @@ impl Kept {
         }
         let rows = figure();
         *self.0.borrow_mut() = Some(Worked {
-            from: from.clone(),
+            snapshot_id,
             query: query.to_ascii_lowercase(),
             sort,
             filter,
@@ -136,8 +135,7 @@ impl Sheet {
 }
 
 pub(crate) struct ViewState {
-    /// The real app opens on Overview once the graphs exist. Until then the
-    /// table is the fully drawn surface.
+    /// The active page in the rail.
     pub(crate) tab: Tab,
     pub(crate) filter: Filter,
     /// In `SearchKind` order: containers, images, volumes, networks, events.
@@ -146,6 +144,8 @@ pub(crate) struct ViewState {
     pub(crate) selected_id: Option<String>,
     pub(crate) selected_name: String,
     pub(crate) detail_kind: DetailKind,
+    /// Keyboard cursor inside the Events table (index in `snapshot.events`).
+    pub(crate) event_cursor: Option<usize>,
     pub(crate) bulk_enabled: bool,
     pub(crate) bulk_selected: BTreeSet<String>,
     pub(crate) toast: Option<Toast>,
@@ -232,29 +232,45 @@ impl ViewState {
             |this, _, event: &InputEvent, cx| match event {
                 InputEvent::Submitted => this.submit_create(cx),
                 InputEvent::Cancelled => this.close_create(cx),
-                InputEvent::Changed | InputEvent::Edited => {}
+                InputEvent::Changed | InputEvent::Edited => {
+                    if matches!(
+                        this.view.sheet,
+                        Some(Sheet::Create {
+                            attempted: true,
+                            ..
+                        })
+                    ) {
+                        cx.notify();
+                    }
+                }
             },
         ));
         _form_subs.push(
-            cx.subscribe(&pull_input, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Submitted) {
-                    this.start_pull(cx);
+            cx.subscribe(&pull_input, |this, _, event: &InputEvent, cx| match event {
+                InputEvent::Submitted => this.start_pull(cx),
+                InputEvent::Changed | InputEvent::Edited if this.view.pull_attempted => {
+                    this.redraw_page(cx);
                 }
+                _ => {}
             }),
         );
         for field in [&run_image, &run_name, &run_ports, &run_volumes, &run_env] {
-            _form_subs.push(cx.subscribe(field, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::Submitted) {
-                    this.start_run(cx);
-                }
-            }));
+            _form_subs.push(
+                cx.subscribe(field, |this, _, event: &InputEvent, cx| match event {
+                    InputEvent::Submitted => this.start_run(cx),
+                    InputEvent::Changed | InputEvent::Edited if this.view.run_attempted => {
+                        this.redraw_page(cx);
+                    }
+                    _ => {}
+                }),
+            );
         }
         _form_subs.push(cx.subscribe(&run_env, |this, _, event: &InputEvent, cx| {
             // Only the user's own edit retires the note: the clone that
             // filled the field in must not clear it a moment later.
             if matches!(event, InputEvent::Edited) && this.view.run_env_missing != 0 {
                 this.view.run_env_missing = 0;
-                cx.notify();
+                this.redraw_page(cx);
             }
         }));
         _form_subs.push(
@@ -281,6 +297,7 @@ impl ViewState {
             selected_id: None,
             selected_name: String::new(),
             detail_kind: DetailKind::Container,
+            event_cursor: None,
             bulk_enabled: false,
             bulk_selected: BTreeSet::new(),
             toast: None,

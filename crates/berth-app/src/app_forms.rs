@@ -344,11 +344,11 @@ impl BerthApp {
 
     /// Do what was confirmed, or only close the sheet.
     pub(crate) fn resolve_pending(&mut self, ok: bool, cx: &mut Context<Self>) {
-        let Some(Sheet::Confirm(pending)) = self.view.sheet.take() else {
+        let Some(Sheet::Confirm(pending)) = self.view.sheet.clone() else {
             return;
         };
+        self.close_sheet(cx);
         if !ok {
-            cx.notify();
             return;
         }
         match pending {
@@ -415,10 +415,11 @@ impl BerthApp {
                 .ok();
             }),
         };
+        cx.notify();
         true
     }
 
-    fn finish_mutation(
+    pub(crate) fn finish_mutation(
         &mut self,
         outcome: mutation::Outcome,
         generation: u64,
@@ -426,6 +427,12 @@ impl BerthApp {
         cx: &mut Context<Self>,
     ) {
         let ran = self.mutation.finish();
+        // Check engine generation before touching any sheet or state so a
+        // stale mutation from an earlier engine cannot close a new engine's sheet.
+        if !is_engine_op && generation != self.engine.generation {
+            cx.notify();
+            return;
+        }
         // Each sheet closes when its own request succeeds, and only its own.
         if !outcome.bad
             && self
@@ -434,11 +441,28 @@ impl BerthApp {
                 .as_ref()
                 .is_some_and(|sheet| ran.as_ref().is_some_and(|ran| ran.frees(sheet)))
         {
-            self.view.sheet = None;
+            self.close_sheet(cx);
         }
-        if !is_engine_op && generation != self.engine.generation {
-            cx.notify();
-            return;
+        // Any mutation that changes disk usage invalidates the cached /system/df
+        // so the immediate refresh updates Disk, Overview and Prune counts.
+        if matches!(
+            ran,
+            Some(
+                MutationKind::Prune
+                    | MutationKind::One(Target::Removal { .. })
+                    | MutationKind::One(Target::Container {
+                        action: ContainerAction::Delete,
+                        ..
+                    })
+                    | MutationKind::Batch {
+                        action: ContainerAction::Delete,
+                        ..
+                    }
+                    | MutationKind::CreateVolume { .. }
+                    | MutationKind::Pull { .. }
+            )
+        ) {
+            self.engine.df_at = 0;
         }
         // Our own action already produces a toast; the engine's die/stop
         // events that follow must not produce a second one.

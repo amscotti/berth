@@ -2,7 +2,6 @@
 //! mock engine. Each one is a bug that was on screen first.
 
 use std::cell::Cell;
-use std::sync::Arc;
 
 use berth_engine::dto::Port;
 use berth_engine::test_support::MockEngine;
@@ -10,7 +9,7 @@ use gpui::{Entity, TestAppContext, VisualTestContext};
 
 use crate::actions::{ContainerAction, Pending, Target};
 use crate::app::{BerthApp, CreateKind, Filter, SearchKind};
-use crate::jobs::mutation::{PruneOptions, Request};
+use crate::jobs::mutation::{Outcome, PruneOptions, Request};
 use crate::slot::{MutationKind, MutationSlot};
 use crate::testkit;
 use crate::view::Sheet;
@@ -146,7 +145,7 @@ fn ports_sort_as_numbers_so_8080_comes_before_10000(cx: &mut TestAppContext) {
                 ..Default::default()
             }];
         }
-        app.snapshot = std::sync::Arc::new(snapshot);
+        app.set_snapshot(snapshot);
         app.view.lists[0].sort = (8, true);
         assert_eq!(
             app.visible_rows(),
@@ -212,7 +211,7 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
     app.update(cx, |app, cx| {
         let mut snapshot = (*app.snapshot).clone();
         snapshot.containers[0].state = "exited".into();
-        app.snapshot = std::sync::Arc::new(snapshot);
+        app.set_snapshot(snapshot);
         cx.notify();
     });
     assert_eq!(
@@ -230,7 +229,7 @@ fn a_cleanup_counts_what_it_would_remove_and_says_when_it_cannot(cx: &mut TestAp
     app.update(cx, |app, cx| {
         let mut snapshot = (*app.snapshot).clone();
         snapshot.df = None;
-        app.snapshot = std::sync::Arc::new(snapshot);
+        app.set_snapshot(snapshot);
         cx.notify();
     });
     app.read_with(&*cx, |app, _| {
@@ -444,7 +443,7 @@ fn a_tables_rows_are_worked_out_once_per_snapshot_and_settings(cx: &mut TestAppC
         drawn(app);
         assert_eq!(figured.get(), 3, "and so is a filter");
 
-        app.snapshot = Arc::new((*app.snapshot).clone());
+        app.set_snapshot((*app.snapshot).clone());
         drawn(app);
         assert_eq!(
             figured.get(),
@@ -470,4 +469,132 @@ fn a_tables_rows_are_worked_out_once_per_snapshot_and_settings(cx: &mut TestAppC
         app.view.lists[0].query = "web".into();
         assert_eq!(app.visible_rows(), [0], "web, among the fixture's two");
     });
+}
+
+#[gpui::test]
+fn confirming_a_delete_closes_the_sheet_and_repaints_immediately(cx: &mut TestAppContext) {
+    let (app, engine, cx) = wired(cx);
+    app.update(cx, |app, cx| {
+        app.confirm(
+            Pending::One(Target::Container {
+                action: ContainerAction::Delete,
+                id: "demo-1".into(),
+                name: "demo-1".into(),
+            }),
+            cx,
+        );
+    });
+    testkit::redraw(cx);
+    let draws_before = app.read_with(&*cx, |app, cx| app.draws(None, cx));
+
+    app.update(cx, |app, cx| {
+        app.resolve_pending(true, cx);
+        assert!(app.view.sheet.is_none(), "confirm closes the sheet at once");
+        assert!(app.mutating(), "and starts the mutation");
+    });
+    testkit::redraw(cx);
+
+    app.read_with(&*cx, |app, cx| {
+        assert!(app.view.sheet.is_none());
+        assert!(
+            app.draws(None, cx) > draws_before,
+            "closing and starting the mutation repainted the shell immediately"
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(engine.count("/containers/demo-1?force=1"), 1);
+}
+
+#[gpui::test]
+fn a_prune_resets_df_at_so_disk_figures_refresh_immediately(cx: &mut TestAppContext) {
+    let (app, engine, cx) = wired(cx);
+    app.update(cx, |app, cx| {
+        app.engine.df_at = berth_core::format::now();
+        app.open_prune(cx);
+        app.run_prune(cx);
+    });
+    cx.run_until_parked();
+    assert!(engine.count("/prune") >= 1);
+    assert!(
+        engine.count("/system/df") >= 1,
+        "df_at was reset so the follow-up refresh re-fetched /system/df"
+    );
+}
+
+#[gpui::test]
+fn a_stale_engine_mutation_cannot_close_the_new_engines_sheet(cx: &mut TestAppContext) {
+    let (app, _engine, cx) = wired(cx);
+    app.update(cx, |app, cx| {
+        let old_gen = app.engine.generation;
+        app.mutation = MutationSlot::Running {
+            kind: MutationKind::Prune,
+            since: std::time::Instant::now(),
+            task: cx.spawn(async move |_, _| ()),
+        };
+        // Engine switched while the prune was in flight, and a new Prune sheet
+        // was opened on the new engine.
+        app.engine.generation = old_gen.wrapping_add(1);
+        app.open_prune(cx);
+
+        app.finish_mutation(
+            Outcome {
+                message: "Reclaimed 0 B".into(),
+                bad: false,
+            },
+            old_gen,
+            false,
+            cx,
+        );
+        assert!(
+            cleanup(app),
+            "stale mutation must not close the new engine's sheet"
+        );
+        assert!(!app.mutating(), "the mutation slot was still released");
+    });
+}
+
+#[gpui::test]
+fn bulk_selection_and_compose_stack_actions_dispatch_batches(cx: &mut TestAppContext) {
+    let (app, engine, cx) = wired(cx);
+    app.update(cx, |app, cx| {
+        app.toggle_bulk(cx);
+        assert!(app.view.bulk_enabled);
+        app.bulk_select_all(cx);
+        assert_eq!(app.view.bulk_selected.len(), 2);
+        app.bulk_clear(cx);
+        assert!(app.view.bulk_selected.is_empty());
+
+        app.bulk_toggle("demo-1", cx);
+        assert!(app.view.bulk_selected.contains("demo-1"));
+        // Destructive bulk opens a confirmation sheet instead of sending.
+        app.bulk_request(ContainerAction::Delete, cx);
+        assert!(matches!(
+            app.view.sheet,
+            Some(Sheet::Confirm(Pending::Batch {
+                action: ContainerAction::Delete,
+                count: 1
+            }))
+        ));
+        app.resolve_pending(false, cx);
+        // Non-destructive bulk runs immediately and clears selection.
+        app.bulk_request(ContainerAction::Stop, cx);
+        assert!(app.view.bulk_selected.is_empty());
+    });
+    cx.run_until_parked();
+    assert_eq!(engine.count("/containers/demo-1/stop"), 1);
+
+    // Compose project actions target matching project members.
+    app.update(cx, |app, cx| {
+        app.set_snapshot(crate::fixture::fixture_snapshot());
+        app.project_restart("shop", cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(engine.count("/restart"), 2);
+
+    app.update(cx, |app, cx| {
+        app.set_snapshot(crate::fixture::fixture_snapshot());
+        app.project_action("shop", false, cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(engine.count("/stop"), 3);
 }

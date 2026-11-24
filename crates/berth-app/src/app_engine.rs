@@ -3,7 +3,6 @@
 use crate::app::*;
 use crate::jobs::refresh;
 use gpui::Context;
-use std::sync::Arc;
 
 impl BerthApp {
     // --- engine ------------------------------------------------------------
@@ -57,6 +56,17 @@ impl BerthApp {
         let Some(tray) = &self.tray else {
             return;
         };
+        let title = self.tray_title();
+        crate::tray::set_title(tray, &title);
+    }
+
+    pub(crate) fn tray_title(&self) -> String {
+        if self.engine.client.is_none()
+            || !self.engine.error.is_empty()
+            || self.engine.last_update == 0
+        {
+            return "— up · — · —".to_owned();
+        }
         let mem = if self.snapshot.stats_complete() {
             berth_core::format::bytes(self.snapshot.container_memory())
         } else {
@@ -68,8 +78,7 @@ impl BerthApp {
             .latest_cpu()
             .map(|value| berth_core::format::percent(value as f64))
             .unwrap_or_else(|| "—".to_owned());
-        let title = format!("{} up · {cpu} · {mem}", self.snapshot.running());
-        crate::tray::set_title(tray, &title);
+        format!("{} up · {cpu} · {mem}", self.snapshot.running())
     }
 
     /// Find an engine and start reading it.
@@ -78,17 +87,33 @@ impl BerthApp {
     }
 
     pub(crate) fn start_discovery(&mut self, cx: &mut Context<Self>) {
+        self.start_discovery_inner(true, cx);
+    }
+
+    fn start_discovery_inner(&mut self, notify_loading: bool, cx: &mut Context<Self>) {
         if self.discovery_task.is_some() {
             // A scan is running. This one goes next instead of being dropped.
             self.rescan_wanted = true;
             return;
         }
         self.engine.loading = true;
-        self.engine.error.clear();
-        cx.notify();
+        // Never wipe an existing offline error on background retries: that
+        // makes the Overview band flicker every two seconds.
+        if notify_loading && self.engine.client.is_some() {
+            self.engine.error.clear();
+            cx.notify();
+        } else if notify_loading && self.engine.error.is_empty() {
+            cx.notify();
+        }
         let generation = self.engine.generation;
-        let preferred = std::env::var("BERTH_SOCKET")
+        let requested = self.engine.requested_socket.take();
+        let env_socket = std::env::var("BERTH_SOCKET")
             .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        let preferred = requested
+            .clone()
+            .or(env_socket)
             .or_else(|| self.engine.preferred_socket.clone())
             .unwrap_or_default();
         self.discovery_task = Some(cx.spawn(async move |this, cx| {
@@ -96,24 +121,59 @@ impl BerthApp {
                 .background_executor()
                 .spawn(async move { berth_engine::discovery::scan(&preferred) })
                 .await;
-            this.update(cx, |app, cx| app.adopt_runtimes(runtimes, generation, cx))
-                .ok();
+            this.update(cx, |app, cx| {
+                app.adopt_runtimes_for(runtimes, generation, requested, cx)
+            })
+            .ok();
         }));
     }
 
-    fn adopt_runtimes(
+    /// Install a different (or reconnecting) engine and drop everything
+    /// carried over from the previous one: in-flight refresh, selection,
+    /// bulk picks, events, disk figures and snapshot rows.
+    pub(crate) fn switch_engine(
+        &mut self,
+        runtime: &berth_engine::discovery::Runtime,
+        cx: &mut Context<Self>,
+    ) {
+        self.engine.install(runtime);
+        self.refresh_task = None;
+        self.refresh_wanted = false;
+        self.timer_task = None;
+        self.view.bulk_selected.clear();
+        self.clear_selection(cx);
+        self.set_snapshot(crate::state::Snapshot::empty());
+        self.update_tray_title();
+        self.start_refresh(cx);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn adopt_runtimes(
         &mut self,
         runtimes: Vec<berth_engine::discovery::Runtime>,
         generation: u64,
         cx: &mut Context<Self>,
     ) {
+        self.adopt_runtimes_for(runtimes, generation, None, cx);
+    }
+
+    pub(crate) fn adopt_runtimes_for(
+        &mut self,
+        runtimes: Vec<berth_engine::discovery::Runtime>,
+        generation: u64,
+        requested: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         self.discovery_task = None;
         self.engine.loading = false;
-        if generation != self.engine.generation && self.engine.client.is_some() {
+        if generation != self.engine.generation
+            && self.engine.client.is_some()
+            && requested.is_none()
+        {
             // A newer engine was chosen while this scan was in flight. Do not
             // let the old scan overwrite the runtime list the new choice uses.
         } else {
-            self.adopt(runtimes, cx);
+            self.adopt(runtimes, requested.as_deref(), cx);
         }
         // A rescan asked for while this one ran goes next.
         if std::mem::take(&mut self.rescan_wanted) {
@@ -125,9 +185,30 @@ impl BerthApp {
     /// Take a scan's answer. Finding the same engine again changes nothing
     /// but the list: the figures already learned from it stay. A different
     /// engine, or the same one after it had gone away, starts over.
-    fn adopt(&mut self, runtimes: Vec<berth_engine::discovery::Runtime>, cx: &mut Context<Self>) {
-        use berth_engine::discovery::identity;
+    fn adopt(
+        &mut self,
+        runtimes: Vec<berth_engine::discovery::Runtime>,
+        requested: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        use berth_engine::discovery::{identity, same_socket};
         let connected = self.engine.client.is_some();
+        if let Some(req) = requested {
+            if let Some(runtime) = runtimes
+                .iter()
+                .find(|runtime| runtime.reachable && same_socket(&runtime.socket, req))
+                .cloned()
+            {
+                let same_active = connected
+                    && self.engine.identity.as_deref() == Some(identity(&runtime).as_str());
+                self.engine.runtimes = runtimes;
+                if !same_active {
+                    self.switch_engine(&runtime, cx);
+                }
+                return;
+            }
+            self.notify(&format!("Could not connect to {req}"), true, cx);
+        }
         // The engine being read is known by identity, and looked up in the
         // list when it is asked for, so a list that has been reordered, or
         // has lost the engine, needs no index put right.
@@ -152,11 +233,11 @@ impl BerthApp {
             .find(|runtime| runtime.reachable)
             .cloned()
         {
-            self.engine.install(&runtime);
-            self.start_refresh(cx);
+            self.switch_engine(&runtime, cx);
         } else {
             self.engine.client = None;
             self.engine.error = "no engine answering".to_owned();
+            self.update_tray_title();
             self.sample_host_async(cx);
             self.schedule_discovery(cx);
         }
@@ -184,7 +265,8 @@ impl BerthApp {
             cx.background_executor()
                 .timer(std::time::Duration::from_secs(2))
                 .await;
-            this.update(cx, |app, cx| app.start_discovery(cx)).ok();
+            this.update(cx, |app, cx| app.start_discovery_inner(false, cx))
+                .ok();
         }));
     }
 
@@ -222,7 +304,7 @@ impl BerthApp {
         }));
     }
 
-    fn finish_refresh(
+    pub(crate) fn finish_refresh(
         &mut self,
         outcome: Result<refresh::Outcome, refresh::RefreshError>,
         cx: &mut Context<Self>,
@@ -297,9 +379,13 @@ impl BerthApp {
             }
         }
 
-        if snapshot.events_error {
+        if let Some(df) = &snapshot.df {
+            merge_volume_usage(&mut snapshot.volumes, df);
+        }
+
+        if snapshot.events_error || snapshot.events.is_empty() {
             snapshot.events = self.snapshot.events.clone();
-        } else if !snapshot.events.is_empty() {
+        } else {
             snapshot.events = refresh::merge_events(&self.snapshot.events, &snapshot.events);
         }
         if !snapshot.events_error {
@@ -329,7 +415,7 @@ impl BerthApp {
         self.engine.error = snapshot.error.clone();
         self.engine.last_update = snapshot.last_update;
         let fresh_events = snapshot.events.clone();
-        self.snapshot = Arc::new(snapshot);
+        self.set_snapshot(snapshot);
         if !first_pass && berth_core::format::now() >= self.quiet_notices_until {
             for event in fresh_events {
                 if berth_engine::events::has(&previous_events, &event) {
@@ -360,6 +446,13 @@ impl BerthApp {
                 .iter()
                 .any(|container| &container.id == id)
         });
+        if self
+            .view
+            .event_cursor
+            .is_some_and(|ix| ix >= self.snapshot.events.len())
+        {
+            self.view.event_cursor = None;
+        }
         // Selection is by id, found again in whatever snapshot is on screen.
         let Some(id) = self.view.selected_id.clone() else {
             return;
@@ -385,140 +478,27 @@ impl BerthApp {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use berth_core::history::Sample;
-    use berth_engine::df::Df;
-    use gpui::TestAppContext;
-
-    /// The fixture engine, on a socket that exists nowhere: the tasks a scan
-    /// or a refresh spawns must never reach this machine's real engine.
-    fn runtime() -> berth_engine::discovery::Runtime {
-        let mut runtime = crate::fixture::fixture_runtime();
-        runtime.socket = "/nowhere/berth-test.sock".into();
-        runtime
+/// Fill per-volume `UsageData` from `/system/df`. `GET /volumes` omits usage
+/// figures; `/system/df` calculates them, so merging by name gives Volumes
+/// `SIZE`/`IN USE` and lets Prune count unused volumes.
+fn merge_volume_usage(volumes: &mut [berth_engine::dto::Volume], df: &berth_engine::df::Df) {
+    let Some(df_volumes) = &df.volumes else {
+        return;
+    };
+    let by_name: std::collections::HashMap<&str, &berth_engine::dto::UsageData> = df_volumes
+        .iter()
+        .filter_map(|v| v.usage_data.as_ref().map(|usage| (v.name.as_str(), usage)))
+        .collect();
+    if by_name.is_empty() {
+        return;
     }
-
-    /// The machine's own figures aren't the engine's. A new sample lands
-    /// beside the snapshot and leaves the snapshot on screen exactly as it is.
-    #[gpui::test]
-    fn a_host_sample_does_not_rebuild_the_snapshot(cx: &mut TestAppContext) {
-        let (app, cx) = crate::testkit::fixture(cx);
-        let on_screen = app.read_with(&*cx, |app, _| app.snapshot.clone());
-        app.update(cx, |app, cx| app.sample_host_async(cx));
-        cx.run_until_parked();
-        app.read_with(&*cx, |app, _| {
-            assert!(app.host_task.is_none(), "the sample finished");
-            assert!(
-                std::sync::Arc::ptr_eq(&app.snapshot, &on_screen),
-                "the snapshot was not rebuilt for the host's figures"
-            );
-            // The fixture's 64 GiB gave way to what this machine really has.
-            assert!(app.host.mem_total > 0, "the sample landed");
-        });
-    }
-
-    #[gpui::test]
-    fn finding_the_same_engine_again_keeps_what_was_learned_from_it(cx: &mut TestAppContext) {
-        let (app, cx) = crate::testkit::fixture(cx);
-        app.update(cx, |app, cx| {
-            let runtime = runtime();
-            app.adopt_runtimes(vec![runtime.clone()], app.engine.generation, cx);
-            let generation = app.engine.generation;
-            app.engine.history.push(Sample::default());
-            app.engine.df = Some(Df::default());
-            app.engine.events_since = 42;
-
-            // The same daemon, found again by a rescan, now with a silent
-            // neighbour: nothing starts over.
-            let silent = berth_engine::discovery::Runtime {
-                socket: "/nowhere/other.sock".into(),
-                ..Default::default()
-            };
-            app.adopt_runtimes(vec![silent, runtime], generation, cx);
-            assert_eq!(app.engine.generation, generation);
-            assert_eq!(app.engine.history.len(), 1);
-            assert!(app.engine.df.is_some());
-            assert_eq!(app.engine.events_since, 42);
-            assert_eq!(
-                app.engine.active_index(),
-                Some(1),
-                "the list may reorder; the engine stays"
-            );
-        });
-    }
-
-    /// The engine being read is known by identity. One that has left the list
-    /// is no longer the engine, whatever has taken its place in the list.
-    #[gpui::test]
-    fn an_engine_that_left_the_list_is_no_longer_the_active_one(cx: &mut TestAppContext) {
-        let (app, cx) = crate::testkit::fixture(cx);
-        app.update(cx, |app, cx| {
-            let runtime = runtime();
-            app.adopt_runtimes(vec![runtime.clone()], app.engine.generation, cx);
-            assert_eq!(
-                app.engine.active_runtime().map(|it| &it.socket),
-                Some(&runtime.socket)
-            );
-
-            // A scan that finds nothing answering, and not the engine either.
-            let stranger = berth_engine::discovery::Runtime {
-                socket: "/nowhere/stranger.sock".into(),
-                ..Default::default()
-            };
-            app.adopt_runtimes(vec![stranger], app.engine.generation, cx);
-            assert!(app.engine.client.is_none(), "nothing is being read");
-            assert_eq!(
-                app.engine.active_index(),
-                None,
-                "the stranger that took its place is not the engine"
-            );
-            assert!(app.engine.active_runtime().is_none());
-        });
-    }
-
-    #[gpui::test]
-    fn a_different_engine_starts_over_and_a_returning_one_reconnects(cx: &mut TestAppContext) {
-        let (app, cx) = crate::testkit::fixture(cx);
-        app.update(cx, |app, cx| {
-            let runtime = runtime();
-            app.adopt_runtimes(vec![runtime.clone()], app.engine.generation, cx);
-            app.engine.history.push(Sample::default());
-
-            // Another daemon behind the same socket is a new engine.
-            let mut other = runtime.clone();
-            other.info.id = "daemon-2".into();
-            app.adopt_runtimes(vec![other], app.engine.generation, cx);
-            assert!(app.engine.history.is_empty());
-
-            // The same daemon, after it had gone away and the client was
-            // dropped: what was learned before it went is not trusted.
-            app.engine.history.push(Sample::default());
-            app.engine.client = None;
-            app.adopt_runtimes(vec![runtime], app.engine.generation, cx);
-            assert!(app.engine.client.is_some(), "it reconnects");
-            assert!(app.engine.history.is_empty(), "and starts over");
-        });
-    }
-
-    #[gpui::test]
-    fn a_rescan_asked_for_during_a_scan_runs_after_it(cx: &mut TestAppContext) {
-        let (app, cx) = crate::testkit::fixture(cx);
-        app.update(cx, |app, cx| {
-            app.start_discovery(cx);
-            assert!(app.discovery_task.is_some());
-            app.start_discovery(cx);
-            app.rescan(cx);
-            assert!(
-                app.rescan_wanted,
-                "the later requests are kept, not dropped"
-            );
-            // The engine being read is not put on hold for the scan.
-            assert_eq!(
-                app.snapshot.containers.len(),
-                2,
-                "the snapshot on screen is untouched"
-            );
-        });
+    for volume in volumes {
+        if let Some(usage) = by_name.get(volume.name.as_str()) {
+            volume.usage_data = Some((*usage).clone());
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "app_engine_tests.rs"]
+mod tests;

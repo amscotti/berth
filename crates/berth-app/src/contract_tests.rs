@@ -34,7 +34,11 @@ fn place(path: &Path, line: usize) -> String {
     let shown = path
         .strip_prefix(Path::new(env!("CARGO_MANIFEST_DIR")))
         .unwrap_or(path);
-    format!("{}:{}", shown.display(), line + 1)
+    format!(
+        "{}:{}",
+        shown.to_string_lossy().replace('\\', "/"),
+        line + 1
+    )
 }
 
 /// The text from `at`, which is just inside an opening parenthesis, up to
@@ -67,7 +71,10 @@ fn has_decimal(text: &str) -> bool {
 #[test]
 fn no_view_draws_its_own_button() {
     for (path, source) in sources() {
-        let in_kit = path.to_string_lossy().contains("src/ui/kit/");
+        let in_kit = path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .contains("src/ui/kit/");
         for (line, text) in source.lines().enumerate() {
             let own = text.contains("Role::Button") || text.contains("Role::CheckBox");
             assert!(

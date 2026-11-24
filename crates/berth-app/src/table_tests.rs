@@ -110,22 +110,138 @@ fn a_row_clicked_where_the_list_has_scrolled_to_opens_that_row(cx: &mut TestAppC
     }
     testkit::draw(cx);
 
-    // A click in the lower half of the page, where only a scrolled list has rows.
+    // A click in the middle of the scrolled viewport must hit a different
+    // visible row than the 40th row already selected at the bottom.
     let (width, height) = cx.update(|window, _| {
         let size = window.viewport_size();
         (f32::from(size.width), f32::from(size.height))
     });
-    let top = app.read_with(&*cx, |app, _| scrolled_rows(app));
+    let (top, before) = app.read_with(&*cx, |app, _| (scrolled_rows(app), selected_position(app)));
+    let visible_rows = (height / layout::ROW_CONTAINER).ceil() as usize;
     cx.simulate_click(
-        point(px(width * 0.3), px(height * 0.8)),
+        point(px(width * 0.3), px(height * 0.45)),
         Modifiers::default(),
     );
 
     app.read_with(&*cx, |app, _| {
         let position = selected_position(app).expect("the click opened a row");
+        assert_ne!(
+            Some(position),
+            before,
+            "the click actually moved selection from {before:?} to a newly clicked row"
+        );
         assert!(
-            (top..top + 30).contains(&position),
+            (top..top + visible_rows).contains(&position),
             "the click opened a row that is on screen: the {position}th of the list, with the list scrolled {top} rows down"
         );
     });
+}
+
+#[gpui::test]
+fn arrow_navigation_works_across_all_five_tables(cx: &mut TestAppContext) {
+    use crate::app::{DetailKind, Tab};
+
+    let (app, cx) = testkit::fixture(cx);
+    testkit::draw(cx);
+
+    // 1. Containers
+    testkit::press(cx, "down");
+    assert_eq!(
+        app.read_with(&*cx, |app, _| (
+            app.view.detail_kind,
+            app.view.selected_id.clone()
+        )),
+        (DetailKind::Container, Some("demo-1".into()))
+    );
+
+    // 2. Images
+    app.update(cx, |app, cx| app.switch_to(Tab::Images, cx));
+    testkit::draw(cx);
+    testkit::press(cx, "down");
+    let first_image = app.read_with(&*cx, |app, _| app.view.selected_id.clone());
+    assert!(first_image.is_some());
+    assert_eq!(
+        app.read_with(&*cx, |app, _| app.view.detail_kind),
+        DetailKind::Image
+    );
+    testkit::press(cx, "down");
+    let second_image = app.read_with(&*cx, |app, _| app.view.selected_id.clone());
+    assert_ne!(first_image, second_image, "Down advances in Images");
+    testkit::press(cx, "up");
+    assert_eq!(
+        app.read_with(&*cx, |app, _| app.view.selected_id.clone()),
+        first_image,
+        "Up moves back in Images"
+    );
+
+    // 3. Volumes
+    app.update(cx, |app, cx| app.switch_to(Tab::Volumes, cx));
+    testkit::draw(cx);
+    testkit::press(cx, "down");
+    assert_eq!(
+        app.read_with(&*cx, |app, _| (
+            app.view.detail_kind,
+            app.view.selected_id.clone()
+        )),
+        (DetailKind::Volume, Some("shop-data".into()))
+    );
+
+    // 4. Networks
+    app.update(cx, |app, cx| app.switch_to(Tab::Networks, cx));
+    testkit::draw(cx);
+    testkit::press(cx, "down");
+    let first_net = app.read_with(&*cx, |app, _| app.view.selected_id.clone());
+    assert!(first_net.is_some());
+    assert_eq!(
+        app.read_with(&*cx, |app, _| app.view.detail_kind),
+        DetailKind::Network
+    );
+    testkit::press(cx, "down");
+    assert_ne!(
+        app.read_with(&*cx, |app, _| app.view.selected_id.clone()),
+        first_net,
+        "Down advances in Networks"
+    );
+
+    // 5. Events: Down moves cursor, Enter opens container event on Containers tab.
+    app.update(cx, |app, cx| app.switch_to(Tab::Events, cx));
+    testkit::draw(cx);
+    testkit::press(cx, "down");
+    let cursor = app.read_with(&*cx, |app, _| app.view.event_cursor);
+    assert!(cursor.is_some(), "Down sets event_cursor in Events");
+}
+
+#[gpui::test]
+fn space_toggles_selected_container_in_bulk_mode_only_on_table(cx: &mut TestAppContext) {
+    let (app, cx) = testkit::fixture(cx);
+    testkit::draw(cx);
+
+    app.update(cx, |app, cx| {
+        app.toggle_bulk(cx);
+        app.select(0, cx);
+    });
+    testkit::draw(cx);
+
+    // Space toggles the selected row's bulk checkbox on and off.
+    testkit::press(cx, "space");
+    assert!(
+        app.read_with(&*cx, |app, _| app.view.bulk_selected.contains("demo-1")),
+        "Space checks the selected container in bulk mode"
+    );
+    testkit::press(cx, "space");
+    assert!(
+        app.read_with(&*cx, |app, _| !app.view.bulk_selected.contains("demo-1")),
+        "Space unchecks it on a second press"
+    );
+
+    // When focus is inside the search box, Space must NOT toggle bulk selection.
+    cx.update(|window, cx| {
+        let search = app.read(cx).search(SearchKind::Containers).clone();
+        search.update(cx, |input, cx| input.focus(window, cx));
+    });
+    testkit::press(cx, "space");
+    assert!(
+        app.read_with(&*cx, |app, _| app.view.bulk_selected.is_empty()),
+        "Space inside search does not toggle bulk selection"
+    );
 }
